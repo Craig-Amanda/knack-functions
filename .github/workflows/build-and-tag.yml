@@ -1,0 +1,134 @@
+name: Build dist, write SRI, and auto-tag
+
+on:
+  push:
+    branches: [ main ]
+    # Only run when source / config changes; ignore dist to avoid loops
+    paths:
+      - 'knackFunctions.js'
+      - 'src/**'
+      - 'builds/**'
+      - 'rollup.config.*'
+      - 'vite.config.*'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dist-update
+  cancel-in-progress: true
+
+jobs:
+  build-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build bundle (Rollup)
+        run: npm run build
+
+      - name: Verify output exists
+        run: test -f dist/knackFunctions.iife.min.js
+
+      - name: Generate SRI sidecar (.sha384)
+        id: sri
+        shell: bash
+        run: |
+          HASH=$(openssl dgst -sha384 -binary dist/knackFunctions.iife.min.js | openssl base64 -A)
+          printf "sha384-%s" "$HASH" > dist/knackFunctions.iife.min.js.sha384
+          echo "sri=sha384-$HASH" >> $GITHUB_OUTPUT
+
+      - name: Optional manifest (version + SRI)
+        # This file is handy for debugging or tooling; safe to keep
+        shell: bash
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > dist/knackFunctions.manifest.json <<EOF
+          {
+            "name": "knack-functions",
+            "file": "dist/knackFunctions.iife.min.js",
+            "sri": "${{ steps.sri.outputs.sri }}",
+            "commit": "$COMMIT",
+            "builtAt": "$DATE"
+          }
+          EOF
+
+      - name: Commit and push dist if changed
+        id: commitdist
+        run: |
+          if [ -n "$(git status --porcelain dist)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add dist
+            git commit -m "build(dist): update bundle and SRI [skip ci]"
+            git push
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "No dist changes to commit."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compute next SemVer tag (major/minor/patch)
+        id: nexttag
+        if: steps.commitdist.outputs.changed == 'true'
+        shell: bash
+        run: |
+          # Find last semver tag (vX.Y.Z); if none, start from v0.0.0
+          LAST_TAG=$(git tag -l "v[0-9]*" --sort=-v:refname | head -n 1)
+          [ -z "$LAST_TAG" ] && LAST_TAG="v0.0.0"
+
+          # Gather commit messages since last tag (includes the merge & bot's dist commit)
+          MESSAGES=$(git log --format=%B "${LAST_TAG}..HEAD" || true)
+
+          # Decide bump: BREAKING → major, feat → minor, else patch
+          BUMP="patch"
+          echo "$MESSAGES" | grep -qE 'BREAKING CHANGE|!:' && BUMP="major"
+          if [ "$BUMP" = "patch" ]; then
+            echo "$MESSAGES" | grep -qiE '^feat(\(|:)|\bfeature\b' && BUMP="minor"
+          fi
+
+          # Parse LAST_TAG and bump
+          VER="${LAST_TAG#v}"
+          IFS=. read -r MAJOR MINOR PATCH <<EOF
+          $VER
+          EOF
+          MAJOR=${MAJOR:-0}; MINOR=${MINOR:-0}; PATCH=${PATCH:-0}
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH+1)) ;;
+          esac
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "bump=$BUMP"     >> $GITHUB_OUTPUT
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create and push tag
+        if: steps.commitdist.outputs.changed == 'true'
+        run: |
+          TAG="${{ steps.nexttag.outputs.new_tag }}"
+          echo "Tagging $TAG"
+          git tag -a "$TAG" -m "Release $TAG (SRI ${{ steps.sri.outputs.sri }})"
+          git push origin "$TAG"
