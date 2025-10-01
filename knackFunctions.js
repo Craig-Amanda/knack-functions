@@ -1223,8 +1223,9 @@ function updateUserFields(viewId, fieldIds) {
 /** Update date fields with the current date and time.
  * @param {string} viewId - The ID of the view.
  * @param {Array} fieldIds - Array of date field IDs.
- * @param {Array} viewsToExclude - Array of view IDs to exclude from the update.*/
-function updateDateFields(viewId, fieldIds, viewsToExclude = []) {
+ * @param {Array} viewsToExclude - Array of view IDs to exclude from the update.
+ * @param {string} dateFormat - The format to use for the date (e.g., 'UK', 'US'). */
+function updateDateFields(viewId, fieldIds, viewsToExclude = [], dateFormat) {
     const currentDate = new Date();
     fieldIds.forEach(foundFieldId => {
         if (viewsToExclude.includes(viewId)) return false;
@@ -1233,7 +1234,11 @@ function updateDateFields(viewId, fieldIds, viewsToExclude = []) {
         const timeField = $(`#${viewId}-field_${foundFieldId}-time`);
 
         if (!dateField.val()) {
-            dateField.val(getDateUKFormat(currentDate));
+            if (dateFormat && dateFormat.toUpperCase() === 'US') {
+                dateField.val(getDateUSFormat(currentDate));
+            } else {
+                dateField.val(getDateUKFormat(currentDate));
+            }
         }
 
         if (!timeField.val()) {
@@ -1241,6 +1246,16 @@ function updateDateFields(viewId, fieldIds, viewsToExclude = []) {
             timeField.val(timeString);
         }
     });
+}
+
+/** Formats a Date object to UK format (MM/DD/YYYY)
+ * @param {Date} date - The date to format.
+ * @returns {string} - The formatted date string in US format. */
+function getDateUSFormat(date) {
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${month}/${day}/${year}`;
 }
 
 /**
