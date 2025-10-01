@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KnackFunctions Local Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background-color: #e8f5e8; }
+        .error { background-color: #ffe8e8; }
+        button { padding: 8px 16px; margin: 5px; cursor: pointer; }
+        pre { background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; }
+        #output { min-height: 100px; }
+    </style>
+</head>
+<body>
+    <h1>KnackFunctions Local Test Page</h1>
+
+    <div class="test-section">
+        <h2>Load Status</h2>
+        <div id="loadStatus">Loading...</div>
+    </div>
+
+    <div class="test-section">
+        <h2>Function Tests</h2>
+        <button onclick="testSetVisibility()">Test setVisibility</button>
+        <button onclick="testShowIf()">Test showIf</button>
+        <button onclick="testWaitSelector()">Test waitSelector</button>
+        <button onclick="testGetNumericValue()">Test getNumericValue</button>
+        <button onclick="clearOutput()">Clear Output</button>
+    </div>
+
+    <div class="test-section">
+        <h2>Test Elements</h2>
+        <div id="testDiv" style="background: lightblue; padding: 10px; margin: 10px 0;">
+            Test Div (for visibility tests)
+        </div>
+        <input type="text" id="testInput" value="123.45" placeholder="Test input for getNumericValue">
+    </div>
+
+    <div class="test-section">
+        <h2>Output</h2>
+        <pre id="output"></pre>
+    </div>
+
+    <!-- jQuery (for compatibility with knackFunctions.js) -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
+    <!-- Load your local knackFunctions.js -->
+    <script src="http://localhost:3001/knackFunctions.js"></script>
+
+    <script>
+        function log(message, isError = false) {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = isError ? '❌' : '✅';
+            output.innerHTML += `${prefix} [${timestamp}] ${message}\n`;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function clearOutput() {
+            document.getElementById('output').innerHTML = '';
+        }
+
+        // Check if knackFunctions loaded
+        window.addEventListener('load', () => {
+            const status = document.getElementById('loadStatus');
+            try {
+                if (typeof setVisibility === 'function') {
+                    status.innerHTML = '<span style="color: green;">✅ knackFunctions.js loaded successfully!</span>';
+                    status.parentElement.className = 'test-section success';
+                    log('knackFunctions.js loaded and functions are available');
+                } else {
+                    throw new Error('Functions not found');
+                }
+            } catch (error) {
+                status.innerHTML = '<span style="color: red;">❌ Failed to load knackFunctions.js</span>';
+                status.parentElement.className = 'test-section error';
+                log(`Failed to load: ${error.message}`, true);
+            }
+        });
+
+        // Test functions
+        function testSetVisibility() {
+            try {
+                const testDiv = document.getElementById('testDiv');
+                setVisibility(testDiv, false);
+                setTimeout(() => {
+                    setVisibility(testDiv, true);
+                    log('setVisibility test completed - div hidden then shown');
+                }, 1000);
+            } catch (error) {
+                log(`setVisibility test failed: ${error.message}`, true);
+            }
+        }
+
+        function testShowIf() {
+            try {
+                const testDiv = document.getElementById('testDiv');
+                showIf(testDiv, false);
+                setTimeout(() => {
+                    showIf(testDiv, true);
+                    log('showIf test completed - div hidden then shown');
+                }, 1000);
+            } catch (error) {
+                log(`showIf test failed: ${error.message}`, true);
+            }
+        }
+
+        function testWaitSelector() {
+            try {
+                // Create a delayed element
+                setTimeout(() => {
+                    const delayedDiv = document.createElement('div');
+                    delayedDiv.id = 'delayedElement';
+                    delayedDiv.textContent = 'I appeared after 2 seconds!';
+                    document.body.appendChild(delayedDiv);
+                }, 2000);
+
+                // Wait for it
+                waitSelector({ selector: '#delayedElement', timeout: 5000 })
+                    .then(element => {
+                        log('waitSelector test completed - found delayed element');
+                        element.style.background = 'lightgreen';
+                    })
+                    .catch(error => {
+                        log(`waitSelector test failed: ${error.message}`, true);
+                    });
+
+                log('waitSelector test started - waiting for delayed element...');
+            } catch (error) {
+                log(`waitSelector test failed: ${error.message}`, true);
+            }
+        }
+
+        function testGetNumericValue() {
+            try {
+                const testInput = document.getElementById('testInput');
+                const value = getNumericValue(testInput);
+                log(`getNumericValue test: input="${testInput.value}" returned=${value}`);
+            } catch (error) {
+                log(`getNumericValue test failed: ${error.message}`, true);
+            }
+        }
+
+        // Auto-refresh detection
+        let lastModified = null;
+        setInterval(async () => {
+            try {
+                const response = await fetch('http://localhost:3001/knackFunctions.js', { method: 'HEAD' });
+                const modified = response.headers.get('last-modified');
+                if (lastModified && modified !== lastModified) {
+                    log('File change detected! Consider refreshing the page.');
+                }
+                lastModified = modified;
+            } catch (error) {
+                // Ignore fetch errors for auto-refresh
+            }
+        }, 3000);
+    </script>
+</body>
+</html>
