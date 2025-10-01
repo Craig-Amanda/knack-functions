@@ -1248,6 +1248,16 @@ function updateDateFields(viewId, fieldIds, viewsToExclude = [], dateFormat) {
     });
 }
 
+/** Formats a Date object to UK format (MM/DD/YYYY)
+ * @param {Date} date - The date to format.
+ * @returns {string} - The formatted date string in US format. */
+function getDateUSFormat(date) {
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${month}/${day}/${year}`;
+}
+
 /**
  * Copies text to clipboard and shows a notification.
  * @param {HTMLElement} element - The element to attach the notification to.
