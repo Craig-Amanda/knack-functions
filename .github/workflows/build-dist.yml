@@ -1,0 +1,71 @@
+name: Build dist (auto on main)
+
+on:
+  push:
+    branches: [ main ]
+    # Only run when *source* or config changes; ignore dist to avoid loops
+    paths:
+      - 'knackFunctions.js'
+      - 'src/**'
+      - 'builds/**'
+      - 'rollup.config.*'
+      - 'vite.config.*'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dist-update
+  cancel-in-progress: true
+
+jobs:
+  build-dist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # If there's a lockfile, npm ci will use it; otherwise fall back to npm install
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build bundle
+        run: npm run build
+
+      - name: Verify output exists
+        run: test -f dist/knackFunctions.iife.min.js
+
+      - name: Generate SRI sidecar (.sha384)
+        shell: bash
+        run: |
+          HASH=$(openssl dgst -sha384 -binary dist/knackFunctions.iife.min.js | openssl base64 -A)
+          printf "sha384-%s" "$HASH" > dist/knackFunctions.iife.min.js.sha384
+
+      - name: Commit and push if dist changed
+        run: |
+          if [ -n "$(git status --porcelain dist)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add dist
+            git commit -m "build(dist): update bundle and SRI [skip ci]"
+            git push
+          else
+            echo "No dist changes to commit."
+          fi
