@@ -1222,11 +1222,12 @@ function updateUserFields(viewId, fieldIds) {
 
 /** Update date fields with the current date and time.
  * @param {string} viewId - The ID of the view.
- * @param {Array} fieldIds - Array of date field IDs.*/
-function updateDateFields(viewId, fieldIds) {
+ * @param {Array} fieldIds - Array of date field IDs.
+ * @param {Array} viewsToExclude - Array of view IDs to exclude from the update.*/
+function updateDateFields(viewId, fieldIds, viewsToExclude = []) {
     const currentDate = new Date();
     fieldIds.forEach(foundFieldId => {
-        if ($('#view_3404').length > 0) return false; // Submit Support Request Form
+        if (viewsToExclude.includes(viewId)) return false;
 
         const dateField = $(`#${viewId}-field_${foundFieldId}`);
         const timeField = $(`#${viewId}-field_${foundFieldId}-time`);
