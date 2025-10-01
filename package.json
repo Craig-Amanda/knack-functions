@@ -1,0 +1,14 @@
+{
+  "name": "knack-functions",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c builds/rollup.config.mjs"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^25.0.0",
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "@rollup/plugin-terser": "^0.4.4",
+    "rollup": "^4.20.0"
+  }
+}
