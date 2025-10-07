@@ -9,29 +9,120 @@ window.isDeveloper = (function () {
     } catch (e) { return false; }
 })();
 
-// --- Repo + path (adjust only if you change repo or file layout) ---
+// --- Configuration Constants ---
 const CDN_REPO = 'Craig-Amanda/knack-functions';
-const CDN_FILE_PATH = 'dist/knackFunctions.iife.min.js';
+const CDN_FILE_PATH = '/dist/knackFunctions.global.min.js';
 const JSDELIVR_META_URL = 'https://data.jsdelivr.com/v1/package/gh/' + CDN_REPO;
+const MIN_TAG = 'v1.0.4';
+const PROD_PINNED_VERSION = 'v1.0.4';
+const SWITCHER_POSITION = 'right'; // 'left' | 'right'
 
-// --- Minimum allowed tag: exclude anything lower than this ---
-const MIN_TAG = 'v1.0.2';
-// Production pinned version used for non-developers
-const PROD_PINNED_VERSION = 'v1.0.2';
+// --- LocalStorage Keys ---
+const LS_SOURCE_KEY = 'knackFunctionsSource';   // 'local' | 'cdn'
+const LS_VERSION_KEY = 'knackFunctionsVersion'; // e.g. 'v1.0.2'
 
-// LocalStorage keys
-const LS_SOURCE_KEY  = 'knackFunctionsSource';   // 'local' | 'cdn'
-const LS_VERSION_KEY = 'knackFunctionsVersion';  // e.g. 'v1.0.2'
-
-// Sources
+// --- Sources Configuration ---
 const SOURCES = {
     'local': 'http://localhost:3001/knackFunctions.js',
     'cdn': null // computed from selected version
 };
 
-// Cache for versions metadata
+// --- Global State Variables ---
 let versionsCache = null;   // available versions (>= MIN_TAG) that have both files present
 let latestTagCache = null;  // latest among available
+let selectedSource = localStorage.getItem(LS_SOURCE_KEY) || (window.isDeveloper ? 'local' : 'cdn');
+let selectedCdnVersion = ensureV(localStorage.getItem(LS_VERSION_KEY) || '') || null;
+
+// --- Initial Setup ---
+// Validate and repair selectedSource
+if (!['local', 'cdn'].includes(selectedSource)) {
+    selectedSource = window.isDeveloper ? 'local' : 'cdn';
+    localStorage.setItem(LS_SOURCE_KEY, selectedSource);
+}
+
+// Ensure we have a valid (>= MIN_TAG) version with sidecar; repair if needed
+// Only run heavy CDN metadata checks for developers
+if (window.isDeveloper) (async function ensureVersion() {
+    try {
+        const { available, latest } = await getAvailableVersions();
+        versionsCache = available;
+        latestTagCache = latest;
+
+        const stored = ensureV(localStorage.getItem(LS_VERSION_KEY) || '');
+        const needsRepair =
+            !stored ||
+            !semverGte(stored, MIN_TAG) ||
+            !available.includes(stored);
+
+        if (needsRepair) {
+            const pin = latest || MIN_TAG;
+            console.warn('Pinned version invalid or too old; switching to', pin);
+            localStorage.setItem(LS_VERSION_KEY, pin);
+            selectedCdnVersion = pin;
+            if (selectedSource === 'cdn') handleSourceChange();
+        } else {
+            // normalise stored form
+            if (stored !== localStorage.getItem(LS_VERSION_KEY)) {
+                localStorage.setItem(LS_VERSION_KEY, stored);
+            }
+            selectedCdnVersion = stored;
+        }
+    } catch (err) {
+        console.warn('Could not resolve available versions; using minimum. Reason:', err && err.message);
+        const fallback = MIN_TAG;
+        localStorage.setItem(LS_VERSION_KEY, fallback);
+        selectedCdnVersion = fallback;
+        if (selectedSource === 'cdn') handleSourceChange();
+    }
+})();
+
+// Local server reachability check (fallback to CDN if not reachable)
+if (selectedSource === 'local' && window.isDeveloper) {
+    (async function checkLocalServer() {
+        const originalSource = selectedSource;
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1500);
+            const response = await fetch(SOURCES.local, { method: 'HEAD', signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+        } catch (error) {
+            console.warn('Local server is not available:', error && error.message);
+            selectedSource = 'cdn';
+            localStorage.setItem(LS_SOURCE_KEY, selectedSource);
+            showLocalServerNotification();
+            if (originalSource !== selectedSource) handleSourceChange();
+        }
+    })();
+}
+
+// --- Script Loading Execution ---
+const resolved = resolveKnackFunctionsUrlAndVersion();
+let KNACK_FUNCTIONS_URL = resolved.url;
+let KNACK_FUNCTIONS_VERSION = resolved.version;
+
+if (!KNACK_FUNCTIONS_URL) {
+    console.warn('Selected source has no URL; forcing CDN with minimum version.');
+    selectedSource = 'cdn';
+    const fallback = ensureV(localStorage.getItem(LS_VERSION_KEY) || selectedCdnVersion || MIN_TAG);
+    localStorage.setItem(LS_SOURCE_KEY, selectedSource);
+    localStorage.setItem(LS_VERSION_KEY, fallback);
+    KNACK_FUNCTIONS_URL = cdnUrlFor(fallback);
+    KNACK_FUNCTIONS_VERSION = fallback;
+}
+
+// Files to load (SRI fetched dynamically for the CDN file)
+loadExternalFiles([
+    { type: 'script', url: 'https://unpkg.com/react@18/umd/react.development.js' },
+    { type: 'script', url: 'https://unpkg.com/react-dom@18/umd/react-dom.development.js' },
+    { type: 'script', url: KNACK_FUNCTIONS_URL }, // SRI applied dynamically
+    { type: 'script', url: 'https://ctrnd.s3.amazonaws.com/Lib/KTL/KTL_Start.js' },
+    { type: 'favicon', url: 'https://arcproject.org.uk/wp-content/uploads/2020/01/cropped-favicon-square-2-32x32.jpg' }
+]);
+
+// ===================================================================
+// UTILITY FUNCTIONS AND UI COMPONENTS
+// ===================================================================
 
 // Helpers
 function ensureV(tag) {
@@ -39,6 +130,7 @@ function ensureV(tag) {
     const t = String(tag).trim();
     return /^v/i.test(t) ? 'v' + t.replace(/^v/i, '') : 'v' + t;
 }
+
 function compareSemverTags(a, b) {
     const pa = String(a).replace(/^v/i, '').split('.').map(n => parseInt(n || '0', 10));
     const pb = String(b).replace(/^v/i, '').split('.').map(n => parseInt(n || '0', 10));
@@ -48,16 +140,122 @@ function compareSemverTags(a, b) {
     }
     return 0;
 }
+
 function semverGte(a, b) { return compareSemverTags(ensureV(a), ensureV(b)) >= 0; }
+
 function cdnUrlFor(version) {
     return 'https://cdn.jsdelivr.net/gh/' + CDN_REPO + '@' + version + '/' + CDN_FILE_PATH;
 }
+
 function sriSidecarUrlFor(cdnScriptUrl) { return cdnScriptUrl + '.sha384'; }
+
 function extractVersionFromCdn(url) {
     const m = url && url.match(/@([^/]+)/);
     return m ? ensureV(m[1]) : null;
 }
+
 function getFallbackVersion() { return MIN_TAG; }
+
+// Determine the visual state for the small Dev trigger button.
+// Returns one of: 'local' | 'pinned' | 'earlier' | 'later' | 'cdn' (fallback)
+function getDevTriggerState() {
+    if (selectedSource === 'local') return 'local';
+    if (selectedSource !== 'cdn') return 'cdn';
+
+    try {
+        const chosen = ensureV(localStorage.getItem(LS_VERSION_KEY) || selectedCdnVersion || MIN_TAG);
+        const pinned = ensureV(PROD_PINNED_VERSION || MIN_TAG);
+        const comparison = compareSemverTags(chosen, pinned);
+
+        if (comparison === 0) return 'pinned';
+        return comparison < 0 ? 'earlier' : 'later';
+    } catch (e) {
+        return 'cdn';
+    }
+}
+
+// Unified function to apply visual state to elements
+function applyVisualState(element, state) {
+    if (!element || !element.classList) return;
+
+    const stateClasses = ['kf-state-local', 'kf-state-pinned', 'kf-state-earlier', 'kf-state-later'];
+    element.classList.remove(...stateClasses);
+    element.classList.add('kf-state-' + state);
+}
+
+function applyDevTriggerState(btn) {
+    const state = getDevTriggerState();
+    applyVisualState(btn, state);
+    try {
+        btn.setAttribute('aria-label', 'Open developer controls — ' + state);
+    } catch (e) { }
+}
+
+// Apply the same visual state to the switcher title so it matches the small dev trigger.
+function applySwitcherState(box) {
+    try {
+        if (!box) return;
+        const title = box.querySelector('.title');
+        const state = getDevTriggerState();
+
+        // Apply state to both title and box
+        applyVisualState(title, state);
+        applyVisualState(box, state);
+
+        // Also update small dev trigger if present
+        const trigger = document.getElementById('kf-dev-trigger');
+        if (trigger) applyDevTriggerState(trigger);
+    } catch (e) { /* ignore */ }
+}
+
+function resolveKnackFunctionsUrlAndVersion() {
+    // Non-developers should load the pinned production version for stability
+    if (!window.isDeveloper) {
+        const version = PROD_PINNED_VERSION || MIN_TAG;
+        return { url: cdnUrlFor(version), version };
+    }
+    if (selectedSource === 'cdn') {
+        const stored = ensureV(localStorage.getItem(LS_VERSION_KEY) || selectedCdnVersion || MIN_TAG);
+        const version = semverGte(stored, MIN_TAG) ? stored : MIN_TAG;
+        const url = cdnUrlFor(version);
+        return { url, version };
+    }
+    return { url: SOURCES.local, version: null };
+}
+
+function handleSourceChange() {
+    localStorage.setItem('forcingReload', 'true');
+    localStorage.setItem(LS_SOURCE_KEY, selectedSource);
+    const ts = Date.now();
+    const sep = window.location.href.indexOf('?') === -1 ? '?' : '&';
+    const newUrl = window.location.href + sep + '_reload=' + ts;
+    try {
+        setTimeout(function() {
+            window.location.replace(newUrl);
+            setTimeout(function() { window.location.reload(true); }, 100);
+        }, 50);
+    } catch (e) {
+        window.location.href = newUrl;
+    }
+}
+
+function showLocalServerNotification() {
+    if (localStorage.getItem('forcingReload') === 'true') return;
+    const n = document.createElement('div');
+    n.className = 'kf-loader-notice info';
+    n.textContent = 'Local server unavailable. Using CDN instead.';
+    document.body.appendChild(n);
+    setTimeout(function() { n.remove(); }, 5000);
+}
+
+function showCdnErrorNotification() {
+    if (localStorage.getItem('forcingReload') === 'true') return;
+    const n = document.createElement('div');
+    n.className = 'kf-loader-notice error';
+    n.textContent = 'CDN script failed to load (or SRI sidecar missing).';
+    document.body.appendChild(n);
+    setTimeout(function() { n.remove(); }, 7000);
+}
 
 async function fetchCdnMeta() {
     const res = await fetch(JSDELIVR_META_URL, { method: 'GET' });
@@ -103,148 +301,76 @@ async function getAvailableVersions() {
     return { available, latest };
 }
 
-// Decide initial source
-const defaultSource = window.isDeveloper ? 'local' : 'cdn';
-let selectedSource = localStorage.getItem(LS_SOURCE_KEY) || defaultSource;
-if (!['local', 'cdn'].includes(selectedSource)) {
-    selectedSource = defaultSource;
-    localStorage.setItem(LS_SOURCE_KEY, selectedSource);
-}
-
-// Version selection (pinned if present)
-let selectedCdnVersion = ensureV(localStorage.getItem(LS_VERSION_KEY) || '') || null;
-
 // Ensure we have a valid (>= MIN_TAG) version with sidecar; repair if needed
 // Only run heavy CDN metadata checks for developers
-if (window.isDeveloper) (async function ensureVersion() {
-    try {
-        const { available, latest } = await getAvailableVersions();
-        versionsCache = available;
-        latestTagCache = latest;
-
-        const stored = ensureV(localStorage.getItem(LS_VERSION_KEY) || '');
-        const needsRepair =
-            !stored ||
-            !semverGte(stored, MIN_TAG) ||
-            !available.includes(stored);
-
-        if (needsRepair) {
-            const pin = latest || MIN_TAG;
-            console.warn('Pinned version invalid or too old; switching to', pin);
-            localStorage.setItem(LS_VERSION_KEY, pin);
-            selectedCdnVersion = pin;
-            if (selectedSource === 'cdn') handleSourceChange();
-        } else {
-            // normalise stored form
-            if (stored !== localStorage.getItem(LS_VERSION_KEY)) {
-                localStorage.setItem(LS_VERSION_KEY, stored);
-            }
-            selectedCdnVersion = stored;
-        }
-    } catch (err) {
-        console.warn('Could not resolve available versions; using minimum. Reason:', err && err.message);
-        const fallback = MIN_TAG;
-        localStorage.setItem(LS_VERSION_KEY, fallback);
-        selectedCdnVersion = fallback;
-        if (selectedSource === 'cdn') handleSourceChange();
-    }
-})();
-
-function resolveKnackFunctionsUrlAndVersion() {
-    // Non-developers should load the pinned production version for stability
-    if (!window.isDeveloper) {
-        const version = PROD_PINNED_VERSION || MIN_TAG;
-        return { url: cdnUrlFor(version), version };
-    }
-    if (selectedSource === 'cdn') {
-        const stored = ensureV(localStorage.getItem(LS_VERSION_KEY) || selectedCdnVersion || MIN_TAG);
-        const version = semverGte(stored, MIN_TAG) ? stored : MIN_TAG;
-        const url = cdnUrlFor(version);
-        return { url, version };
-    }
-    return { url: SOURCES.local, version: null };
-}
-
-// Local server reachability (fallback to CDN if not reachable)
-if (selectedSource === 'local' && window.isDeveloper) {
-    (async function checkLocalServer() {
-        const originalSource = selectedSource;
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1500);
-            const response = await fetch(SOURCES.local, { method: 'HEAD', signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (!response.ok) throw new Error('HTTP ' + response.status);
-        } catch (error) {
-            console.warn('Local server is not available:', error && error.message);
-            selectedSource = 'cdn';
-            localStorage.setItem(LS_SOURCE_KEY, selectedSource);
-            showLocalServerNotification();
-            if (originalSource !== selectedSource) handleSourceChange();
-        }
-    })();
-}
-
-function handleSourceChange() {
-    localStorage.setItem('forcingReload', 'true');
-    localStorage.setItem(LS_SOURCE_KEY, selectedSource);
-    const ts = Date.now();
-    const sep = window.location.href.indexOf('?') === -1 ? '?' : '&';
-    const newUrl = window.location.href + sep + '_reload=' + ts;
-    try {
-        setTimeout(function() {
-            window.location.replace(newUrl);
-            setTimeout(function() { window.location.reload(true); }, 100);
-        }, 50);
-    } catch (e) {
-        window.location.href = newUrl;
-    }
-}
-
-function showLocalServerNotification() {
-    if (localStorage.getItem('forcingReload') === 'true') return;
-    const n = document.createElement('div');
-    n.className = 'kf-loader-notice info';
-    n.textContent = 'Local server unavailable. Using CDN instead.';
-    document.body.appendChild(n);
-    setTimeout(function() { n.remove(); }, 5000);
-}
-function showCdnErrorNotification() {
-    if (localStorage.getItem('forcingReload') === 'true') return;
-    const n = document.createElement('div');
-    n.className = 'kf-loader-notice error';
-    n.textContent = 'CDN script failed to load (or SRI sidecar missing).';
-    document.body.appendChild(n);
-    setTimeout(function() { n.remove(); }, 7000);
-}
-
-// Developer UI: Lazy-load Source + Version switcher
-// Helper: inject the full asset-loader styles (id: kf-assetloader-styles)
+// ============================================================================
+// UTILITY FUNCTIONS SECTION - Moved to bottom for better code organization
+// ============================================================================
 function injectAssetLoaderStyles() {
     if (document.getElementById('kf-assetloader-styles')) return;
     try {
-        const css = `
-#knackFunctionsSourceSwitcher { position: fixed; bottom: 20px; left: 20px; background: #ffffffee; padding: 12px; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,0.18); z-index: 9999; font-size: 13px; border: 1px solid #e1e1e1; width: 300px; max-width: calc(100% - 40px); }
-#knackFunctionsSourceSwitcher .title { font-weight: 600; color: #222; margin: 0 0 10px 0; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px; border-radius:6px; }
-#knackFunctionsSourceSwitcher select { padding: 6px 10px; border-radius: 4px; border: 1px solid #ccc; background: #fff; cursor: pointer; outline: none; min-width: 120px; }
-#knackFunctionsSourceSwitcher button { padding: 6px 10px; border-radius: 4px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
-.kf-switcher-close { background: transparent; border: none; color: #666; font-size: 16px; line-height: 1; padding: 4px 6px; cursor: pointer; border-radius: 4px; }
-.kf-switcher-close:hover { background: rgba(0,0,0,0.06); color: #111; }
-.kf-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+    const css = `
+/* Modernized switcher - positioning based on SWITCHER_POSITION */
+#knackFunctionsSourceSwitcher { position: fixed; bottom: 20px; ${SWITCHER_POSITION === 'right' ? 'right' : 'left'}: 20px; background: rgba(255,255,255,0.98); padding: 14px; border-radius: 12px; box-shadow: 0 10px 30px rgba(12,12,12,0.18); z-index: 9999; font-size: 13px; border: 2px solid rgba(16,24,40,0.06); width: 340px; max-width: calc(100% - 40px); font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; transition: border-color 200ms ease; }
+#knackFunctionsSourceSwitcher .title { font-weight: 700; color: #fff; margin: 0 0 12px 0; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border-radius:8px; box-shadow: inset 0 -1px 0 rgba(255,255,255,0.03); font-size:14px; }
+#knackFunctionsSourceSwitcher .title .label { display:block; color:inherit; }
+#knackFunctionsSourceSwitcher .title small { display:block; font-weight:600; opacity:0.9; font-size:12px; color:rgba(255,255,255,0.92); }
+#knackFunctionsSourceSwitcher .content { display:block; padding: 6px 2px 2px 2px; }
+#knackFunctionsSourceSwitcher select { padding: 8px 10px; border-radius: 8px; border: 2px solid rgba(16,24,40,0.15); background: #fff; cursor: pointer; outline: none; min-width: 150px; box-shadow: 0 6px 18px rgba(11,22,44,0.08); font-weight: 500; color: #2c3e50; transition: border-color 200ms ease, box-shadow 200ms ease; }
+#knackFunctionsSourceSwitcher select:hover { border-color: rgba(16,24,40,0.25); box-shadow: 0 8px 24px rgba(11,22,44,0.12); }
+#knackFunctionsSourceSwitcher select:focus { border-color: #007bff; box-shadow: 0 0 0 3px rgba(0,123,255,0.1); }
+#knackFunctionsSourceSwitcher button { padding: 8px 14px; border-radius: 8px; border: 2px solid rgba(16,24,40,0.15); background: linear-gradient(90deg, #f8f9fa, #fff); cursor: pointer; font-weight: 600; color: #2c3e50; transition: all 200ms ease; box-shadow: 0 4px 12px rgba(11,22,44,0.06); }
+#knackFunctionsSourceSwitcher button:hover { border-color: #007bff; background: linear-gradient(90deg, #e3f2fd, #f0f9ff); color: #0056b3; transform: translateY(-1px); box-shadow: 0 6px 18px rgba(11,22,44,0.1); }
+#knackFunctionsSourceSwitcher button:active { transform: translateY(0); }
+.kf-switcher-close { background: #fff !important; border: 2px solid #000 !important; color: #000 !important; font-size: 16px !important; font-weight: 900 !important; line-height: 1 !important; padding: 0 !important; cursor: pointer !important; border-radius: 50% !important; transition: all 120ms ease !important; text-shadow: none !important; box-shadow: 0 2px 8px rgba(0,0,0,0.6) !important; min-width: 28px !important; min-height: 28px !important; width: 28px !important; height: 28px !important; display: flex !important; align-items: center !important; justify-content: center !important; position: relative !important; z-index: 100 !important; margin: 0 !important; flex-shrink: 0 !important; font-family: Arial, sans-serif !important; text-align: center !important; vertical-align: middle !important; }
+.kf-switcher-close:hover { background: #f0f0f0 !important; border-color: #000 !important; transform: scale(1.15) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.7) !important; }
+.kf-row { display:flex; gap:10px; align-items:center; margin-bottom:10px; }
+.kf-row > div:first-child { min-width: 64px; font-weight:600; color:#324055; }
 .kf-row-version { margin-bottom:6px; }
-.kf-row-latest { margin-bottom:4px; }
-.kf-loader-notice { position: fixed; top: 10px; right: 10px; color: #fff; padding: 10px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); z-index: 9999; font-size: 14px; }
-.kf-loader-notice.info { background: #ff9800; }
-.kf-loader-notice.error { background: #d32f2f; }
-/* nicer Dev trigger */
-.kf-dev-trigger, #kf-dev-trigger { position: fixed; bottom: 20px; left: 20px; z-index: 10000; padding: 8px 10px; border-radius: 8px; background: linear-gradient(135deg,#0d6efd,#6610f2); color: #fff; border: none; cursor: pointer; font-size: 13px; box-shadow: 0 6px 18px rgba(13,110,253,0.24); transition: transform 120ms ease, box-shadow 120ms ease; }
-.kf-dev-trigger:hover, #kf-dev-trigger:hover { transform: translateY(-2px); box-shadow: 0 10px 22px rgba(13,110,253,0.28); }
+.kf-row-buttons { margin-bottom:6px; display:flex; justify-content:space-between; gap:10px; }
+.kf-row-buttons button { min-width: 120px; flex: 1; }
+.kf-loader-notice { position: fixed; top: 14px; right: 14px; color: #fff; padding: 10px 12px; border-radius: 8px; box-shadow: 0 6px 18px rgba(12,24,40,0.2); z-index: 9999; font-size: 14px; }
+.kf-loader-notice.info { background: linear-gradient(90deg,#fb8c00,#ffb74d); }
+.kf-loader-notice.error { background: linear-gradient(90deg,#d32f2f,#f44336); }
+/* Dev trigger visual states mirror the same palette as the title */
+.kf-dev-trigger, #kf-dev-trigger { position: fixed; bottom: 20px; ${SWITCHER_POSITION === 'right' ? 'right' : 'left'}: 20px; z-index: 10000; padding: 8px 12px; border-radius: 10px; color: #fff; border: none; cursor: pointer; font-size: 13px; transition: transform 120ms ease, box-shadow 120ms ease; box-shadow: 0 6px 18px rgba(16,24,40,0.12); }
+.kf-dev-trigger:hover, #kf-dev-trigger:hover { transform: translateY(-2px); }
+/* State: pinned (production CDN pinned) - green */
+.kf-dev-trigger.kf-state-pinned, #kf-dev-trigger.kf-state-pinned { background: linear-gradient(90deg,#198754,#28a745); box-shadow: 0 8px 22px rgba(25,135,84,0.18); color: #fff !important; }
+/* State: local - orange */
+.kf-dev-trigger.kf-state-local, #kf-dev-trigger.kf-state-local { background: linear-gradient(90deg,#ff9800,#ffb74d); box-shadow: 0 8px 22px rgba(255,152,0,0.16); color: #1a1a1a !important; }
+/* State: earlier than pinned - red */
+.kf-dev-trigger.kf-state-earlier, #kf-dev-trigger.kf-state-earlier { background: linear-gradient(90deg,#d32f2f,#f05454); box-shadow: 0 8px 22px rgba(211,47,47,0.16); color: #fff !important; }
+/* State: later than pinned - purple */
+.kf-dev-trigger.kf-state-later, #kf-dev-trigger.kf-state-later { background: linear-gradient(90deg,#6f42c1,#8e44ff); box-shadow: 0 8px 22px rgba(111,66,193,0.16); color: #fff !important; }
 
-/* Source-based color accents */
-.kf-source-local .title { background: linear-gradient(90deg,#198754,#28a745); color: #fff; }
-.kf-source-cdn   .title { background: linear-gradient(90deg,#0d6efd,#6610f2); color: #fff; }
-.kf-source-local select, .kf-source-local button { border-color: #198754; }
-.kf-source-cdn select, .kf-source-cdn button { border-color: #0d6efd; }
+/* Title states (match the dev trigger colors) with improved text contrast */
+.kf-source-local .title.kf-state-local, .title.kf-state-local { background: linear-gradient(90deg,#ff9800,#ffb74d); color: #1a1a1a !important; }
+.kf-source-cdn .title.kf-state-pinned, .title.kf-state-pinned { background: linear-gradient(90deg,#198754,#28a745); color: #fff !important; }
+.title.kf-state-earlier { background: linear-gradient(90deg,#d32f2f,#f05454); color: #fff !important; }
+.title.kf-state-later { background: linear-gradient(90deg,#6f42c1,#8e44ff); color: #fff !important; }
+
+/* Ensure close button text remains visible on all backgrounds */
+.kf-source-local .title.kf-state-local .kf-switcher-close, .title.kf-state-local .kf-switcher-close { background: #1a1a1a !important; color: #fff !important; border-color: #1a1a1a !important; }
+.kf-source-local .title.kf-state-local .kf-switcher-close:hover, .title.kf-state-local .kf-switcher-close:hover { background: #333 !important; border-color: #333 !important; }
+
+/* Switcher border states (match the title colors) */
+#knackFunctionsSourceSwitcher:has(.title.kf-state-pinned) { border-color: rgba(25,135,84,0.3); }
+#knackFunctionsSourceSwitcher:has(.title.kf-state-local) { border-color: rgba(255,152,0,0.3); }
+#knackFunctionsSourceSwitcher:has(.title.kf-state-earlier) { border-color: rgba(211,47,47,0.3); }
+#knackFunctionsSourceSwitcher:has(.title.kf-state-later) { border-color: rgba(111,66,193,0.3); }
+
+/* Fallback for browsers without :has() support */
+.kf-source-local.kf-state-local #knackFunctionsSourceSwitcher,
+#knackFunctionsSourceSwitcher.kf-state-local { border-color: rgba(255,152,0,0.3); }
+.kf-source-cdn.kf-state-pinned #knackFunctionsSourceSwitcher,
+#knackFunctionsSourceSwitcher.kf-state-pinned { border-color: rgba(25,135,84,0.3); }
+#knackFunctionsSourceSwitcher.kf-state-earlier { border-color: rgba(211,47,47,0.3); }
+#knackFunctionsSourceSwitcher.kf-state-later { border-color: rgba(111,66,193,0.3); }
+
+/* Source-based subtle accents for controls */
+.kf-source-local select, .kf-source-local button { border-color: rgba(255,152,0,0.16); }
+.kf-source-cdn select, .kf-source-cdn button { border-color: rgba(13,110,253,0.12); }
         `;
         const style = document.createElement('style');
         style.id = 'kf-assetloader-styles';
@@ -255,21 +381,16 @@ function injectAssetLoaderStyles() {
     }
 }
 
-// NOTE: non-essential debug logs removed for production; keep warnings/errors/info only.
-
 async function addSourceSwitcher(attempts = 0) {
-    // entry (no debug log)
     // Dynamic check: the static `window.isDeveloper` flag may have been computed before the
     // Knack API was available. Re-evaluate at runtime so the switcher appears for real devs.
     let runtimeIsDev = false;
     try {
         if (window.isDeveloper) {
             runtimeIsDev = true;
-            // Runtime dev detected
         } else if (typeof Knack !== 'undefined' && typeof Knack.getUserRoleNames === 'function') {
             try {
                 const roles = Knack.getUserRoleNames();
-                // Knack roles retrieved
                 let roleList = [];
                 if (Array.isArray(roles)) roleList = roles;
                 else if (typeof roles === 'string') roleList = roles.split(/\s*,\s*/).filter(Boolean);
@@ -287,13 +408,10 @@ async function addSourceSwitcher(attempts = 0) {
     // If Knack isn't defined yet, retry a few times (small delay) because the initial
     // script may execute before Knack is injected on the page.
     if (!runtimeIsDev) {
-    // runtimeIsDev is false
         if (typeof Knack === 'undefined' && attempts < 6) {
-            // Knack not present yet: retry a few times silently
             setTimeout(function() { addSourceSwitcher(attempts + 1); }, 400);
             return;
         }
-    devLog('[assetLoader] Not a developer or max attempts reached; not showing dev switcher.');
         return; // not a developer — nothing to do
     }
 
@@ -302,14 +420,11 @@ async function addSourceSwitcher(attempts = 0) {
 
     // Create a small trigger button that opens the full UI when clicked
     if (!document.getElementById('kf-dev-trigger')) {
-    // Creating dev trigger button
         const btn = document.createElement('button');
         btn.id = 'kf-dev-trigger';
         btn.type = 'button';
         btn.title = 'Show dev controls';
         btn.textContent = 'Dev';
-        // Styling moved to external CSS (`assetLoader.css`). Add a class so styles are applied when
-        // you copy the CSS into your project.
         btn.className = 'kf-dev-trigger';
         btn.setAttribute('aria-label', 'Open developer controls');
         // Ensure full styles are present so the button and switcher are styled immediately
@@ -325,14 +440,15 @@ async function addSourceSwitcher(attempts = 0) {
             }
         });
         document.body.appendChild(btn);
+        // apply initial visual state (pinned/local/earlier/later)
+        try { applyDevTriggerState(btn); } catch (e) { /* ignore */ }
     }
 }
 
 // Build the full source switcher UI (runs only when the dev triggers it)
 async function buildSourceSwitcher() {
-    // buildSourceSwitcher invoked
     if (document.getElementById('knackFunctionsSourceSwitcher')) return;
-    // Create the container box and title (was accidentally removed earlier)
+    // Create the container box and title
     const box = document.createElement('div');
     box.id = 'knackFunctionsSourceSwitcher';
     // Add a class to reflect current source so we can color the UI accordingly
@@ -357,6 +473,9 @@ async function buildSourceSwitcher() {
     title.appendChild(closeBtn);
     box.appendChild(title);
 
+    // Apply title state (pinned/local/earlier/later)
+    try { applySwitcherState(box); } catch (e) { /* ignore */ }
+
     // Source selector
     const srcRow = document.createElement('div');
     srcRow.className = 'kf-row kf-row-source';
@@ -376,6 +495,8 @@ async function buildSourceSwitcher() {
             box.classList.remove('kf-source-local', 'kf-source-cdn');
             box.classList.add(selectedSource === 'local' ? 'kf-source-local' : 'kf-source-cdn');
         }
+        // update tiny dev trigger state if present
+        try { const t = document.getElementById('kf-dev-trigger'); if (t) applyDevTriggerState(t); } catch (e) { /* ignore */ }
         handleSourceChange();
     });
     srcRow.appendChild(srcLabel); srcRow.appendChild(srcSelect);
@@ -385,13 +506,13 @@ async function buildSourceSwitcher() {
     const verRow = document.createElement('div');
     verRow.className = 'kf-row kf-row-version';
     const verLabel = document.createElement('div');
-    verLabel.textContent = 'Version (≥ ' + MIN_TAG + '):';
+    verLabel.textContent = 'Version';
     const verSelect = document.createElement('select');
 
     const pinned = ensureV(localStorage.getItem(LS_VERSION_KEY) || selectedCdnVersion || MIN_TAG);
     const seed = document.createElement('option');
     seed.value = pinned;
-    seed.textContent = pinned + ' (pinned)';
+    seed.textContent = pinned;
     seed.selected = true;
     verSelect.appendChild(seed);
 
@@ -400,6 +521,8 @@ async function buildSourceSwitcher() {
         if (chosen) {
             localStorage.setItem(LS_VERSION_KEY, chosen);
             selectedCdnVersion = chosen;
+            // Update visual state immediately
+            try { applySwitcherState(box); } catch (e) { /* ignore */ }
             if (selectedSource === 'cdn') handleSourceChange();
         }
     });
@@ -407,9 +530,10 @@ async function buildSourceSwitcher() {
     verRow.appendChild(verLabel); verRow.appendChild(verSelect);
     box.appendChild(verRow);
 
-    // Latest button
-    const latestRow = document.createElement('div');
-    latestRow.className = 'kf-row kf-row-latest';
+    // Buttons row (Latest and Production side by side)
+    const buttonsRow = document.createElement('div');
+    buttonsRow.className = 'kf-row kf-row-buttons';
+
     const latestBtn = document.createElement('button');
     latestBtn.textContent = 'Set to latest';
     latestBtn.addEventListener('click', async function() {
@@ -428,8 +552,34 @@ async function buildSourceSwitcher() {
             console.warn('Could not fetch latest version:', e && e.message);
         }
     });
-    latestRow.appendChild(latestBtn);
-    box.appendChild(latestRow);
+
+    const prodBtn = document.createElement('button');
+    prodBtn.textContent = 'Set to production';
+    prodBtn.addEventListener('click', function() {
+        try {
+            const prodVersion = ensureV(PROD_PINNED_VERSION || MIN_TAG);
+            localStorage.setItem(LS_VERSION_KEY, prodVersion);
+            selectedCdnVersion = prodVersion;
+            // Update the version selector to show the production version
+            if (verSelect) {
+                for (let i = 0; i < verSelect.options.length; i++) {
+                    if (verSelect.options[i].value === prodVersion) {
+                        verSelect.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            // Update visual state
+            try { applySwitcherState(box); } catch (e) { /* ignore */ }
+            if (selectedSource === 'cdn') handleSourceChange();
+        } catch (e) {
+            console.warn('Could not set production version:', e && e.message);
+        }
+    });
+
+    buttonsRow.appendChild(latestBtn);
+    buttonsRow.appendChild(prodBtn);
+    box.appendChild(buttonsRow);
 
     // Ensure styles are injected for the switcher (single source of truth)
     injectAssetLoaderStyles();
@@ -454,6 +604,8 @@ async function buildSourceSwitcher() {
                 if (vtag === current) o.selected = true;
                 verSelect.appendChild(o);
             });
+            // Update title state once versions are populated (selectedCdnVersion may have changed)
+            try { applySwitcherState(box); } catch (e) { /* ignore */ }
         } else {
             console.warn('No available versions ≥ ' + MIN_TAG + '; keeping pinned entry only.');
             verSelect.options[0].value = current;
@@ -464,33 +616,6 @@ async function buildSourceSwitcher() {
         console.warn('Failed to load versions for selector; keeping pinned entry. Reason:', e && e.message);
     }
 }
-
-// Resolve URL & version for this page load
-const resolved = resolveKnackFunctionsUrlAndVersion();
-let KNACK_FUNCTIONS_URL = resolved.url;
-let KNACK_FUNCTIONS_VERSION = resolved.version;
-
-if (!KNACK_FUNCTIONS_URL) {
-    console.warn('Selected source has no URL; forcing CDN with minimum version.');
-    selectedSource = 'cdn';
-    const fallback = ensureV(localStorage.getItem(LS_VERSION_KEY) || selectedCdnVersion || MIN_TAG);
-    localStorage.setItem(LS_SOURCE_KEY, selectedSource);
-    localStorage.setItem(LS_VERSION_KEY, fallback);
-    KNACK_FUNCTIONS_URL = cdnUrlFor(fallback);
-    KNACK_FUNCTIONS_VERSION = fallback;
-}
-
-// Files to load (SRI fetched dynamically for the CDN file)
-loadExternalFiles([
-    { type: 'script', url: 'https://unpkg.com/react@18/umd/react.development.js' },
-    { type: 'script', url: 'https://unpkg.com/react-dom@18/umd/react-dom.development.js' },
-    { type: 'script', url: KNACK_FUNCTIONS_URL }, // SRI applied dynamically
-    { type: 'script', url: 'https://ctrnd.s3.amazonaws.com/Lib/KTL/KTL_Start.js' },
-    { type: 'favicon', url: 'https://arcproject.org.uk/wp-content/uploads/2020/01/cropped-favicon-square-2-32x32.jpg' }
-]);
-
-// NOTE: CSS for the loader UI has been extracted to `assestLoader.css` in this folder
-// for convenience (so you can copy/paste it). We do not auto-inject it by default.
 
 function loadExternalFiles(externalFiles) {
 
