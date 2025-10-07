@@ -3000,13 +3000,13 @@ function filterSelectByText(viewId, fieldTofilter, textToMatch){
     });
 }
 
-   /** Trigger a webhook
-     * @param {string} webhookURL - Webhook URL including any params to pass in
-     * @param {object} data - data object to be sent to the webhook
-     * @param {string} [webhookName='Unnamed Webhook'] - Name for webhook used for console log
-     * @param {boolean} [isSecure=false] - Optional flag to indicate if user token should be included
-     * @returns {Promise<{success: boolean, data: object|string|null, error: string|null}>} */
-   async function triggerWebhook(webhookURL, data, webhookName = 'Unnamed Webhook', isSecure = false) {
+/** Trigger a webhook
+ * @param {string} webhookURL - Webhook URL including any params to pass in
+ * @param {object} data - data object to be sent to the webhook
+ * @param {string} [webhookName='Unnamed Webhook'] - Name for webhook used for console log
+ * @param {boolean} [isSecure=false] - Optional flag to indicate if user token should be included
+ * @returns {Promise<{success: boolean, data: object|string|null, error: string|null}>} */
+async function triggerWebhook(webhookURL, data, webhookName = 'Unnamed Webhook', isSecure = false) {
     if (!webhookURL.startsWith('https://')) {
         const errorMsg = `Invalid webhook URL: ${webhookURL} in webhook: ${webhookName}`;
         console.error(errorMsg);

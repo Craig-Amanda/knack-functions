@@ -120,9 +120,9 @@ loadExternalFiles([
     { type: 'favicon', url: 'https://arcproject.org.uk/wp-content/uploads/2020/01/cropped-favicon-square-2-32x32.jpg' }
 ]);
 
-// ===================================================================
-// UTILITY FUNCTIONS AND UI COMPONENTS
-// ===================================================================
+// =========================================================================
+// UTILITY FUNCTIONS AND UI COMPONENTS - PLACE AT BOTTOM AFTER KTL BRACKETS
+// =========================================================================
 
 // Helpers
 function ensureV(tag) {
@@ -650,10 +650,21 @@ function loadExternalFiles(externalFiles) {
             function next() {
                 if (index >= files.length) {
                     console.log('all external files loaded');
-                    loadKtl($, callback, (typeof KnackApp === 'function' ? KnackApp : null), '0.32.3', 'full');
+
+                    // Enhanced callback that adds the source switcher after KTL loads
+                    const enhancedCallback = function(...args) {
+                        // Call the original callback first (if provided)
+                        if (typeof callback === 'function') {
+                            callback.apply(this, args);
+                        }
+
+                        // Then add the source switcher after KTL initialization is complete
+                        console.log('[assetLoader] KTL loaded — calling addSourceSwitcher()');
+                        addSourceSwitcher();
+                    };
+
+                    loadKtl($, enhancedCallback, (typeof KnackApp === 'function' ? KnackApp : null), '0.32.3', 'full');
                     Knack.hideSpinner();
-                    console.log('[assetLoader] All external files loaded — calling addSourceSwitcher()');
-                    addSourceSwitcher();
                     return;
                 }
 
