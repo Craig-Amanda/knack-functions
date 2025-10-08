@@ -16,8 +16,8 @@ const JSDELIVR_META_URL = 'https://data.jsdelivr.com/v1/package/gh/' + CDN_REPO;
 const MIN_TAG = 'v1.0.4';
 const PROD_PINNED_VERSION = 'v1.0.4';
 const SWITCHER_POSITION = 'right'; // 'left' | 'right'
-const IFRAME_WND_ID = 'iFrameWnd';
-window.IFRAME_WND_ID = IFRAME_WND_ID;
+const IFRAME_WINDOW_ID = 'iFrameWnd';
+window.IFRAME_WINDOW_ID = IFRAME_WINDOW_ID;
 
 // --- LocalStorage Keys ---
 const LS_SOURCE_KEY = 'knackFunctionsSource';   // 'local' | 'cdn'
@@ -41,7 +41,7 @@ let selectedCdnVersion = ensureV(localStorage.getItem(LS_VERSION_KEY) || '') || 
  * @returns {boolean} True if running in iframe, false otherwise
  */
 function isInIframe() {
-    return (window.self.frameElement && (window.self.frameElement.id === IFRAME_WND_ID)) ? true : false;
+    return (window.self.frameElement && (window.self.frameElement.id === IFRAME_WINDOW_ID)) ? true : false;
 }
 
 /**
