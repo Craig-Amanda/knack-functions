@@ -16,6 +16,8 @@ const JSDELIVR_META_URL = 'https://data.jsdelivr.com/v1/package/gh/' + CDN_REPO;
 const MIN_TAG = 'v1.0.4';
 const PROD_PINNED_VERSION = 'v1.0.4';
 const SWITCHER_POSITION = 'right'; // 'left' | 'right'
+const IFRAME_WND_ID = 'iFrameWnd';
+window.IFRAME_WND_ID = IFRAME_WND_ID;
 
 // --- LocalStorage Keys ---
 const LS_SOURCE_KEY = 'knackFunctionsSource';   // 'local' | 'cdn'
@@ -32,6 +34,27 @@ let versionsCache = null;   // available versions (>= MIN_TAG) that have both fi
 let latestTagCache = null;  // latest among available
 let selectedSource = localStorage.getItem(LS_SOURCE_KEY) || (window.isDeveloper ? 'local' : 'cdn');
 let selectedCdnVersion = ensureV(localStorage.getItem(LS_VERSION_KEY) || '') || null;
+
+// --- Helper Functions ---
+/**
+ * Checks if the current window is running inside a Knack iframe
+ * @returns {boolean} True if running in iframe, false otherwise
+ */
+function isInIframe() {
+    return (window.self.frameElement && (window.self.frameElement.id === IFRAME_WND_ID)) ? true : false;
+}
+
+/**
+ * Safe console logging that respects iframe context
+ * @param {string} level - Console level ('log', 'warn', 'error', 'info')
+ * @param {...any} args - Arguments to log
+ */
+function safeLog(level, ...args) {
+    if (isInIframe()) return; // Skip logging in iframe to avoid duplicates
+    if (console[level]) {
+        console[level](...args);
+    }
+}
 
 // --- Initial Setup ---
 // Validate and repair selectedSource
@@ -56,7 +79,7 @@ if (window.isDeveloper) (async function ensureVersion() {
 
         if (needsRepair) {
             const pin = latest || MIN_TAG;
-            console.warn('Pinned version invalid or too old; switching to', pin);
+            safeLog('warn', 'Pinned version invalid or too old; switching to', pin);
             localStorage.setItem(LS_VERSION_KEY, pin);
             selectedCdnVersion = pin;
             if (selectedSource === 'cdn') handleSourceChange();
@@ -68,7 +91,7 @@ if (window.isDeveloper) (async function ensureVersion() {
             selectedCdnVersion = stored;
         }
     } catch (err) {
-        console.warn('Could not resolve available versions; using minimum. Reason:', err && err.message);
+        safeLog('warn', 'Could not resolve available versions; using minimum. Reason:', err && err.message);
         const fallback = MIN_TAG;
         localStorage.setItem(LS_VERSION_KEY, fallback);
         selectedCdnVersion = fallback;
@@ -87,7 +110,7 @@ if (selectedSource === 'local' && window.isDeveloper) {
             clearTimeout(timeoutId);
             if (!response.ok) throw new Error('HTTP ' + response.status);
         } catch (error) {
-            console.warn('Local server is not available:', error && error.message);
+            safeLog('warn', 'Local server is not available:', error && error.message);
             selectedSource = 'cdn';
             localStorage.setItem(LS_SOURCE_KEY, selectedSource);
             showLocalServerNotification();
@@ -102,7 +125,7 @@ let KNACK_FUNCTIONS_URL = resolved.url;
 let KNACK_FUNCTIONS_VERSION = resolved.version;
 
 if (!KNACK_FUNCTIONS_URL) {
-    console.warn('Selected source has no URL; forcing CDN with minimum version.');
+    safeLog('warn', 'Selected source has no URL; forcing CDN with minimum version.');
     selectedSource = 'cdn';
     const fallback = ensureV(localStorage.getItem(LS_VERSION_KEY) || selectedCdnVersion || MIN_TAG);
     localStorage.setItem(LS_SOURCE_KEY, selectedSource);
@@ -124,13 +147,23 @@ loadExternalFiles([
 // UTILITY FUNCTIONS AND UI COMPONENTS - PLACE AT BOTTOM AFTER KTL BRACKETS
 // =========================================================================
 
-// Helpers
+/**
+ * Ensures version string has 'v' prefix
+ * @param {string} tag - Version tag
+ * @returns {string|null} Normalized version string or null
+ */
 function ensureV(tag) {
     if (!tag) return null;
     const t = String(tag).trim();
     return /^v/i.test(t) ? 'v' + t.replace(/^v/i, '') : 'v' + t;
 }
 
+/**
+ * Compares two semantic version tags
+ * @param {string} a - First version
+ * @param {string} b - Second version
+ * @returns {number} -1, 0, or 1 for less than, equal, or greater than
+ */
 function compareSemverTags(a, b) {
     const pa = String(a).replace(/^v/i, '').split('.').map(n => parseInt(n || '0', 10));
     const pb = String(b).replace(/^v/i, '').split('.').map(n => parseInt(n || '0', 10));
@@ -156,8 +189,10 @@ function extractVersionFromCdn(url) {
 
 function getFallbackVersion() { return MIN_TAG; }
 
-// Determine the visual state for the small Dev trigger button.
-// Returns one of: 'local' | 'pinned' | 'earlier' | 'later' | 'cdn' (fallback)
+/**
+ * Determine the visual state for the small Dev trigger button.
+ * @returns {string} One of: 'local' | 'pinned' | 'earlier' | 'later' | 'cdn' (fallback)
+ */
 function getDevTriggerState() {
     if (selectedSource === 'local') return 'local';
     if (selectedSource !== 'cdn') return 'cdn';
@@ -174,7 +209,11 @@ function getDevTriggerState() {
     }
 }
 
-// Unified function to apply visual state to elements
+/**
+ * Unified function to apply visual state to elements
+ * @param {HTMLElement} element - Element to apply state to
+ * @param {string} state - State class to apply
+ */
 function applyVisualState(element, state) {
     if (!element || !element.classList) return;
 
@@ -191,7 +230,10 @@ function applyDevTriggerState(btn) {
     } catch (e) { }
 }
 
-// Apply the same visual state to the switcher title so it matches the small dev trigger.
+/**
+ * Apply the same visual state to the switcher title so it matches the small dev trigger.
+ * @param {HTMLElement} box - Switcher container element
+ */
 function applySwitcherState(box) {
     try {
         if (!box) return;
@@ -241,6 +283,7 @@ function handleSourceChange() {
 
 function showLocalServerNotification() {
     if (localStorage.getItem('forcingReload') === 'true') return;
+    if (isInIframe()) return; // Don't show notifications in iframe
     const n = document.createElement('div');
     n.className = 'kf-loader-notice info';
     n.textContent = 'Local server unavailable. Using CDN instead.';
@@ -250,6 +293,7 @@ function showLocalServerNotification() {
 
 function showCdnErrorNotification() {
     if (localStorage.getItem('forcingReload') === 'true') return;
+    if (isInIframe()) return; // Don't show notifications in iframe
     const n = document.createElement('div');
     n.className = 'kf-loader-notice error';
     n.textContent = 'CDN script failed to load (or SRI sidecar missing).';
@@ -267,7 +311,7 @@ async function fetchCdnMeta() {
     const versions = rawVersions
         .filter(v => /^(?:v)?\d+\.\d+\.\d+$/i.test(String(v)))
         .map(ensureV)
-        .filter(v => semverGte(v, MIN_TAG)); // ⬅️ exclude anything < MIN_TAG
+        .filter(v => semverGte(v, MIN_TAG));
 
     // Prefer provided latest; else compute from filtered list
     const latestRaw = json.tags && json.tags.latest ? json.tags.latest : null;
@@ -277,7 +321,11 @@ async function fetchCdnMeta() {
     return { versions, latest };
 }
 
-// Check that a URL exists (HEAD 200)
+/**
+ * Check that a URL exists (HEAD 200)
+ * @param {string} url - URL to check
+ * @returns {Promise<boolean>} True if URL is accessible
+ */
 async function headOk(url) {
     try {
         const r = await fetch(url, { method: 'HEAD' });
@@ -285,7 +333,10 @@ async function headOk(url) {
     } catch (_) { return false; }
 }
 
-// From metadata, return only versions that actually have BOTH the JS and the .sha384
+/**
+ * From metadata, return only versions that actually have BOTH the JS and the .sha384
+ * @returns {Promise<{available: string[], latest: string|null}>} Available versions info
+ */
 async function getAvailableVersions() {
     const meta = await fetchCdnMeta();
     const candidates = meta.versions || [];
@@ -301,13 +352,9 @@ async function getAvailableVersions() {
     return { available, latest };
 }
 
-// Ensure we have a valid (>= MIN_TAG) version with sidecar; repair if needed
-// Only run heavy CDN metadata checks for developers
-// ============================================================================
-// UTILITY FUNCTIONS SECTION - Moved to bottom for better code organization
-// ============================================================================
 function injectAssetLoaderStyles() {
     if (document.getElementById('kf-assetloader-styles')) return;
+    if (isInIframe()) return; // Don't inject styles in iframe
     try {
     const css = `
 /* Modernized switcher - positioning based on SWITCHER_POSITION */
@@ -381,7 +428,17 @@ function injectAssetLoaderStyles() {
     }
 }
 
+/**
+ * Add source switcher UI for developers only (not in iframes)
+ * @param {number} attempts - Number of retry attempts
+ */
 async function addSourceSwitcher(attempts = 0) {
+    // Skip adding switcher in iframe context
+    if (isInIframe()) {
+        safeLog('log', '[assetLoader] Skipping source switcher in iframe context');
+        return;
+    }
+
     // Dynamic check: the static `window.isDeveloper` flag may have been computed before the
     // Knack API was available. Re-evaluate at runtime so the switcher appears for real devs.
     let runtimeIsDev = false;
@@ -396,12 +453,12 @@ async function addSourceSwitcher(attempts = 0) {
                 else if (typeof roles === 'string') roleList = roles.split(/\s*,\s*/).filter(Boolean);
                 runtimeIsDev = Array.isArray(roleList) && roleList.includes('Developer');
             } catch (e) {
-                console.warn('[assetLoader] Error reading Knack roles', e && e.message);
+                safeLog('warn', '[assetLoader] Error reading Knack roles', e && e.message);
                 runtimeIsDev = false;
             }
         }
     } catch (e) {
-        console.warn('[assetLoader] Error during runtime developer check', e && e.message);
+        safeLog('warn', '[assetLoader] Error during runtime developer check', e && e.message);
         runtimeIsDev = false;
     }
 
@@ -436,7 +493,7 @@ async function addSourceSwitcher(attempts = 0) {
                 btn.remove();
                 await buildSourceSwitcher();
             } catch (e) {
-                console.warn('Failed to open dev switcher', e && e.message);
+                safeLog('warn', 'Failed to open dev switcher', e && e.message);
             }
         });
         document.body.appendChild(btn);
@@ -445,9 +502,13 @@ async function addSourceSwitcher(attempts = 0) {
     }
 }
 
-// Build the full source switcher UI (runs only when the dev triggers it)
+/**
+ * Build the full source switcher UI (runs only when the dev triggers it)
+ */
 async function buildSourceSwitcher() {
     if (document.getElementById('knackFunctionsSourceSwitcher')) return;
+    if (isInIframe()) return; // Don't build switcher in iframe
+
     // Create the container box and title
     const box = document.createElement('div');
     box.id = 'knackFunctionsSourceSwitcher';
@@ -549,7 +610,7 @@ async function buildSourceSwitcher() {
                 if (selectedSource === 'cdn') handleSourceChange();
             }
         } catch (e) {
-            console.warn('Could not fetch latest version:', e && e.message);
+            safeLog('warn', 'Could not fetch latest version:', e && e.message);
         }
     });
 
@@ -573,7 +634,7 @@ async function buildSourceSwitcher() {
             try { applySwitcherState(box); } catch (e) { /* ignore */ }
             if (selectedSource === 'cdn') handleSourceChange();
         } catch (e) {
-            console.warn('Could not set production version:', e && e.message);
+            safeLog('warn', 'Could not set production version:', e && e.message);
         }
     });
 
@@ -607,13 +668,13 @@ async function buildSourceSwitcher() {
             // Update title state once versions are populated (selectedCdnVersion may have changed)
             try { applySwitcherState(box); } catch (e) { /* ignore */ }
         } else {
-            console.warn('No available versions ≥ ' + MIN_TAG + '; keeping pinned entry only.');
+            safeLog('warn', 'No available versions ≥ ' + MIN_TAG + '; keeping pinned entry only.');
             verSelect.options[0].value = current;
             verSelect.options[0].textContent = current + ' (pinned)';
             verSelect.options[0].selected = true;
         }
     } catch (e) {
-        console.warn('Failed to load versions for selector; keeping pinned entry. Reason:', e && e.message);
+        safeLog('warn', 'Failed to load versions for selector; keeping pinned entry. Reason:', e && e.message);
     }
 }
 
@@ -621,10 +682,10 @@ function loadExternalFiles(externalFiles) {
 
     function loadError(file, next) {
         try {
-            console.error('Failed to load external file:', file);
+            safeLog('error', 'Failed to load external file:', file);
             if (file && file.url === KNACK_FUNCTIONS_URL) {
                 if (selectedSource === 'local') {
-                    console.warn('Falling back to CDN because local failed.');
+                    safeLog('warn', 'Falling back to CDN because local failed.');
                     selectedSource = 'cdn';
                     localStorage.setItem(LS_SOURCE_KEY, selectedSource);
                     handleSourceChange();
@@ -649,7 +710,7 @@ function loadExternalFiles(externalFiles) {
 
             function next() {
                 if (index >= files.length) {
-                    console.log('all external files loaded');
+                    safeLog('log', 'all external files loaded');
 
                     // Enhanced callback that adds the source switcher after KTL loads
                     const enhancedCallback = function(...args) {
@@ -659,7 +720,7 @@ function loadExternalFiles(externalFiles) {
                         }
 
                         // Then add the source switcher after KTL initialization is complete
-                        console.log('[assetLoader] KTL loaded — calling addSourceSwitcher()');
+                        safeLog('log', '[assetLoader] KTL loaded — calling addSourceSwitcher()');
                         addSourceSwitcher();
                     };
 
@@ -689,7 +750,7 @@ function loadExternalFiles(externalFiles) {
                         script.onload = function() {
                             if (file.url === KNACK_FUNCTIONS_URL) {
                                 const version = KNACK_FUNCTIONS_VERSION || extractVersionFromCdn(file.url) || '(unknown)';
-                                console.info('[knackFunctions] Loaded source:', selectedSource,
+                                safeLog('info', '[knackFunctions] Loaded source:', selectedSource,
                                              'version:', ensureV(version),
                                              'url:', file.url,
                                              (script.integrity ? '(SRI enforced)' : '(no SRI)'));
@@ -708,12 +769,12 @@ function loadExternalFiles(externalFiles) {
                                 if (/^sha384-[A-Za-z0-9+/=]+={0,2}$/.test(sri)) {
                                     appendScript(sri);
                                 } else {
-                                    console.warn('SRI sidecar missing/invalid for', file.url, '- loading without SRI.');
+                                    safeLog('warn', 'SRI sidecar missing/invalid for', file.url, '- loading without SRI.');
                                     appendScript(null);
                                 }
                             })
                             .catch(function(){
-                                console.warn('Failed to fetch SRI sidecar for', file.url, '- loading without SRI.');
+                                safeLog('warn', 'Failed to fetch SRI sidecar for', file.url, '- loading without SRI.');
                                 appendScript(null);
                             });
                         return; // wait for sidecar fetch
