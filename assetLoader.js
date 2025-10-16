@@ -100,6 +100,15 @@ if (window.isDeveloper) (async function ensureVersion() {
                 localStorage.setItem(LS_VERSION_KEY, stored);
             }
             selectedCdnVersion = stored;
+
+            // Check if newer version is available
+            if (latest && compareSemverTags(latest, stored) > 0) {
+                safeLog('info', `📦 Newer version available: ${latest} (current: ${stored})`);
+                // Show notification after a short delay to avoid blocking startup
+                setTimeout(() => {
+                    showNewVersionNotification(stored, latest);
+                }, 2000);
+            }
         }
     } catch (err) {
         safeLog('warn', 'Could not resolve available versions; using minimum. Reason:', err && err.message);
@@ -149,10 +158,13 @@ if (!KNACK_FUNCTIONS_URL) {
 loadExternalFiles([
     { type: 'script', url: 'https://unpkg.com/react@18/umd/react.development.js' },
     { type: 'script', url: 'https://unpkg.com/react-dom@18/umd/react-dom.development.js' },
+    { type: 'script', url: 'https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js' },
+    { type: 'link', url: 'https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css' },
     { type: 'script', url: KNACK_FUNCTIONS_URL }, // SRI applied dynamically
     { type: 'script', url: 'https://ctrnd.s3.amazonaws.com/Lib/KTL/KTL_Start.js' },
     { type: 'favicon', url: 'https://arcproject.org.uk/wp-content/uploads/2020/01/cropped-favicon-square-2-32x32.jpg' }
 ]);
+
 
 // =========================================================================
 // UTILITY FUNCTIONS AND UI COMPONENTS - PLACE AT BOTTOM AFTER KTL BRACKETS
@@ -312,6 +324,40 @@ function showCdnErrorNotification() {
     setTimeout(function() { n.remove(); }, 7000);
 }
 
+function showNewVersionNotification(currentVersion, latestVersion) {
+    if (localStorage.getItem('forcingReload') === 'true') return;
+    if (isInIframe()) return; // Don't show notifications in iframe
+
+    const n = document.createElement('div');
+    n.className = 'kf-loader-notice info';
+    n.style.cssText = 'cursor: pointer; padding: 12px 20px; display: flex; align-items: center; gap: 10px;';
+    n.innerHTML = `
+        <span style="flex: 1;">📦 New version available: ${latestVersion} (current: ${currentVersion})</span>
+        <button style="padding: 4px 12px; background: #fff; color: #333; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">Update</button>
+    `;
+
+    const updateBtn = n.querySelector('button');
+    updateBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        localStorage.setItem(LS_VERSION_KEY, latestVersion);
+        selectedCdnVersion = latestVersion;
+        handleSourceChange();
+    });
+
+    n.addEventListener('click', function() {
+        // Open the version switcher when clicking the notification
+        const trigger = document.getElementById('kf-dev-trigger');
+        if (trigger) trigger.click();
+        n.remove();
+    });
+
+    document.body.appendChild(n);
+    // Keep notification visible longer since it's actionable
+    setTimeout(function() {
+        if (n.parentNode) n.remove();
+    }, 15000);
+}
+
 async function fetchCdnMeta() {
     const res = await fetch(JSDELIVR_META_URL, { method: 'GET' });
     if (!res.ok) throw new Error('jsDelivr meta HTTP ' + res.status);
@@ -345,7 +391,7 @@ async function headOk(url) {
 }
 
 /**
- * From metadata, return only versions that actually have BOTH the JS and the .sha384
+ * From metadata, return versions that have the JS file present (SRI sidecar is optional)
  * @returns {Promise<{available: string[], latest: string|null}>} Available versions info
  */
 async function getAvailableVersions() {
@@ -354,8 +400,8 @@ async function getAvailableVersions() {
     const checks = await Promise.all(
         candidates.map(async v => {
             const jsOk  = await headOk(cdnUrlFor(v));
-            const sriOk = await headOk(cdnUrlFor(v) + '.sha384');
-            return (jsOk && sriOk) ? v : null;
+            // Note: SRI sidecar is optional - we'll try to use it if present, but won't require it
+            return jsOk ? v : null;
         })
     );
     const available = checks.filter(Boolean).sort(compareSemverTags);
@@ -660,11 +706,11 @@ async function buildSourceSwitcher() {
 
     // Populate the versions list with only available (>= MIN_TAG) + sidecar-present
     try {
-        if (!versionsCache) {
-            const meta = await getAvailableVersions();
-            versionsCache = meta.available || [];
-            latestTagCache = meta.latest || null;
-        }
+        // Always fetch fresh versions to ensure we see newly published releases
+        const meta = await getAvailableVersions();
+        versionsCache = meta.available || [];
+        latestTagCache = meta.latest || null;
+
         const current = ensureV(localStorage.getItem(LS_VERSION_KEY) || selectedCdnVersion || MIN_TAG);
 
         if (versionsCache.length) {
