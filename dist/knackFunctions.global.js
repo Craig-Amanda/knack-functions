@@ -610,7 +610,11 @@ function replaceKnackRichTextWithQuillEditor(viewId, options = {}) {
 document.addEventListener('mousedown', function(e) {
     const isQuillFocused = document.activeElement && document.activeElement.closest('.ql-editor');
     const isQuillClick = e.target.closest('.ql-editor, .ql-toolbar, .ql-container');
-    if (isQuillFocused || isQuillClick) {
+
+    // Don't block clicks on toolbar pickers - they need to work!
+    const isPickerClick = e.target.closest('.ql-picker, .ql-picker-label, .ql-picker-options, .ql-picker-item');
+
+    if ((isQuillFocused || isQuillClick) && !isPickerClick) {
         e.stopImmediatePropagation();
     }
 }, true); // Use capture phase
