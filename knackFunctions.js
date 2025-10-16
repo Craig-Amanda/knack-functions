@@ -895,8 +895,8 @@ async function waitSelector({
 
 /**
  * Updates the "Add Option" button and default value for a Knack select field.
- * Uses project conventions: vanilla JS, project utilities, and no jQuery for new logic.
- * @param {HTMLElement} fieldEle - The field container element (not jQuery)
+ * Pure vanilla JS implementation following project conventions.
+ * @param {HTMLElement} fieldEle - The field container element
  * @param {string} btnStr - The button label
  * @param {string} defaultVal - The default value for the select
  * @param {boolean} disableInitially - Whether to disable the button initially
@@ -908,7 +908,7 @@ const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
 
     // Find the default option and container
     const defaultOpt = fieldEle.querySelector('.default');
-    let container = fieldEle.querySelector('.chzn-container') || fieldEle.querySelector('.select');
+    const container = fieldEle.querySelector('.chzn-container') || fieldEle.querySelector('.select');
 
     // Update button label and style
     addOption.textContent = btnStr;
@@ -918,9 +918,27 @@ const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
     if (disableInitially) {
         addOption.classList.add(CLASS_DISABLED);
         if (container) {
-            container.addEventListener('click', () => {
-                setTimeout(() => removeClassFromSelector(addOption, CLASS_DISABLED), 500);
-            }, { once: true });
+            // Enable when user interacts with the select field
+            const enableButton = () => {
+                addOption.classList.remove(CLASS_DISABLED);
+            };
+
+            // Listen for multiple interaction events to ensure button gets enabled
+            container.addEventListener('click', enableButton);
+
+            // Also listen for the Chosen dropdown opening
+            const searchInput = container.querySelector('.chzn-search input');
+            if (searchInput) {
+                searchInput.addEventListener('focus', enableButton);
+                searchInput.addEventListener('input', enableButton);
+            }
+
+            // Listen for changes on the actual select element
+            const select = fieldEle.querySelector('select');
+            if (select) {
+                select.addEventListener('change', enableButton);
+                select.addEventListener('focus', enableButton);
+            }
         }
     } else {
         // Insert before the first .control element if not already present
@@ -1222,23 +1240,17 @@ function updateUserFields(viewId, fieldIds) {
 
 /** Update date fields with the current date and time.
  * @param {string} viewId - The ID of the view.
- * @param {Array} fieldIds - Array of date field IDs.
- * @param {Array} viewsToExclude - Array of view IDs to exclude from the update.
- * @param {string} dateFormat - The format to use for the date (e.g., 'UK', 'US'). */
-function updateDateFields(viewId, fieldIds, viewsToExclude = [], dateFormat) {
+ * @param {Array} fieldIds - Array of date field IDs.*/
+function updateDateFields(viewId, fieldIds) {
     const currentDate = new Date();
     fieldIds.forEach(foundFieldId => {
-        if (viewsToExclude.includes(viewId)) return false;
+        if ($('#view_3404').length > 0) return false; // Submit Support Request Form
 
         const dateField = $(`#${viewId}-field_${foundFieldId}`);
         const timeField = $(`#${viewId}-field_${foundFieldId}-time`);
 
         if (!dateField.val()) {
-            if (dateFormat && dateFormat.toUpperCase() === 'US') {
-                dateField.val(getDateUSFormat(currentDate));
-            } else {
-                dateField.val(getDateUKFormat(currentDate));
-            }
+            dateField.val(getDateUKFormat(currentDate));
         }
 
         if (!timeField.val()) {
@@ -1246,16 +1258,6 @@ function updateDateFields(viewId, fieldIds, viewsToExclude = [], dateFormat) {
             timeField.val(timeString);
         }
     });
-}
-
-/** Formats a Date object to UK format (MM/DD/YYYY)
- * @param {Date} date - The date to format.
- * @returns {string} - The formatted date string in US format. */
-function getDateUSFormat(date) {
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
 }
 
 /**
@@ -1923,223 +1925,601 @@ function mapFieldsToView(textFields, radioFields, selectFields, sourceViewId, ta
 }
 
 /**
- * Sets up coordinated form submission for a manual form and one or more auto-submit forms.
- * @param {string} manualSubmitViewId - The view ID of the manual (main) form.
- * @param {string[]} autoSubmitViewIds - Array of view IDs for forms to be auto-submitted before the manual form.
- * @param {string} renderedViewId - The view ID of the form that has just rendered.
- * @param {boolean} [closeModalAfterSubmit=false] - If true, closes modal after successful submission.
+ * Configuration constants for multi-form submission
  */
-function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, renderedViewId, closeModalAfterSubmit = false) {
-    // If called on the manual form, attach handler directly
-    if (renderedViewId === manualSubmitViewId) {
-        attachManualFormHandler(manualSubmitViewId, autoSubmitViewIds, closeModalAfterSubmit);
-        return;
+const MULTI_FORM_CONFIG = {
+    TIMEOUTS: {
+        BUTTON_WAIT: 10000,
+        FORM_SUBMIT: 30000,
+        PRE_SUBMIT_DELAY: 200,
+        MODAL_CLOSE_DELAY: 200,
+        OUTCOME_POLL_INTERVAL: 500
+    },
+    SELECTORS: {
+        SUBMIT_BUTTON: 'button[type=submit]',
+        FORM: 'form',
+        SUCCESS_MESSAGE: '.kn-message.success',
+        ERROR_MESSAGE: '.kn-message.is-error',
+        MODAL: '.kn-modal',
+        MODAL_CLOSE: 'button.close-modal'
     }
-
-    // If called on an auto-submit form, wait for the manual form's submit button
-    if (autoSubmitViewIds.includes(renderedViewId)) {
-        waitSelector({ selector: `#${manualSubmitViewId} button[type=submit]`, timeout: 10000 })
-            .then(() => attachManualFormHandler(manualSubmitViewId, autoSubmitViewIds, closeModalAfterSubmit))
-            .catch(err => {
-                errorHandler.handleError(
-                    err,
-                    { manualSubmitViewId, autoSubmitViewIds, renderedViewId },
-                    'setupAutoFormSubmission:AutoFormWait'
-                );
-            });
-    }
-}
+};
 
 /**
- * Attaches a robust submit handler to the manual form's submit button.
- * @param {string} manualSubmitViewId - The view ID of the manual form.
- * @param {string[]} autoSubmitViewIds - Array of view IDs for forms to be auto-submitted.
- * @param {boolean} [closeModalAfterSubmit=false] - If true, closes modal after submission.
+ * Class for managing coordinated submission of multiple Knack forms.
+ * Handles a primary manual form and one or more auto-submit forms that must complete first.
+ *
+ * Features:
+ * - Sequential auto-form submission (not parallel) to handle validation properly
+ * - Validation using ktlNotValid_* class pattern before submission
+ * - Tracks successfully submitted forms to prevent re-submission
+ * - On validation failure: stops process and leaves failing form enabled for user to edit
+ * - User can fix errors and re-submit - already-submitted forms are skipped
+ *
+ * @example
+ * // Basic usage
+ * const coordinator = new MultiFormSubmissionCoordinator({
+ *     manualSubmitViewId: 'view_123',
+ *     autoSubmitViewIds: ['view_456', 'view_789']
+ * });
+ * coordinator.initialize('view_123'); // Call on form render
+ *
+ * @example
+ * // With modal close and custom config
+ * const coordinator = new MultiFormSubmissionCoordinator({
+ *     manualSubmitViewId: 'view_123',
+ *     autoSubmitViewIds: ['view_456'],
+ *     closeModalAfterSubmit: true,
+ *     onAutoFormsComplete: (outcomes) => {
+ *         console.log('Auto forms completed:', outcomes);
+ *     }
+ * });
  */
-function attachManualFormHandler(manualSubmitViewId, autoSubmitViewIds, closeModalAfterSubmit = false) {
-    // Hide auto-submit buttons
-    autoSubmitViewIds.forEach(autoViewId => {
-        // Add event listener to handle both initial load and re-renders
-        $(document).on(`knack-view-render.${autoViewId}`, () => {
-            const autoSubmitBtn = document.querySelector(`#${autoViewId} button[type=submit]`);
-            if (autoSubmitBtn && !autoSubmitBtn.classList.contains(CLASS_HIDDEN)) {
-                autoSubmitBtn.classList.add(CLASS_HIDDEN);
-            }
-        });
+class MultiFormSubmissionCoordinator {
+    /**
+     * @param {Object} config - Configuration object
+     * @param {string} config.manualSubmitViewId - View ID of the manual (primary) form
+     * @param {string[]} config.autoSubmitViewIds - Array of view IDs for auto-submit forms
+     * @param {boolean} [config.closeModalAfterSubmit=false] - Close modal after successful submission
+     * @param {Function} [config.onAutoFormsComplete=null] - Callback after auto forms complete
+     * @param {Object} [config.timeouts] - Override default timeout values
+     * @param {Object} [config.selectors] - Override default selector strings
+     */
+    constructor(config) {
+        this.manualSubmitViewId = config.manualSubmitViewId;
+        this.autoSubmitViewIds = config.autoSubmitViewIds || [];
+        this.closeModalAfterSubmit = config.closeModalAfterSubmit || false;
+        this.onAutoFormsComplete = config.onAutoFormsComplete || null;
 
-        // Initial hiding attempt
-        waitSelector({ selector: `#${autoViewId} button[type=submit]`, timeout: 10000 })
-            .then(btn => {
-                if (btn) btn.classList.add(CLASS_HIDDEN);
+        this.timeouts = { ...MULTI_FORM_CONFIG.TIMEOUTS, ...(config.timeouts || {}) };
+        this.selectors = { ...MULTI_FORM_CONFIG.SELECTORS, ...(config.selectors || {}) };
+
+        /**
+         * Tracks event namespaces for cleanup. Maps event keys to their jQuery namespaces.
+         * Example: Map { 'render-view_123' => 'knack-view-render.view_123.mfc-abc123' }
+         * Used by destroy() to unbind all jQuery events and prevent memory leaks.
+         */
+        this.eventHandlers = new Map();
+        this.isInitialized = false;
+
+        // Track successfully submitted forms to avoid re-submission
+        this.submittedForms = new Set();
+
+        // Unique instance ID for event namespacing to prevent conflicts between multiple coordinators
+        this.instanceId = `mfc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    /**
+     * Initialize the coordinator for a specific rendered view
+     * @param {string} renderedViewId - The view ID that just rendered
+     */
+    initialize(renderedViewId) {
+        if (renderedViewId === this.manualSubmitViewId) {
+            this._attachManualFormHandler();
+        } else if (this.autoSubmitViewIds.includes(renderedViewId)) {
+            this._waitForManualForm();
+        }
+    }
+
+    /**
+     * Generate unique event namespace for jQuery events
+     * @private
+     * @param {string} eventName - Base event name (e.g., 'knack-view-render')
+     * @param {string} viewId - View ID to namespace
+     * @returns {string} Namespaced event string
+     */
+    _getEventNamespace(eventName, viewId) {
+        return `${eventName}.${viewId}.${this.instanceId}`;
+    }
+
+    /**
+     * Check if error is a validation error (not unexpected error)
+     * @private
+     * @param {Error} error - Error to check
+     * @returns {boolean} True if validation error
+     */
+    _isValidationError(error) {
+        return error.message.includes('Form validation failed');
+    }
+
+    /**
+     * Wait for manual form to be available, then attach handler
+     * @private
+     */
+    async _waitForManualForm() {
+        try {
+            await waitSelector({
+                selector: `#${this.manualSubmitViewId} ${this.selectors.SUBMIT_BUTTON}`,
+                timeout: this.timeouts.BUTTON_WAIT
+            });
+            this._attachManualFormHandler();
+        } catch (err) {
+            errorHandler.handleError(err, {
+                manualSubmitViewId: this.manualSubmitViewId,
+                autoSubmitViewIds: this.autoSubmitViewIds
+            }, 'MultiFormCoordinator:WaitForManualForm');
+        }
+    }
+
+    /**
+     * Attach submit handler to manual form
+     * @private
+     */
+    _attachManualFormHandler() {
+        if (this.isInitialized) return;
+
+        this._hideAutoSubmitButtons();
+
+        const manualView = document.getElementById(this.manualSubmitViewId);
+        if (!manualView) {
+            console.error(`[MultiFormCoordinator] Manual submit view "${this.manualSubmitViewId}" not found`);
+            errorHandler.handleError(
+                new Error(`Manual submit view "${this.manualSubmitViewId}" not found`),
+                { manualSubmitViewId: this.manualSubmitViewId },
+                'MultiFormCoordinator'
+            );
+            return;
+        }
+
+        const manualForm = manualView.querySelector(this.selectors.FORM);
+        const manualSubmitBtn = manualView.querySelector(this.selectors.SUBMIT_BUTTON);
+
+        if (!manualForm || !manualSubmitBtn) {
+            console.error(`[MultiFormCoordinator] Form or submit button not found in view "${this.manualSubmitViewId}"`);
+            errorHandler.handleError(
+                new Error(`Form or submit button not found in view "${this.manualSubmitViewId}"`),
+                {
+                    manualSubmitViewId: this.manualSubmitViewId,
+                    formExists: !!manualForm,
+                    buttonExists: !!manualSubmitBtn
+                },
+                'MultiFormCoordinator'
+            );
+            return;
+        }
+
+        this._cleanupPreviousHandler(manualSubmitBtn);
+
+        const clickHandler = async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            await this._handleFormSubmission(manualForm, manualSubmitBtn);
+        };
+
+        const formSubmitHandler = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        };
+
+        manualSubmitBtn._multiSubmitHandler = clickHandler;
+        manualSubmitBtn.addEventListener('click', clickHandler);
+
+        manualForm._multiFormSubmitHandler = formSubmitHandler;
+        manualForm.addEventListener('submit', formSubmitHandler);
+
+        this.isInitialized = true;
+    }
+
+    /**
+     * Hide submit buttons for auto-submit forms
+     * Uses unique namespaced events to prevent duplicates and enable proper cleanup
+     * @private
+     */
+    _hideAutoSubmitButtons() {
+        this.autoSubmitViewIds.forEach(autoViewId => {
+            const renderHandler = () => {
+                const autoSubmitBtn = document.querySelector(`#${autoViewId} ${this.selectors.SUBMIT_BUTTON}`);
+                if (autoSubmitBtn) {
+                    autoSubmitBtn.classList.add(CLASS_HIDDEN);
+                }
+            };
+
+            const eventNamespace = this._getEventNamespace('knack-view-render', autoViewId);
+
+            // Unbind any existing handler first to prevent duplicates
+            $(document).off(eventNamespace);
+            $(document).on(eventNamespace, renderHandler);
+
+            this.eventHandlers.set(`render-${autoViewId}`, eventNamespace);
+
+            // Hide button immediately if already rendered
+            waitSelector({
+                selector: `#${autoViewId} ${this.selectors.SUBMIT_BUTTON}`,
+                timeout: this.timeouts.BUTTON_WAIT
             })
-            .catch(() => {});
-    });
-
-    // Get manual form elements (once)
-    const manualView = document.getElementById(manualSubmitViewId);
-    if (!manualView) {
-        handleFormError(new Error(`Manual submit view "${manualSubmitViewId}" not found.`),
-            { manualSubmitViewId, autoSubmitViewIds });
-        return;
+                .then(btn => btn && btn.classList.add(CLASS_HIDDEN))
+                .catch(() => {});
+        });
     }
 
-    const manualForm = manualView.querySelector('form');
-    const manualSubmitBtn = manualView.querySelector('button[type=submit]');
-    if (!manualForm || !manualSubmitBtn) {
-        handleFormError(new Error(`Form or submit button not found in view "${manualSubmitViewId}".`),
-            { manualSubmitViewId, autoSubmitViewIds, manualFormExists: !!manualForm });
-        return;
-    }
-
-    // Clean up previous handlers and attach new one
-    manualSubmitBtn.removeEventListener('click', manualSubmitBtn._multiSubmitHandler);
-    manualSubmitBtn._multiSubmitHandler = async (event) => {
-        event.preventDefault();
-
-        // Disable form inputs during submission
+    /**
+     * Handle the complete form submission workflow
+     * @private
+     */
+    async _handleFormSubmission(manualForm, manualSubmitBtn) {
         manualSubmitBtn.disabled = true;
-        setFormInputsDisabled(manualForm, true);
+        this._setFormInputsDisabled(manualForm, true);
 
         let outcomes = [];
         try {
-            // Submit all auto forms in parallel
-            outcomes = await submitAutoForms(autoSubmitViewIds, manualSubmitViewId);
+            outcomes = await this._submitAutoForms();
 
-            // Re-enable form for manual submission
-            setFormInputsDisabled(manualForm, false);
-            manualSubmitBtn.disabled = false;
-
-            // Special handling for dummy field
-            if (JSON.stringify(outcomes).includes('view_6426')) {
-                enableAutoForms(autoSubmitViewIds);
+            if (this.onAutoFormsComplete) {
+                this.onAutoFormsComplete(outcomes);
             }
 
-            // Submit manual form after short delay
+            this._setFormInputsDisabled(manualForm, false);
+            manualSubmitBtn.disabled = false;
+
+            await this._submitManualForm(manualForm);
+
+        } catch (err) {
+            errorHandler.handleError(err, {
+                manualSubmitViewId: this.manualSubmitViewId,
+                autoSubmitViewIds: this.autoSubmitViewIds,
+                outcomes
+            }, 'MultiFormCoordinator:HandleSubmission');
+
+            this._setFormInputsDisabled(manualForm, false);
+            manualSubmitBtn.disabled = false;
+        }
+    }
+
+    /**
+     * Validate a form by checking for fields with ktlNotValid_* classes
+     * @private
+     * @param {string} viewId - View ID of the form being validated
+     * @param {HTMLFormElement} form - The form element to validate
+     * @returns {Object} Validation result with { isValid, invalidInputs, errorMessage }
+     */
+    _validateForm(viewId, form) {
+        if (!form) {
+            return { isValid: false, invalidInputs: [], errorMessage: `Form not found for ${viewId}` };
+        }
+
+        const allInputs = form.querySelectorAll('input, select, textarea');
+        const invalidInputs = Array.from(allInputs).filter(input =>
+            Array.from(input.classList).some(cls => cls.startsWith('ktlNotValid_'))
+        );
+
+        if (invalidInputs.length === 0) {
+            return { isValid: true, invalidInputs: [], errorMessage: '' };
+        }
+
+        // Build detailed error message with field info
+        const invalidFields = invalidInputs.map(input => {
+            const invalidClasses = Array.from(input.classList)
+                .filter(cls => cls.startsWith('ktlNotValid_'))
+                .join(', ');
+            return `#${input.id || input.name} (${invalidClasses})`;
+        }).join(', ');
+
+        return {
+            isValid: false,
+            invalidInputs,
+            errorMessage: `Form validation failed for ${viewId}. Found ${invalidInputs.length} invalid input(s): ${invalidFields}`
+        };
+    }
+
+    /**
+     * Submit all auto forms sequentially, skipping already-submitted forms
+     * @private
+     * @returns {Promise<Array>} Array of submission outcomes
+     */
+    async _submitAutoForms() {
+        const outcomes = [];
+
+        for (const autoViewId of this.autoSubmitViewIds) {
+            if (this.submittedForms.has(autoViewId)) {
+                outcomes.push({
+                    success: true,
+                    viewId: autoViewId,
+                    skipped: true,
+                    reason: 'Already submitted'
+                });
+                continue;
+            }
+
+            try {
+                const outcome = await this._submitSingleAutoForm(autoViewId);
+                outcomes.push(outcome);
+
+                if (outcome.success) {
+                    this.submittedForms.add(autoViewId);
+                }
+            } catch (err) {
+                // Validation errors already logged in _submitSingleAutoForm
+                if (!this._isValidationError(err)) {
+                    errorHandler.handleError(err, {
+                        manualSubmitViewId: this.manualSubmitViewId,
+                        autoSubmitViewIds: this.autoSubmitViewIds,
+                        failedViewId: autoViewId,
+                        submittedForms: Array.from(this.submittedForms)
+                    }, 'MultiFormCoordinator:SubmitAutoForms');
+                }
+                throw err;
+            }
+        }
+
+        return outcomes;
+    }
+
+    /**
+     * Submit a single auto form and wait for outcome
+     * @private
+     * @param {string} autoViewId - View ID of the auto form
+     * @returns {Promise<Object>} Submission outcome
+     */
+    async _submitSingleAutoForm(autoViewId) {
+        const autoView = document.getElementById(autoViewId);
+        if (!autoView) throw new Error(`Auto submit view "${autoViewId}" not found`);
+
+        const autoForm = autoView.querySelector(this.selectors.FORM);
+        const autoSubmitBtn = autoView.querySelector(this.selectors.SUBMIT_BUTTON);
+
+        if (!autoForm || !autoSubmitBtn) {
+            throw new Error(`Form or submit button not found in auto view "${autoViewId}"`);
+        }
+
+        try {
+            // Enable form for validation
+            this._setFormInputsDisabled(autoForm, false);
+            autoSubmitBtn.disabled = false;
+
+            // Validate before submitting
+            const validationResult = this._validateForm(autoViewId, autoForm);
+            if (!validationResult.isValid) {
+                console.error(`[MultiFormCoordinator] ${validationResult.errorMessage}`);
+                throw new Error(validationResult.errorMessage);
+            }
+
+            // Submit and wait for outcome
+            const outcomePromise = this._waitForFormSubmitOutcome(autoViewId);
+            autoSubmitBtn.click();
+            const outcome = await outcomePromise;
+
+            // Hide success message and disable form
+            setVisibility(`#${autoViewId} ${this.selectors.SUCCESS_MESSAGE}`, false);
+            this._setFormInputsDisabled(autoForm, true);
+
+            return {
+                success: true,
+                viewId: autoViewId,
+                record: outcome.record || null,
+                timestamp: new Date().toISOString()
+            };
+
+        } catch (autoErr) {
+            // Only log unexpected errors (validation already logged)
+            if (!this._isValidationError(autoErr)) {
+                errorHandler.handleError(autoErr, {
+                    autoViewId,
+                    manualSubmitViewId: this.manualSubmitViewId,
+                    viewExists: !!autoView
+                }, 'MultiFormCoordinator:SubmitSingleAutoForm');
+            }
+            throw autoErr;
+        }
+    }
+
+    /**
+     * Wait for form submission outcome by monitoring DOM for success/error messages
+     * @private
+     * @param {string} viewId - View ID to monitor
+     * @returns {Promise<Object>} Submission result
+     */
+    _waitForFormSubmitOutcome(viewId) {
+        return new Promise((resolve, reject) => {
+            let cleanupDone = false;
+
+            const timeoutId = setTimeout(() => {
+                cleanup();
+                reject(new Error(`Form submission timeout for ${viewId} after ${this.timeouts.FORM_SUBMIT}ms`));
+            }, this.timeouts.FORM_SUBMIT);
+
+            const viewElement = document.getElementById(viewId);
+            if (!viewElement) {
+                cleanup();
+                reject(new Error(`View element not found: ${viewId}`));
+                return;
+            }
+
+            const checkOutcome = () => {
+                // Check for success message
+                const successMsg = viewElement.querySelector(this.selectors.SUCCESS_MESSAGE);
+                if (successMsg && successMsg.offsetParent !== null) {
+                    cleanup();
+                    resolve({
+                        success: true,
+                        record: null,
+                        view: viewId,
+                        message: successMsg.textContent.trim()
+                    });
+                    return true;
+                }
+
+                // Check for error message
+                const errorMsg = viewElement.querySelector(this.selectors.ERROR_MESSAGE);
+                if (errorMsg && errorMsg.offsetParent !== null) {
+                    cleanup();
+                    reject(new Error(`Form submission failed: ${errorMsg.textContent.trim()}`));
+                    return true;
+                }
+
+                // Check for invalid inputs
+                const invalidInputs = viewElement.querySelectorAll('input.invalid, select.invalid, textarea.invalid, [aria-invalid="true"]');
+                if (invalidInputs.length > 0) {
+                    const fieldNames = Array.from(invalidInputs)
+                        .map(inp => {
+                            const label = inp.closest('.kn-input')?.querySelector('.kn-label');
+                            return label ? label.textContent.trim().replace('*', '').trim() : 'Unknown field';
+                        })
+                        .filter((name, index, self) => self.indexOf(name) === index)
+                        .slice(0, 3)
+                        .join(', ');
+
+                    cleanup();
+                    reject(new Error(`Form validation failed: Required fields missing or invalid (${fieldNames})`));
+                    return true;
+                }
+
+                return false;
+            };
+
+            // Monitor for changes with MutationObserver
+            const observer = new MutationObserver(checkOutcome);
+            observer.observe(viewElement, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['class', 'style', 'aria-invalid']
+            });
+
+            // Initial check and delayed check
+            checkOutcome();
+            setTimeout(checkOutcome, this.timeouts.OUTCOME_POLL_INTERVAL);
+
+            // Periodic polling as backup
+            const pollInterval = setInterval(() => {
+                if (!cleanupDone) checkOutcome();
+            }, this.timeouts.OUTCOME_POLL_INTERVAL);
+
+            const cleanup = () => {
+                if (cleanupDone) return;
+                cleanupDone = true;
+                clearTimeout(timeoutId);
+                clearInterval(pollInterval);
+                observer.disconnect();
+            };
+
+            this.eventHandlers.set(`submit-${viewId}`, cleanup);
+        });
+    }    /**
+     * Submit the manual form
+     * @private
+     */
+    async _submitManualForm(manualForm) {
+        return new Promise((resolve, reject) => {
             setTimeout(() => {
                 try {
                     $(manualForm).submit();
 
-                    // Close modal if requested
-                    if (closeModalAfterSubmit && document.querySelector('.kn-modal')) {
+                    if (this.closeModalAfterSubmit && document.querySelector(this.selectors.MODAL)) {
                         setTimeout(() => {
-                            document.querySelector('button.close-modal')?.click();
-                        }, 200);
+                            document.querySelector(this.selectors.MODAL_CLOSE)?.click();
+                        }, this.timeouts.MODAL_CLOSE_DELAY);
                     }
+
+                    resolve();
                 } catch (submitErr) {
-                    errorHandler.handleError(submitErr,
-                        { manualSubmitViewId, autoSubmitViewIds, outcomes },
-                        'setupAutoFormSubmission:ManualFormSubmit');
+                    errorHandler.handleError(submitErr, {
+                        manualSubmitViewId: this.manualSubmitViewId
+                    }, 'MultiFormCoordinator:SubmitManualForm');
+                    reject(submitErr);
                 }
-            }, 200);
+            }, this.timeouts.PRE_SUBMIT_DELAY);
+        });
+    }
 
-        } catch (err) {
-            errorHandler.handleError(err,
-                { manualSubmitViewId, autoSubmitViewIds, outcomes },
-                'setupAutoFormSubmission:Main');
+    /**
+     * Enable or disable all form inputs
+     * @private
+     * @param {HTMLFormElement} form - The form element
+     * @param {boolean} disabled - True to disable, false to enable
+     */
+    _setFormInputsDisabled(form, disabled) {
+        if (!form) return;
+        form.querySelectorAll('input, select, textarea, button').forEach(el => {
+            el.disabled = disabled;
+        });
+    }
 
-            // Re-enable form on error
-            setFormInputsDisabled(manualForm, false);
-            manualSubmitBtn.disabled = false;
+    /**
+     * Clean up previous event handlers from button and form
+     * @private
+     */
+    _cleanupPreviousHandler(button) {
+        if (button._multiSubmitHandler) {
+            button.removeEventListener('click', button._multiSubmitHandler);
+            delete button._multiSubmitHandler;
         }
-    };
 
-    manualSubmitBtn.addEventListener('click', manualSubmitBtn._multiSubmitHandler);
-}
-
-/**
- * Helper to submit all auto forms in parallel
- * @param {string[]} autoSubmitViewIds - IDs of forms to submit
- * @param {string} manualSubmitViewId - ID of the main form
- * @returns {Promise<Array>} - Outcomes from all form submissions
- */
-async function submitAutoForms(autoSubmitViewIds, manualSubmitViewId) {
-    const submitPromises = autoSubmitViewIds.map(async autoViewId => {
-        try {
-            // Get auto form elements
-            const autoView = document.getElementById(autoViewId);
-            if (!autoView) throw new Error(`Auto submit view "${autoViewId}" not found.`);
-
-            const autoForm = autoView.querySelector('form');
-            const autoSubmitBtn = autoView.querySelector('button[type=submit]');
-            if (!autoForm || !autoSubmitBtn)
-                throw new Error(`Form or submit button not found in auto view "${autoViewId}".`);
-
-            // Enable and submit form
-            setFormInputsDisabled(autoForm, false);
-            autoSubmitBtn.disabled = false;
-            autoSubmitBtn.click();
-
-            // Wait for submission outcome
-            const outcome = await ktl.views.waitSubmitOutcome(autoViewId);
-
-            // Hide success message and disable inputs
-            const successMsg = autoView.querySelector('.kn-message.success');
-            if (successMsg) successMsg.classList.add(CLASS_HIDDEN);
-            setFormInputsDisabled(autoForm, true);
-
-            return {
-                outcome,
-                autoViewId,
-                autoFormState: autoForm.outerHTML.slice(0, 1000)
-            };
-        } catch (autoErr) {
-            errorHandler.handleError(autoErr,
-                { autoViewId, manualSubmitViewId, autoViewExists: !!document.getElementById(autoViewId) },
-                'setupAutoFormSubmission:AutoForm');
-            throw autoErr;
+        const form = button.closest('form');
+        if (form && form._multiFormSubmitHandler) {
+            form.removeEventListener('submit', form._multiFormSubmitHandler);
+            delete form._multiFormSubmitHandler;
         }
-    });
+    }
 
-    try {
-        return await Promise.all(submitPromises);
-    } catch (err) {
-        errorHandler.handleError(err, { manualSubmitViewId, autoSubmitViewIds },
-            'setupAutoFormSubmission:PromiseAll');
-        throw err;
+    /**
+     * Clean up all event handlers and resources
+     */
+    destroy() {
+        // Clean up manual form DOM event handlers
+        const manualView = document.getElementById(this.manualSubmitViewId);
+        if (manualView) {
+            const manualForm = manualView.querySelector(this.selectors.FORM);
+            const manualSubmitBtn = manualView.querySelector(this.selectors.SUBMIT_BUTTON);
+
+            if (manualSubmitBtn && manualSubmitBtn._multiSubmitHandler) {
+                manualSubmitBtn.removeEventListener('click', manualSubmitBtn._multiSubmitHandler);
+                delete manualSubmitBtn._multiSubmitHandler;
+            }
+
+            if (manualForm && manualForm._multiFormSubmitHandler) {
+                manualForm.removeEventListener('submit', manualForm._multiFormSubmitHandler);
+                delete manualForm._multiFormSubmitHandler;
+            }
+        }
+
+        // Clean up jQuery event handlers using stored namespaces
+        this.eventHandlers.forEach((eventNamespace) => {
+            $(document).off(eventNamespace);
+        });
+
+        this.eventHandlers.clear();
+        this.submittedForms.clear();
+        this.isInitialized = false;
     }
 }
 
 /**
- * Helper to enable all auto forms
- * @param {string[]} autoSubmitViewIds - IDs of forms to enable
+ * Legacy function wrapper - maintains same API as original function
+ * @deprecated Consider using MultiFormSubmissionCoordinator class directly for better control
+ * @param {string} manualSubmitViewId - The view ID of the manual (main) form.
+ * @param {string[]} autoSubmitViewIds - Array of view IDs for forms to be auto-submitted before the manual form.
+ * @param {string} renderedViewId - The view ID of the form that has just rendered.
+ * @param {boolean} [closeModalAfterSubmit=false] - If true, closes modal after successful submission.
+ * @returns {MultiFormSubmissionCoordinator} The coordinator instance
  */
-function enableAutoForms(autoSubmitViewIds) {
-    autoSubmitViewIds.forEach(autoViewId => {
-        const autoView = document.getElementById(autoViewId);
-        if (autoView) {
-            const autoForm = autoView.querySelector('form');
-            if (autoForm) setFormInputsDisabled(autoForm, false);
-        }
+function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, renderedViewId, closeModalAfterSubmit = false) {
+    const coordinator = new MultiFormSubmissionCoordinator({
+        manualSubmitViewId,
+        autoSubmitViewIds,
+        closeModalAfterSubmit
     });
-}
-
-/**
- * Helper to handle form errors consistently
- * @param {Error} error - The error that occurred
- * @param {Object} context - Additional context information
- */
-function handleFormError(error, context) {
-    console.error(`[attachManualFormHandler] ${error.message}`);
-    errorHandler.handleError(error, {
-        ...context,
-        domSnapshot: document.body.innerHTML.slice(0, 2000)
-    }, 'setupAutoFormSubmission');
-}
-/**
- * Utility to enable/disable all input/select/textarea elements in a form.
- * @param {HTMLFormElement} form - The form element.
- * @param {boolean} disabled - Whether to disable or enable the inputs.
- */
-function setFormInputsDisabled(form, disabled) {
-    if (!form) return;
-    form.querySelectorAll('input, select, textarea, button').forEach(el => {
-        // Don't disable the submit button if enabling
-        if (el.type === 'submit' && !disabled) {
-            el.disabled = false;
-        } else {
-            el.disabled = disabled;
-        }
-    });
+    coordinator.initialize(renderedViewId);
+    return coordinator;
 }
 
     /** Function to select an item in a Knack connection dropdown.
@@ -3000,13 +3380,13 @@ function filterSelectByText(viewId, fieldTofilter, textToMatch){
     });
 }
 
-/** Trigger a webhook
- * @param {string} webhookURL - Webhook URL including any params to pass in
- * @param {object} data - data object to be sent to the webhook
- * @param {string} [webhookName='Unnamed Webhook'] - Name for webhook used for console log
- * @param {boolean} [isSecure=false] - Optional flag to indicate if user token should be included
- * @returns {Promise<{success: boolean, data: object|string|null, error: string|null}>} */
-async function triggerWebhook(webhookURL, data, webhookName = 'Unnamed Webhook', isSecure = false) {
+   /** Trigger a webhook
+     * @param {string} webhookURL - Webhook URL including any params to pass in
+     * @param {object} data - data object to be sent to the webhook
+     * @param {string} [webhookName='Unnamed Webhook'] - Name for webhook used for console log
+     * @param {boolean} [isSecure=false] - Optional flag to indicate if user token should be included
+     * @returns {Promise<{success: boolean, data: object|string|null, error: string|null}>} */
+   async function triggerWebhook(webhookURL, data, webhookName = 'Unnamed Webhook', isSecure = false) {
     if (!webhookURL.startsWith('https://')) {
         const errorMsg = `Invalid webhook URL: ${webhookURL} in webhook: ${webhookName}`;
         console.error(errorMsg);

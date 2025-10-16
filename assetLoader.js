@@ -20,8 +20,19 @@ const IFRAME_WINDOW_ID = 'iFrameWnd';
 window.IFRAME_WINDOW_ID = IFRAME_WINDOW_ID;
 
 // --- LocalStorage Keys ---
-const LS_SOURCE_KEY = 'knackFunctionsSource';   // 'local' | 'cdn'
-const LS_VERSION_KEY = 'knackFunctionsVersion'; // e.g. 'v1.0.2'
+/**
+ * Gets the application-specific localStorage key
+ * Includes Knack.application_id to support multiple apps on same domain
+ * @param {string} baseKey - The base key name
+ * @returns {string} - App-specific localStorage key
+ */
+function getAppStorageKey(baseKey) {
+    const appId = (typeof Knack !== 'undefined' && Knack.application_id) ? Knack.application_id : 'default';
+    return `${baseKey}_${appId}`;
+}
+
+const LS_SOURCE_KEY = getAppStorageKey('knackFunctionsSource');   // 'local' | 'cdn'
+const LS_VERSION_KEY = getAppStorageKey('knackFunctionsVersion'); // e.g. 'v1.0.2'
 
 // --- Sources Configuration ---
 const SOURCES = {
