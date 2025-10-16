@@ -2521,7 +2521,7 @@ function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, rendered
     return coordinator;
 }
 
-    /** Function to select an item in a Knack connection dropdown.
+/** Function to select an item in a Knack connection dropdown.
  * @param {string} viewId - The ID of the view element.
  * @param {string} conxFieldIdInput - The ID of the connection field input.
  * @param {string|null} connectionId - The ID of the connection to select (optional).
