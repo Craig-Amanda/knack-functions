@@ -52,7 +52,7 @@ let selectedCdnVersion = ensureV(localStorage.getItem(LS_VERSION_KEY) || '') || 
  * @returns {boolean} True if running in iframe, false otherwise
  */
 function isInIframe() {
-    return (window.self.frameElement && (window.self.frameElement.id === IFRAME_WINDOW_ID)) ? true : false;
+    return !!(window.self.frameElement && window.self.frameElement.id === IFRAME_WINDOW_ID);
 }
 
 /**
@@ -725,14 +725,19 @@ function loadExternalFiles(externalFiles) {
 
                     // Enhanced callback that adds the source switcher after KTL loads
                     const enhancedCallback = function(...args) {
-                        // Call the original callback first (if provided)
-                        if (typeof callback === 'function') {
-                            callback.apply(this, args);
+                        // Ensure addSourceSwitcher() runs even if the original callback throws.
+                        try {
+                            if (typeof callback === 'function') {
+                                try {
+                                    callback.apply(this, args);
+                                } catch (cbErr) {
+                                    safeLog('error', '[assetLoader] Original callback threw an error:', cbErr && cbErr.message);
+                                }
+                            }
+                        } finally {
+                            safeLog('log', '[assetLoader] KTL loaded — calling addSourceSwitcher()');
+                            addSourceSwitcher();
                         }
-
-                        // Then add the source switcher after KTL initialization is complete
-                        safeLog('log', '[assetLoader] KTL loaded — calling addSourceSwitcher()');
-                        addSourceSwitcher();
                     };
 
                     loadKtl($, enhancedCallback, (typeof KnackApp === 'function' ? KnackApp : null), '0.32.3', 'full');
