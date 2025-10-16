@@ -895,7 +895,6 @@ async function waitSelector({
 
 /**
  * Updates the "Add Option" button and default value for a Knack select field.
- * Pure vanilla JS implementation following project conventions.
  * @param {HTMLElement} fieldEle - The field container element
  * @param {string} btnStr - The button label
  * @param {string} defaultVal - The default value for the select
@@ -1220,7 +1219,7 @@ function updateFieldsInArrays(viewId) {
     }
 
     if (dateFieldIds.length > 0) {
-        updateDateFields(viewId, dateFieldIds, ['view_3404']);
+        updateDateFields(viewId, dateFieldIds);
     }
 }
 
@@ -1240,12 +1239,11 @@ function updateUserFields(viewId, fieldIds) {
 
 /** Update date fields with the current date and time.
  * @param {string} viewId - The ID of the view.
- * @param {Array} fieldIds - Array of date field IDs.
- * @param {Array} viewsToExclude - Array of view IDs to exclude from updates.*/
-function updateDateFields(viewId, fieldIds, viewsToExclude = []) {
+ * @param {Array} fieldIds - Array of date field IDs.*/
+function updateDateFields(viewId, fieldIds) {
     const currentDate = new Date();
     fieldIds.forEach(foundFieldId => {
-        if (viewsToExclude.includes(viewId)) return false; // Submit Support Request Form
+        if ($('#view_3404').length > 0) return false; // Submit Support Request Form
 
         const dateField = $(`#${viewId}-field_${foundFieldId}`);
         const timeField = $(`#${viewId}-field_${foundFieldId}-time`);
@@ -2415,9 +2413,7 @@ class MultiFormSubmissionCoordinator {
 
             this.eventHandlers.set(`submit-${viewId}`, cleanup);
         });
-    }
-
-    /**
+    }    /**
      * Submit the manual form
      * @private
      */
@@ -3451,7 +3447,6 @@ async function delayAPIPut (sceneKey = null, viewId = null, recordIdArr = [], da
 
 /**
  * KnackAPI Class
- * A vanilla JavaScript class to interact with Knack's view-based API
  * Handles CRUD operations, filtering, sorting, pagination, and formatting
  * Does not require API keys (uses view-based methods only)
  *
@@ -5293,7 +5288,6 @@ function changeToSlider(viewId, sliderFieldSelector, resultFieldSelector, attrib
  * @param {boolean} [openInNewWindow=false] - Whether to open in new window
  */
 function openFileFromBtn(viewId, btnText, filePath, openInNewWindow = false) {
-    // Use a pure vanilla JS approach to find buttons containing the text
     const viewElement = document.getElementById(viewId);
     if (!viewElement) {
         console.error(`View element with ID ${viewId} not found`);
@@ -6141,7 +6135,6 @@ const IMAGE_EXTENSIONS = [
  * - For .ca-link/.ca-link-child: sets href using ID or assetURLs.
  * - For .ca-asset/.kn-view-asset: opens Office files in Office Online, PDF in PDF.js, others direct download.
  * - For images: uses Knack's default behaviour (no viewer link).
- * - Uses project conventions: vanilla JS, scoped queries, utility functions.
  * @param {string} viewId - The ID of the view containing the links/assets.
  * @example
  * updateLinksAndAssets('view_1234');
@@ -6256,7 +6249,6 @@ function updateLinksAndAssets(viewId) {
 
 /**
  * Inserts the logged-in user's name or the staff name from the detail view into the specified element(s).
- * Uses project conventions: vanilla JS, project utilities, and error handling.
  * @param {HTMLElement|string} target - The element(s) or selector to insert the name into.
  */
 function insertStaffName(target) {
