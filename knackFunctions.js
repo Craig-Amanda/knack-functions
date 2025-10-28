@@ -4644,10 +4644,10 @@ function showHideMsgBasedOnRadios(fieldIds, valuesToMatch, selector, callback, p
     // Support options object as first param
     let opts;
     if (typeof fieldIds === 'object' && fieldIds !== null && (
-        fieldIds.hasOwnProperty('fieldIDs') || fieldIds.hasOwnProperty('selector') || fieldIds.hasOwnProperty('mode')
+        fieldIds.hasOwnProperty('fieldIds') || fieldIds.hasOwnProperty('selector') || fieldIds.hasOwnProperty('mode')
     )) {
         opts = Object.assign({
-            fieldIDs: null,
+            fieldIds: null,
             valuesToMatch: null,
             selector: null,
             callback: null,
@@ -4659,7 +4659,24 @@ function showHideMsgBasedOnRadios(fieldIds, valuesToMatch, selector, callback, p
     }
 
     let fieldIdArr, matchValuesArr;
+
+    // Enforce canonical parameter name 'fieldIds'. If legacy keys are used, error and exit.
+    if (opts.fieldIDs || opts.fieldID) {
+        console.error('[showHideMsgBasedOnRadios] Deprecated parameter "fieldIDs"/"fieldID" used; please pass "fieldIds" only.');
+        return;
+    }
+
     let isMapMode = opts.mode === 'map' || (typeof opts.fieldIds === 'object' && !Array.isArray(opts.fieldIds));
+
+    // Validate required parameters
+    if (!opts.fieldIds) {
+        console.error('[showHideMsgBasedOnRadios] Missing required parameter "fieldIds". Example: showHideMsgBasedOnRadios([123], "Yes", "#msg")');
+        return;
+    }
+    if (!opts.selector) {
+        console.error('[showHideMsgBasedOnRadios] Missing required parameter "selector". Example: showHideMsgBasedOnRadios([123], "Yes", "#msg")');
+        return;
+    }
 
     // Get the target message element
     const messageElement = document.querySelector(opts.selector);
@@ -4685,7 +4702,6 @@ function showHideMsgBasedOnRadios(fieldIds, valuesToMatch, selector, callback, p
 
             const matches = fieldIdArr.map(fid => {
                 const checkedRadio = document.querySelector(`#kn-input-field_${fid} ${INPUT_RADIO_CHECKED_SELECTOR}`);
-                //console.log(`Checking field ${fid}:`, checkedRadio ? checkedRadio.value : 'not found');
                 return checkedRadio && matchValuesArr.includes(checkedRadio.value);
             });
 
@@ -4695,6 +4711,7 @@ function showHideMsgBasedOnRadios(fieldIds, valuesToMatch, selector, callback, p
                 showMessage = matches.some(Boolean);
             }
         }
+
         toggleMessage(showMessage, opts.selector);
 
         if (opts.callback && typeof opts.callback === 'function') {
@@ -6210,7 +6227,7 @@ function updateLinksAndAssets(viewId) {
     }
 
     // Handle .ca-link and .ca-link-child
-    viewElement.querySelectorAll('.ca-link, .ca-link-child').forEach(linkEle => {
+    viewElement.querySelectorAll('.ca-link, .ca-link-child, .ca-link-user').forEach(linkEle => {
         const linkID = linkEle.id;
         let fullFormURL = currentURL;
 
@@ -6224,6 +6241,8 @@ function updateLinksAndAssets(viewId) {
 
         if (linkEle.classList.contains('ca-link-child')) {
             fullFormURL += `${formName}/${getRecordID()}`;
+        } else if (linkEle.classList.contains('ca-link-user')) {
+            fullFormURL += `${formName}/${Knack.getUserAttributes()?.id}`;
         } else {
             fullFormURL += formName;
         }
@@ -6294,14 +6313,50 @@ function insertStaffName(target) {
 
 //KTL Functions
 
+/**
+ * Updates the label text for a field in a Knack view.
+ * Works with regular views and connection-form-views.
+ * Supports HTML replacements using placeholder syntax: {br}, {strong}, {/strong}, {em}, {/em}, {hr}.
+ *
+ * @param {string} viewId - The ID of the view containing the field.
+ * @param {string} viewType - The type of view ('form', 'details', 'list', 'table', 'search').
+ * @param {string} fieldId - The field ID (e.g., 'field_1234').
+ * @param {object} options - Configuration object.
+ * @param {Array} options.params - Array containing label text and optional type specifier.
+ *
+ * @example
+ * // Update a form field label
+ * updateLabelText('view_1234', 'form', 'field_5678', { params: [['New Label Text']] });
+ *
+ * @example
+ * // Update with HTML formatting
+ * updateLabelText('view_1234', 'form', 'field_5678', { params: [['Enter {strong}Client Name{/strong}{br}(First and Last)']] });
+ *
+ * @example
+ * // Update with type specifier
+ * updateLabelText('view_1234', 'form', 'field_5678', { params: [['New Label'], ['form']] });
+ */
 function updateLabelText(viewId, viewType, fieldId, { params }) {
+    // Determine if we're working with a connection form or regular view
+    const viewElement = document.getElementById(viewId) ||
+                       document.querySelector(`#connection-form-view:has(input[value="${viewId}"])`);
+
+    if (!viewElement) {
+        console.warn(`View ${viewId} not found for updateLabelText`);
+        return;
+    }
+
+    // Build selector prefix based on whether it's a connection form
+    const isConnectionForm = viewElement.id === 'connection-form-view';
+    const viewPrefix = isConnectionForm ? `#connection-form-view:has(input[value="${viewId}"])` : `#${viewId}`;
+
     let labelTxt, type, selector;
     const selectors = {
-        form: `#${viewId} #kn-input-${fieldId} .kn-label span:not(.kn-required)`,
-        details: `#${viewId} .${fieldId} .kn-detail-label > span`,
-        list: `#${viewId} .${fieldId} .kn-detail-label > span`,
-        table: `#${viewId} th.${fieldId} > span > a > span:not(span.icon)`,
-        search: `#${viewId} th.${fieldId}  > span > a > span:not(span.icon)`
+        form: `${viewPrefix} #kn-input-${fieldId} .kn-label span:not(.kn-required)`,
+        details: `${viewPrefix} .${fieldId} .kn-detail-label > span`,
+        list: `${viewPrefix} .${fieldId} .kn-detail-label > span`,
+        table: `${viewPrefix} th.${fieldId} > span > a > span:not(span.icon)`,
+        search: `${viewPrefix} th.${fieldId} > span > a > span:not(span.icon)`
     };
 
     if (params.length === 2) {
@@ -6328,7 +6383,12 @@ function updateLabelText(viewId, viewType, fieldId, { params }) {
     );
 
     if (selector) {
-        $(selector).html(originalText || '');
+        const targetElement = document.querySelector(selector);
+        if (targetElement) {
+            targetElement.innerHTML = originalText || '';
+        } else {
+            console.warn(`Label element not found for selector: ${selector}`);
+        }
     }
 }
 

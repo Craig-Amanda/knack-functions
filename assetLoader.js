@@ -158,13 +158,10 @@ if (!KNACK_FUNCTIONS_URL) {
 loadExternalFiles([
     { type: 'script', url: 'https://unpkg.com/react@18/umd/react.development.js' },
     { type: 'script', url: 'https://unpkg.com/react-dom@18/umd/react-dom.development.js' },
-    { type: 'script', url: 'https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js' },
-    { type: 'link', url: 'https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css' },
     { type: 'script', url: KNACK_FUNCTIONS_URL }, // SRI applied dynamically
     { type: 'script', url: 'https://ctrnd.s3.amazonaws.com/Lib/KTL/KTL_Start.js' },
     { type: 'favicon', url: 'https://arcproject.org.uk/wp-content/uploads/2020/01/cropped-favicon-square-2-32x32.jpg' }
 ]);
-
 
 // =========================================================================
 // UTILITY FUNCTIONS AND UI COMPONENTS - PLACE AT BOTTOM AFTER KTL BRACKETS
@@ -359,7 +356,12 @@ function showNewVersionNotification(currentVersion, latestVersion) {
 }
 
 async function fetchCdnMeta() {
-    const res = await fetch(JSDELIVR_META_URL, { method: 'GET' });
+    // Add cache-busting to force fresh metadata (browser can cache for hours)
+    const cacheBuster = `?_=${Date.now()}`;
+    const res = await fetch(JSDELIVR_META_URL + cacheBuster, {
+        method: 'GET',
+        cache: 'no-store'  // Prevent browser caching
+    });
     if (!res.ok) throw new Error('jsDelivr meta HTTP ' + res.status);
     const json = await res.json();
 
