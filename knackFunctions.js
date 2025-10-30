@@ -762,10 +762,40 @@ function addInputEventListener(target, callback, options = {}) {
                 });
             }
         });
+        // If this element has a jQuery UI datepicker attached, also wire its onSelect so
+        // calendar selections trigger the same callback. Preserve any existing onSelect.
+        try {
+            if (window.jQuery && window.jQuery.fn && typeof window.jQuery.fn.datepicker === 'function') {
+                const $el = window.jQuery(el);
+                // Only attach if this element already has a datepicker instance (jQuery UI adds class 'hasDatepicker')
+                if ($el.hasClass && $el.hasClass('hasDatepicker')) {
+                    let existingOnSelect = null;
+                    try {
+                        existingOnSelect = $el.datepicker('option', 'onSelect');
+                    } catch (err) {
+                        existingOnSelect = null;
+                    }
+
+                    $el.datepicker('option', 'onSelect', function (dateText, inst) {
+                        // call previous handler if present
+                        if (typeof existingOnSelect === 'function') {
+                            try { existingOnSelect.call(this, dateText, inst); } catch (_) {}
+                        }
+                        // Create a small synthetic event-like object so callbacks expecting an Event can handle it
+                        const syntheticEvent = { type: 'datepicker', dateText: dateText, target: el };
+                        try { callback(syntheticEvent, el); } catch (_) {}
+                    });
+                }
+            }
+        } catch (e) {
+            // Swallow any errors - non-critical enhancement
+        }
+
         // Run callback on initial load if requested
         if (runOnInit) {
             callback(null, el);
         }
+
         attachedElements.push(el);
     }
 
@@ -778,6 +808,136 @@ function addInputEventListener(target, callback, options = {}) {
     }
 
     return attachedElements;
+}
+
+/**
+ * Enhance a jQuery UI datepicker input to show month and year selectors and apply improved styling.
+ * Safe no-op when jQuery UI datepicker is not present or the input doesn't have an initialized datepicker.
+ *
+ * @param {HTMLElement|string} inputOrSelector - Input element or selector for the date input
+ * @param {Object} [opts] - Options
+ * @param {number} [opts.yearsBack=120] - Number of years back from current year to include in yearRange
+ * @param {boolean} [opts.showButtonPanel=true] - Whether to show the button panel
+ * @returns {boolean} - true if enhancement applied, false otherwise
+ */
+function enhanceDatepicker(inputOrSelector, opts = {}) {
+    const defaults = {
+        changeMonth: true,
+        changeYear: true,
+        yearsBack: 80,
+        showButtonPanel: false,
+        dateFormat: null,
+        minDate: null,
+        maxDate: null,
+        waitForInit: false,
+        maxAttempts: 10,
+        attemptInterval: 200,
+        onApplied: null
+    };
+
+    const options = Object.assign({}, defaults, opts || {});
+
+    if (!window.jQuery || !window.jQuery.fn || typeof window.jQuery.fn.datepicker !== 'function') {
+        return options.waitForInit ? Promise.resolve(false) : false;
+    }
+
+    const resolveElements = () => {
+        if (typeof inputOrSelector === 'string') return Array.from(document.querySelectorAll(inputOrSelector));
+        if (NodeList.prototype.isPrototypeOf(inputOrSelector) || Array.isArray(inputOrSelector)) return Array.from(inputOrSelector);
+        if (inputOrSelector instanceof Element) return [inputOrSelector];
+        return [];
+    };
+
+    const els = resolveElements();
+    if (!els.length) return options.waitForInit ? Promise.resolve(false) : false;
+
+    // Inject styles once
+    if (!document.getElementById('knack-datepicker-styles')) {
+        const style = document.createElement('style');
+        style.id = 'knack-datepicker-styles';
+        style.textContent = `
+        /* Improve month/year select styling in jQuery UI datepicker */
+        .ui-datepicker-title {
+            display: flex;
+        }
+        .ui-datepicker select.ui-datepicker-month, .ui-datepicker select.ui-datepicker-year {
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px solid #cfcfcf;
+            background: #fff;
+            color: #222;
+            font-size: 13px;
+            margin-right: 6px;
+            display: inline-block;
+        }
+        .ui-datepicker .ui-datepicker-header {
+            padding: 6px 8px;
+            background: #f5f6f7;
+            border-bottom: 1px solid rgba(0,0,0,0.06);
+        }
+        .ui-datepicker .ui-datepicker-calendar td a {
+            border-radius: 4px;
+            padding: 6px 8px;
+        }
+        .ui-datepicker .ui-datepicker-buttonpane {
+            text-align: right;
+            padding: 6px 8px;
+        }
+        `;
+        document.head.appendChild(style);
+    }
+
+    const applyToElements = () => {
+        let appliedAny = false;
+        els.forEach(el => {
+            try {
+                const $el = window.jQuery(el);
+                if (!$el || !$el.hasClass) return;
+                if ($el.hasClass('hasDatepicker')) {
+                    const currentYear = new Date().getFullYear();
+                    const startYear = currentYear - Math.max(0, options.yearsBack);
+                    const optObj = {
+                        changeMonth: !!options.changeMonth,
+                        changeYear: !!options.changeYear,
+                        yearRange: `${startYear}:${currentYear}`,
+                        showButtonPanel: !!options.showButtonPanel
+                    };
+                    if (options.dateFormat) optObj.dateFormat = options.dateFormat;
+                    if (options.minDate !== null) optObj.minDate = options.minDate;
+                    if (options.maxDate !== null) optObj.maxDate = options.maxDate;
+
+                    $el.datepicker('option', optObj);
+
+                    // If caller provided a callback
+                    if (typeof options.onApplied === 'function') {
+                        try { options.onApplied(el); } catch (e) { /* swallow */ }
+                    }
+
+                    appliedAny = true;
+                }
+            } catch (err) {
+                // ignore per-element failures
+            }
+        });
+        return appliedAny;
+    };
+
+    if (!options.waitForInit) {
+        return applyToElements();
+    }
+
+    // waitForInit: attempt to apply repeatedly until success or attempts exhausted
+    return new Promise((resolve) => {
+        let attempts = 0;
+        const tryApply = () => {
+            attempts += 1;
+            const ok = applyToElements();
+            if (ok) return resolve(true);
+            if (attempts >= Math.max(1, options.maxAttempts)) return resolve(false);
+            setTimeout(tryApply, Math.max(50, options.attemptInterval));
+        };
+        tryApply();
+    });
 }
 
 /**
