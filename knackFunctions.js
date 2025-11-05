@@ -6498,25 +6498,21 @@ function insertStaffName(target) {
  */
 function updateLabelText(viewId, viewType, fieldId, { params }) {
     // Determine if we're working with a connection form or regular view
-    const viewElement = document.getElementById(viewId) ||
-                       document.querySelector(`#connection-form-view:has(input[value="${viewId}"])`);
+    const viewElement = document.getElementById(viewId)
 
     if (!viewElement) {
         console.warn(`View ${viewId} not found for updateLabelText`);
         return;
     }
 
-    // Build selector prefix based on whether it's a connection form
-    const isConnectionForm = viewElement.id === 'connection-form-view';
-    const viewPrefix = isConnectionForm ? `#connection-form-view:has(input[value="${viewId}"])` : `#${viewId}`;
 
     let labelTxt, type, selector;
     const selectors = {
-        form: `${viewPrefix} #kn-input-${fieldId} .kn-label span:not(.kn-required)`,
-        details: `${viewPrefix} .${fieldId} .kn-detail-label > span`,
-        list: `${viewPrefix} .${fieldId} .kn-detail-label > span`,
-        table: `${viewPrefix} th.${fieldId} > span > a > span:not(span.icon)`,
-        search: `${viewPrefix} th.${fieldId} > span > a > span:not(span.icon)`
+        form: `#${viewElement.id} #kn-input-${fieldId} .kn-label span:not(.kn-required)`,
+        details: `#${viewElement.id} .${fieldId} .kn-detail-label > span`,
+        list: `#${viewElement.id} .${fieldId} .kn-detail-label > span`,
+        table: `#${viewElement.id} th.${fieldId} > span > a > span:not(span.icon)`,
+        search: `#${viewElement.id} th.${fieldId} > span > a > span:not(span.icon)`
     };
 
     if (params.length === 2) {
