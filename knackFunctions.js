@@ -2510,7 +2510,7 @@ class MultiFormSubmissionCoordinator {
             const checkOutcome = () => {
                 // Check for success message
                 const successMsg = viewElement.querySelector(this.selectors.SUCCESS_MESSAGE);
-                if (successMsg && successMsg.offsetParent !== null) {
+                if (successMsg) {
                     cleanup();
                     resolve({
                         success: true,
@@ -2523,7 +2523,7 @@ class MultiFormSubmissionCoordinator {
 
                 // Check for error message
                 const errorMsg = viewElement.querySelector(this.selectors.ERROR_MESSAGE);
-                if (errorMsg && errorMsg.offsetParent !== null) {
+                if (errorMsg) {
                     cleanup();
                     reject(new Error(`Form submission failed: ${errorMsg.textContent.trim()}`));
                     return true;
@@ -2577,7 +2577,9 @@ class MultiFormSubmissionCoordinator {
 
             this.eventHandlers.set(`submit-${viewId}`, cleanup);
         });
-    }    /**
+    }
+
+    /**
      * Submit the manual form
      * @private
      */
