@@ -2494,8 +2494,19 @@ class MultiFormSubmissionCoordinator {
     _waitForFormSubmitOutcome(viewId) {
         return new Promise((resolve, reject) => {
             let cleanupDone = false;
+            let timeoutId = null;
+            let pollIntervalId = null;
+            let observer = null;
 
-            const timeoutId = setTimeout(() => {
+            const cleanup = () => {
+                if (cleanupDone) return;
+                cleanupDone = true;
+                if (timeoutId) clearTimeout(timeoutId);
+                if (pollIntervalId) clearInterval(pollIntervalId);
+                if (observer) observer.disconnect();
+            };
+
+            timeoutId = setTimeout(() => {
                 cleanup();
                 reject(new Error(`Form submission timeout for ${viewId} after ${this.timeouts.FORM_SUBMIT}ms`));
             }, this.timeouts.FORM_SUBMIT);
@@ -2550,7 +2561,7 @@ class MultiFormSubmissionCoordinator {
             };
 
             // Monitor for changes with MutationObserver
-            const observer = new MutationObserver(checkOutcome);
+            observer = new MutationObserver(checkOutcome);
             observer.observe(viewElement, {
                 childList: true,
                 subtree: true,
@@ -2563,17 +2574,9 @@ class MultiFormSubmissionCoordinator {
             setTimeout(checkOutcome, this.timeouts.OUTCOME_POLL_INTERVAL);
 
             // Periodic polling as backup
-            const pollInterval = setInterval(() => {
+            pollIntervalId = setInterval(() => {
                 if (!cleanupDone) checkOutcome();
             }, this.timeouts.OUTCOME_POLL_INTERVAL);
-
-            const cleanup = () => {
-                if (cleanupDone) return;
-                cleanupDone = true;
-                clearTimeout(timeoutId);
-                clearInterval(pollInterval);
-                observer.disconnect();
-            };
 
             this.eventHandlers.set(`submit-${viewId}`, cleanup);
         });
