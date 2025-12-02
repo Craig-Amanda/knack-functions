@@ -1849,10 +1849,15 @@ function getOffsetDateUK(inputDate, daysOffset = 0) {
 }
 
 /** Format Date as dd/mm/yyyy
- *  @param {object} dateObj - Date to format
- *  @return {string} - Formatted date string */
-function getDateUKFormat(dateObj) {
-    return dateObj.toLocaleDateString('en-GB');
+ *  @param {Date|string|number} inputDate - Date object or parsable date value.
+ *  @return {string} - Formatted date string (dd/mm/yyyy) or '' if invalid. */
+function getDateUKFormat(inputDate) {
+    const date = inputDate instanceof Date ? inputDate : parseDateObject(inputDate);
+    if (!date) {
+        console.warn('getDateUKFormat: cannot parse date:', inputDate);
+        return '';
+    }
+    return date.toLocaleDateString('en-GB');
 }
 
 /** Calcualate How many weeks ago a date was
@@ -5631,6 +5636,55 @@ function replaceLargeNo(cellIdent, maxNum, replaceTxt, isLink) {
         }
     });
 }
+
+/**
+ * Get a 24-character hex ID from an element’s id or class tokens.
+ * Checks the element’s `id` first, then each token in `classList`,
+ * and returns the first value that matches a 24-char hex pattern.
+ *
+ * @param {Element|null} el - The DOM element to inspect.
+ * @returns {string|null} The first matching 24-char hex ID, or null if none found.
+ */
+function getIdFromElement(el) {
+    if (!el) return null;
+    const HEX24 = /^[a-fA-F0-9]{24}$/;
+
+    if (el.id && HEX24.test(el.id)) return el.id;
+
+    for (const token of el.classList || []) {
+        if (HEX24.test(token)) return token;
+    }
+    return null;
+}
+
+/**
+ * Extract the connected record ID from a Knack table cell.
+ * Targets the canonical connection node: `span[data-kn="connection-value"]`.
+ * If not found, falls back to scanning descendant <span> elements for a 24-char hex token in id/class.
+ * @param {HTMLTableCellElement|Element|null} cellEl - The <td> (or container) holding the connection.
+ * @returns {string|null} The connected record’s 24-char hex ID, or null if not found.
+ *
+ * @example
+ * // <td class="field_196"><span><span class="673c...737f" data-kn="connection-value">JON DOE</span></span></td>
+ * const clientId = getConnectionIdFromCell(cellEl); // '673c6b4ee5a91c02d47a737f'
+ */
+function getConnectionIdFromCell(cellEl) {
+    if (!cellEl) return null;
+
+    // Primary: explicit connection value node
+    const conn = cellEl.querySelector('span[data-kn="connection-value"]');
+    const idFromConn = getIdFromElement(conn);
+    if (idFromConn) return idFromConn;
+
+    // Fallback: any descendant <span>
+    const spans = cellEl.querySelectorAll('span');
+    for (const s of spans) {
+        const id = getIdFromElement(s);
+        if (id) return id;
+    }
+    return null;
+}
+
 /* get current record id */
 function getRecordID(part = null) {
     const urlStr = sanitiseURL(window.location.href);
