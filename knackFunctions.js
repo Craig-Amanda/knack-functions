@@ -3956,7 +3956,7 @@ class KnackAPI {
     }
 
     /**
-     * Updates a record in a Knack view
+     * Updates a record in a Knack view with verification of updated fields
      * @param {string} sceneId - The scene ID/key
      * @param {string} viewId - The view ID/key
      * @param {string} recordId - The record ID to update
@@ -3982,12 +3982,49 @@ class KnackAPI {
                 },
                 signal
             );
+
+            // --- basic verification & logging (non-breaking) ---
+            try {
+                const recordObj = result?.record ?? result; // handle both shapes defensively
+                const requestedKeys = Object.keys(recordData || {});
+                const failed = [];
+                const succeeded = [];
+
+                for (const key of requestedKeys) {
+                    const sentVal = recordData[key];
+                    const gotVal = this._extractResponseValueFromRecord(recordObj, key);
+
+                    if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
+                        failed.push({
+                            field: key,
+                            sent: sentVal,
+                            received: gotVal
+                        });
+                    }
+                }
+
+                if (failed.length > 0) {
+                    const failedFields = failed.map(f => f.field).join(', ');
+                    this._log('Field update verification: failures detected', {
+                        sceneId,
+                        viewId,
+                        recordId,
+                        failedFields,
+                        failedCount: failed.length
+                    }, 'warn');
+                }
+            } catch (verifyErr) {
+                this._log('Field update verification error', verifyErr, 'error');
+            }
+            // --- end verification ---
+
             if (refreshViews) await this.refreshView(refreshViews);
             return result;
         } finally {
             clear();
         }
     }
+
 
     /**
      * Updates multiple records with the same data, with a delay between each request
@@ -4131,15 +4168,27 @@ class KnackAPI {
     }
 
     /**
-     * Log debug messages if debug mode is enabled and user is a developer (or developer-only is disabled)
+     * Log messages with levels (info, warn, error). Defaults to info.
      * @param {string} message - The message to log
      * @param {*} data - Optional data to log
      * @param {boolean} [forceLog=false] - Force logging regardless of developer status
+     * @param {'info'|'warn'|'error'} [level='info'] - Log level
      * @private
      */
-    _log(message, data, forceLog = false) {
+    _log(message, data, level = 'info', forceLog = false) {
         if ((this.options.debug && (this._canShowLogs || forceLog))) {
-            console.log(`[KnackAPI] ${message}`, data || '');
+            const prefix = `[KnackAPI] ${message}`;
+            console.log('level:', level);
+            switch (level) {
+                case 'warn':
+                    console.warn(prefix, data || '');
+                    break;
+                case 'error':
+                    console.error(prefix, data || '');
+                    break;
+                default:
+                    console.log(prefix, data || '');
+            }
         }
     }
 
@@ -4450,7 +4499,7 @@ class KnackAPI {
                 }
 
                 // Calendar views: use renderRecords()
-                if (viewType === 'calendar') {
+                                if (viewType === 'calendar') {
                     if (typeof view.renderRecords === 'function') {
                         view.renderRecords();
                         Knack.hideSpinner?.();
@@ -4474,16 +4523,17 @@ class KnackAPI {
                     }
                 }
 
+                // Menu views: use postRender
                 if (viewType === 'menu') {
-                         if (typeof view.postRender=== 'function') {
-                            view.postRender();
-                            this._log('Menu view refreshed via postRender', viewId);
-                            return resolve();
-                        } else {
-                            this._log('postRender not available on menu view', viewId);
-                            return reject(new Error('postRender not available'));
-                        }
-                 }
+                    if (typeof view.postRender=== 'function') {
+                        view.postRender();
+                        this._log('Menu view refreshed via postRender', viewId);
+                        return resolve();
+                    } else {
+                        this._log('postRender not available on menu view', viewId);
+                        return reject(new Error('postRender not available'));
+                    }
+                }
 
                 // All others: fetch first, then render
                 view.model.fetch({
@@ -4539,6 +4589,66 @@ class KnackAPI {
 
             return formattedRecord;
         });
+    }
+
+    //*************** Helpers for comparing request and response data *************************/
+    /**
+     * Extracts the value of a field from a Knack record response. Checks both the plain field key and its `_raw` variant.
+     * @param {Object} recordObj - The record object returned by Knack
+     * @param {string} fieldKey - The field key to extract (e.g. "field_1567").
+     * @returns {*} - The field value if found, otherwise undefined.
+     * @private
+     */
+    _extractResponseValueFromRecord(recordObj, fieldKey) {
+        if (!recordObj || typeof recordObj !== 'object') return undefined;
+        if (Object.prototype.hasOwnProperty.call(recordObj, fieldKey)) {
+            return recordObj[fieldKey];
+        }
+        const rawKey = `${fieldKey}_raw`;
+        if (Object.prototype.hasOwnProperty.call(recordObj, rawKey)) {
+            return recordObj[rawKey];
+        }
+        return undefined;
+    }
+
+    /**
+     * Normalises values for loose comparison between request and response.
+     * Handles strings, numbers, booleans, arrays (order-insensitive), and simple objects.
+     * @param {*} val - The value to normalise.
+     * @returns {string|null} - A normalised string suitable for comparison, or null if no value.
+     * @private
+     */
+    _normaliseForCompare(val) {
+        if (val === null || val === undefined) return null;
+
+        // Arrays (order-insensitive, common for connections / multiselects)
+        if (Array.isArray(val)) {
+            const mapped = val.map(v => {
+                if (v && typeof v === 'object') return v.id ?? v.value ?? JSON.stringify(v);
+                return String(v);
+            });
+            return mapped.sort().join('|');
+        }
+
+        // Objects (shallow stable string)
+        if (typeof val === 'object') {
+            const keys = Object.keys(val).sort();
+            return keys.map(k => `${k}:${this._normaliseForCompare(val[k])}`).join('|');
+        }
+
+        // Primitives
+        return String(val).trim();
+    }
+
+    /**
+     * Compares two values after normalisation to determine if they are effectively equal.
+     * @param {*} a - The first value.
+     * @param {*} b - The second value.
+     * @returns {boolean} - True if values are considered equal, otherwise false.
+     * @private
+     */
+    _valuesEffectivelyEqual(a, b) {
+        return this._normaliseForCompare(a) === this._normaliseForCompare(b);
     }
 }
 
@@ -5070,6 +5180,41 @@ function showNotification(options) {
     }
 
     return notification;
+}
+
+/** Clear the value(s) of a given input or array of inputs.
+ * Supports text/date/select/textarea/checkbox/radio.
+ * @param {HTMLElement|HTMLElement[]} input - Input or array of inputs to clear
+ * @param {boolean} triggerChange - whetehr to trigger a change event*/
+function clearInput(input, triggerChange = false) {
+    const inputs = Array.isArray(input) || NodeList.prototype.isPrototypeOf(input)
+        ? input
+        : [input];
+
+    inputs.forEach(field => {
+        if (!field) return;
+
+        const isCheckbox = field.type === 'checkbox';
+        const isRadio = field.type === 'radio';
+        const isSelect = field.tagName === 'SELECT';
+        const hadValue = field.value !== '' || field.checked;
+
+        if (isCheckbox || isRadio) {
+            field.checked = false;
+        } else if (isSelect) {
+            field.value = '';
+        } else {
+            field.value = '';
+            if (field.type === 'date') {
+                field.valueAsDate = null;
+            }
+        }
+
+        if (triggerChange && hadValue) {
+            field.dispatchEvent(new Event('change', { bubbles: true }));
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    });
 }
 
 /** Remove given options from select
