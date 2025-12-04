@@ -4178,7 +4178,6 @@ class KnackAPI {
     _log(message, data, level = 'info', forceLog = false) {
         if ((this.options.debug && (this._canShowLogs || forceLog))) {
             const prefix = `[KnackAPI] ${message}`;
-            console.log('level:', level);
             switch (level) {
                 case 'warn':
                     console.warn(prefix, data || '');
