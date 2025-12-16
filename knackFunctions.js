@@ -1909,6 +1909,20 @@ function getDateUKFormat(inputDate) {
     return date.toLocaleDateString('en-GB');
 }
 
+/**
+ * Converts a given date input into an ISO string representing
+ * the very end of that day (23:59:59.999).
+ * @param {string|Date} inputDate - Date to convert (ISO string or Date)
+ * @returns {string} ISO string for end of day, or empty string if invalid
+ */
+function getEndOfDayIso(inputDate) {
+    const dateObj = parseDateObject(inputDate);
+    if (!dateObj) return '';
+
+    dateObj.setHours(23, 59, 59, 999);
+    return dateObj.toISOString();
+}
+
 /** Calcualate How many weeks ago a date was
  * @param {number} weeksAgo - Number of weeks ago
  * @returns {string} */
@@ -6865,7 +6879,7 @@ function updateLabelText(viewId, viewType, fieldId, { params }) {
         if (targetElement) {
             targetElement.innerHTML = originalText || '';
         } else {
-            console.warn(`Label element not found for selector: ${selector}`);
+            // console.warn(`Label element not found for selector: ${selector}`);
         }
     }
 }
