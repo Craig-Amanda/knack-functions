@@ -766,17 +766,17 @@ function addInputEventListener(target, callback, options = {}) {
         // calendar selections trigger the same callback. Preserve any existing onSelect.
         try {
             if (window.jQuery && window.jQuery.fn && typeof window.jQuery.fn.datepicker === 'function') {
-                const $el = window.jQuery(el);
+                const datepickerEl = $(el);
                 // Only attach if this element already has a datepicker instance (jQuery UI adds class 'hasDatepicker')
-                if ($el.hasClass && $el.hasClass('hasDatepicker')) {
+                if (datepickerEl.hasClass && datepickerEl.hasClass('hasDatepicker')) {
                     let existingOnSelect = null;
                     try {
-                        existingOnSelect = $el.datepicker('option', 'onSelect');
+                        existingOnSelect = datepickerEl.datepicker('option', 'onSelect');
                     } catch (err) {
                         existingOnSelect = null;
                     }
 
-                    $el.datepicker('option', 'onSelect', function (dateText, inst) {
+                    datepickerEl.datepicker('option', 'onSelect', function (dateText, inst) {
                         // call previous handler if present
                         if (typeof existingOnSelect === 'function') {
                             try { existingOnSelect.call(this, dateText, inst); } catch (_) {}
@@ -811,17 +811,29 @@ function addInputEventListener(target, callback, options = {}) {
 }
 
 /**
- * Enhance a jQuery UI datepicker input to show month and year selectors and apply improved styling.
- * Safe no-op when jQuery UI datepicker is not present or the input doesn't have an initialized datepicker.
+ * Enhance a jQuery UI datepicker/timepicker input to show month/year selectors, optional time bounds, and apply styling.
+ * Safe no-op when required plugins are not present or the input lacks an initialized picker.
  *
- * @param {HTMLElement|string} inputOrSelector - Input element or selector for the date input
+ * @param {HTMLElement|string} inputOrSelector - Input element or selector for the date/time input
  * @param {Object} [opts] - Options
- * @param {number} [opts.yearsBack=120] - Number of years back from current year to include in yearRange
- * @param {boolean} [opts.showButtonPanel=true] - Whether to show the button panel
- * @returns {boolean} - true if enhancement applied, false otherwise
+ * @param {('date'|'time'|'datetime')} [opts.mode='date'] - Apply to date only, time only, or both
+ * @param {number} [opts.yearsBack=80] - Years back from current year in yearRange
+ * @param {boolean} [opts.showButtonPanel=false] - Whether to show the datepicker button panel
+ * @param {string|null} [opts.dateFormat=null] - Date format string for datepicker
+ * @param {string|Date|null} [opts.minDate=null] - Minimum selectable date
+ * @param {string|Date|null} [opts.maxDate=null] - Maximum selectable date
+ * @param {boolean} [opts.waitForInit=false] - When true, retry applying until picker initializes or attempts are exhausted
+ * @param {string|null} [opts.timeFormat='H:i'] - Time format string for timepicker
+ * @param {string|Date|null} [opts.minTime=null] - Earliest selectable time (timepicker)
+ * @param {string|Date|null} [opts.maxTime=null] - Latest selectable time (timepicker)
+ * @param {Array<Array<string|Date>>|null} [opts.disableTimeRanges=null] - Disabled time ranges [[start, end], ...]
+ * @param {number|null} [opts.step=null] - Minute step for timepicker
+ * @param {Object|null} [opts.timepickerOptions=null] - Raw options forwarded to the timepicker plugin
+ * @returns {boolean|Promise<boolean>} - true if enhancement applied, false otherwise (Promise when waitForInit)
  */
-function enhanceDatepicker(inputOrSelector, opts = {}) {
+function enhanceDateTimePicker(inputOrSelector, opts = {}) {
     const defaults = {
+        mode: 'date',
         changeMonth: true,
         changeYear: true,
         yearsBack: 80,
@@ -832,12 +844,25 @@ function enhanceDatepicker(inputOrSelector, opts = {}) {
         waitForInit: false,
         maxAttempts: 10,
         attemptInterval: 200,
-        onApplied: null
+        onApplied: null,
+        timeFormat: 'H:i',
+        minTime: null,
+        maxTime: null,
+        disableTimeRanges: null,
+        step: null,
+        timepickerOptions: null
     };
 
     const options = Object.assign({}, defaults, opts || {});
+    const mode = String(options.mode || 'date').toLowerCase();
+    const wantsDate = mode === 'date' || mode === 'datetime';
+    const wantsTime = mode === 'time' || mode === 'datetime';
 
-    if (!window.jQuery || !window.jQuery.fn || typeof window.jQuery.fn.datepicker !== 'function') {
+    const hasJquery = !!(window.jQuery && window.jQuery.fn);
+    const hasDatepicker = hasJquery && typeof window.jQuery.fn.datepicker === 'function';
+    const hasTimepicker = hasJquery && typeof window.jQuery.fn.timepicker === 'function';
+
+    if (!hasJquery || (wantsDate && !hasDatepicker) || (wantsTime && !hasTimepicker)) {
         return options.waitForInit ? Promise.resolve(false) : false;
     }
 
@@ -851,8 +876,8 @@ function enhanceDatepicker(inputOrSelector, opts = {}) {
     const els = resolveElements();
     if (!els.length) return options.waitForInit ? Promise.resolve(false) : false;
 
-    // Inject styles once
-    if (!document.getElementById('knack-datepicker-styles')) {
+    // Inject datepicker styles only when date mode is requested and styles are absent
+    if (wantsDate && !document.getElementById('knack-datepicker-styles')) {
         const style = document.createElement('style');
         style.id = 'knack-datepicker-styles';
         style.textContent = `
@@ -891,9 +916,12 @@ function enhanceDatepicker(inputOrSelector, opts = {}) {
         let appliedAny = false;
         els.forEach(el => {
             try {
-                const $el = window.jQuery(el);
-                if (!$el || !$el.hasClass) return;
-                if ($el.hasClass('hasDatepicker')) {
+                const datepickerEl = $(el);
+                if (!datepickerEl || !datepickerEl.hasClass) return;
+
+                let appliedOnElement = false;
+
+                if (wantsDate && datepickerEl.hasClass('hasDatepicker')) {
                     const currentYear = new Date().getFullYear();
                     const startYear = currentYear - Math.max(0, options.yearsBack);
                     const optObj = {
@@ -906,14 +934,35 @@ function enhanceDatepicker(inputOrSelector, opts = {}) {
                     if (options.minDate !== null) optObj.minDate = options.minDate;
                     if (options.maxDate !== null) optObj.maxDate = options.maxDate;
 
-                    $el.datepicker('option', optObj);
+                    datepickerEl.datepicker('option', optObj);
+                    appliedOnElement = true;
+                }
 
-                    // If caller provided a callback
+                if (wantsTime && typeof datepickerEl.timepicker === 'function') {
+                    const timeOpts = {};
+                    if (options.timeFormat) timeOpts.timeFormat = options.timeFormat;
+                    if (options.minTime !== null) timeOpts.minTime = options.minTime;
+                    if (options.maxTime !== null) timeOpts.maxTime = options.maxTime;
+                    if (options.disableTimeRanges) timeOpts.disableTimeRanges = options.disableTimeRanges;
+                    if (options.step) timeOpts.step = options.step;
+                    if (options.timepickerOptions && typeof options.timepickerOptions === 'object') {
+                        Object.assign(timeOpts, options.timepickerOptions);
+                    }
+
+                    if (datepickerEl.hasClass('ui-timepicker-input')) {
+                        datepickerEl.timepicker('option', timeOpts);
+                    } else {
+                        datepickerEl.timepicker(timeOpts);
+                    }
+
+                    appliedOnElement = true;
+                }
+
+                if (appliedOnElement) {
+                    appliedAny = true;
                     if (typeof options.onApplied === 'function') {
                         try { options.onApplied(el); } catch (e) { /* swallow */ }
                     }
-
-                    appliedAny = true;
                 }
             } catch (err) {
                 // ignore per-element failures
@@ -5181,38 +5230,109 @@ function showNotification(options) {
     return notification;
 }
 
+const isNodeList = val => NodeList.prototype.isPrototypeOf(val);
+const isjQueryInstance = val => typeof window !== 'undefined' && window.jQuery && val instanceof window.jQuery;
+
+/**
+ * Normalises any supported selector/collection into a flat array of HTMLElements.
+ * @param {HTMLElement|HTMLElement[]|NodeList|string|jQuery} target - Inputs or selector to resolve
+ * @returns {HTMLElement[]} Array of matched elements (possibly empty)
+ * @example
+ * const inputs = normaliseInputs('#view_123 input');
+ */
+function normaliseInputs(target) {
+    if (!target) return [];
+    if (typeof target === 'string') return Array.from(document.querySelectorAll(target));
+    if (isjQueryInstance(target)) return target.toArray();
+    if (Array.isArray(target)) return target;
+    if (isNodeList(target)) return Array.from(target);
+    return [target];
+}
+
+/**
+ * Escapes a string for safe use inside CSS selectors.
+ * Falls back to a manual escape when CSS.escape is unavailable.
+ * @param {string} value - Raw selector fragment
+ * @returns {string} Escaped selector fragment
+ * @example
+ * const safeName = cssEscape('[field]');
+ */
+function cssEscape(value) {
+    if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/([^a-zA-Z0-9_\-])/g, '\\$1');
+}
+
 /** Clear the value(s) of a given input or array of inputs.
  * Supports text/date/select/textarea/checkbox/radio.
- * @param {HTMLElement|HTMLElement[]} input - Input or array of inputs to clear
- * @param {boolean} triggerChange - whetehr to trigger a change event*/
-function clearInput(input, triggerChange = false) {
-    const inputs = Array.isArray(input) || NodeList.prototype.isPrototypeOf(input)
-        ? input
-        : [input];
+ * @param {HTMLElement|HTMLElement[]|NodeList|string|jQuery} input - Input(s) or selector to clear
+ * @param {boolean} triggerChange - whether to trigger change/input events*/
+function clearInput(inputContainer, triggerChange = false) {
+    const normalisedInputs = normaliseInputs(inputContainer);
 
-    inputs.forEach(field => {
+    normalisedInputs.forEach(field => {
         if (!field) return;
 
-        const isCheckbox = field.type === 'checkbox';
-        const isRadio = field.type === 'radio';
-        const isSelect = field.tagName === 'SELECT';
-        const hadValue = field.value !== '' || field.checked;
+        const inputs = field.matches && field.matches('input, select, textarea')
+            ? [field]
+            : Array.from(field.querySelectorAll('input, select, textarea'));
 
-        if (isCheckbox || isRadio) {
-            field.checked = false;
-        } else if (isSelect) {
-            field.value = '';
-        } else {
-            field.value = '';
-            if (field.type === 'date') {
-                field.valueAsDate = null;
-            }
-        }
+        if (!inputs.length) return;
 
-        if (triggerChange && hadValue) {
-            field.dispatchEvent(new Event('change', { bubbles: true }));
-            field.dispatchEvent(new Event('input', { bubbles: true }));
-        }
+        const processedRadioGroups = new Set();
+
+        inputs.forEach(input => {
+            if (!input) return;
+
+            const targetInputs = (() => {
+                if (input.type !== 'radio' || !input.name) {
+                    return [input];
+                }
+
+                if (processedRadioGroups.has(input.name)) {
+                    return [];
+                }
+                processedRadioGroups.add(input.name);
+
+                const scoped = field.querySelectorAll
+                    ? field.querySelectorAll(`${INPUT_RADIO_SELECTOR}[name="${cssEscape(input.name)}"]`)
+                    : [];
+                if (scoped.length) return Array.from(scoped);
+
+                const globalRadios = document.querySelectorAll(`${INPUT_RADIO_SELECTOR}[name="${cssEscape(input.name)}"]`);
+                return globalRadios.length ? Array.from(globalRadios) : [input];
+            })();
+
+            targetInputs.forEach(targetInput => {
+                const hadValue = (targetInput.type === 'checkbox' || targetInput.type === 'radio')
+                    ? targetInput.checked
+                    : targetInput.value !== '';
+
+                if (targetInput.type === 'checkbox' || targetInput.type === 'radio') {
+                    targetInput.checked = false;
+                } else if (targetInput.tagName === 'SELECT') {
+                    targetInput.value = '';
+                    if (targetInput.multiple) {
+                        Array.from(targetInput.options).forEach(option => option.selected = false);
+                    } else {
+                        targetInput.selectedIndex = -1;
+                    }
+
+                    if (typeof window !== 'undefined' && window.jQuery) {
+                        const selectEl = $(targetInput);
+                        if (selectEl.data('chosen')) {
+                            selectEl.trigger('liszt:updated');
+                        }
+                    }
+                } else {
+                    targetInput.value = '';
+                }
+
+                if (triggerChange && hadValue) {
+                    targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            });
+        });
     });
 }
 
