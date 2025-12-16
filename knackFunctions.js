@@ -822,7 +822,7 @@ function addInputEventListener(target, callback, options = {}) {
  * @param {string|null} [opts.dateFormat=null] - Date format string for datepicker
  * @param {string|Date|null} [opts.minDate=null] - Minimum selectable date
  * @param {string|Date|null} [opts.maxDate=null] - Maximum selectable date
- * @param {boolean} [opts.waitForInit=false] - When true, retry applying until picker initializes or attempts are exhausted
+ * @param {boolean} [opts.waitForInit=false] - Returns a Promise<boolean> if {@link opts.waitForInit} is true, otherwise returns a boolean. In both cases, true if enhancement applied, false otherwise.
  * @param {string|null} [opts.timeFormat='H:i'] - Time format string for timepicker
  * @param {string|Date|null} [opts.minTime=null] - Earliest selectable time (timepicker)
  * @param {string|Date|null} [opts.maxTime=null] - Latest selectable time (timepicker)
@@ -5231,7 +5231,7 @@ function showNotification(options) {
 }
 
 const isNodeList = val => NodeList.prototype.isPrototypeOf(val);
-const isjQueryInstance = val => typeof window !== 'undefined' && window.jQuery && val instanceof window.jQuery;
+const isjQueryInstance = val => window.jQuery && val instanceof window.jQuery;
 
 /**
  * Normalises any supported selector/collection into a flat array of HTMLElements.
@@ -5310,7 +5310,6 @@ function clearInput(inputContainer, triggerChange = false) {
                 if (targetInput.type === 'checkbox' || targetInput.type === 'radio') {
                     targetInput.checked = false;
                 } else if (targetInput.tagName === 'SELECT') {
-                    targetInput.value = '';
                     if (targetInput.multiple) {
                         Array.from(targetInput.options).forEach(option => option.selected = false);
                     } else {
