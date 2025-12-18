@@ -811,25 +811,42 @@ function addInputEventListener(target, callback, options = {}) {
 }
 
 /**
- * Enhance a jQuery UI datepicker/timepicker input to show month/year selectors, optional time bounds, and apply styling.
+ * Enhance a jQuery UI datepicker/timepicker input to show month/year selectors, optional date/time bounds, and apply styling.
  * Safe no-op when required plugins are not present or the input lacks an initialized picker.
  *
- * @param {HTMLElement|string} inputOrSelector - Input element or selector for the date/time input
+ * Supports targeting via:
+ *  - Knack field reference: { viewId: 'view_1234', fieldId: 'field_5678' } (also supports arrays of these)
+ *  - CSS selector string
+ *  - HTMLElement
+ *  - NodeList / array of elements
+ *
+ * @param {HTMLElement|string|Object|Array|NodeList} inputOrSelector - Target(s) to enhance
  * @param {Object} [opts] - Options
  * @param {('date'|'time'|'datetime')} [opts.mode='date'] - Apply to date only, time only, or both
- * @param {number} [opts.yearsBack=80] - Years back from current year in yearRange
- * @param {boolean} [opts.showButtonPanel=false] - Whether to show the datepicker button panel
+ *
+ * @param {boolean} [opts.changeMonth=true] - Show month selector (datepicker)
+ * @param {boolean} [opts.changeYear=true] - Show year selector (datepicker)
+ * @param {number} [opts.yearsBack=80] - Years back from current year for yearRange (datepicker)
+ * @param {number} [opts.yearsForward=5] - Years forward from current year for yearRange (datepicker)
+ * @param {boolean} [opts.showButtonPanel=false] - Show Today/Done button panel (datepicker)
+ *
  * @param {string|null} [opts.dateFormat=null] - Date format string for datepicker
- * @param {string|Date|null} [opts.minDate=null] - Minimum selectable date
- * @param {string|Date|null} [opts.maxDate=null] - Maximum selectable date
- * @param {boolean} [opts.waitForInit=false] - Returns a Promise<boolean> if {@link opts.waitForInit} is true, otherwise returns a boolean. In both cases, true if enhancement applied, false otherwise.
- * @param {string|null} [opts.timeFormat='H:i'] - Time format string for timepicker
+ * @param {string|Date|number|null} [opts.minDate=null] - Minimum selectable date (datepicker)
+ * @param {string|Date|number|null} [opts.maxDate=null] - Maximum selectable date (datepicker)
+ *
+ * @param {string|null} [opts.timeFormat='H:i'] - Time format string (timepicker)
  * @param {string|Date|null} [opts.minTime=null] - Earliest selectable time (timepicker)
  * @param {string|Date|null} [opts.maxTime=null] - Latest selectable time (timepicker)
  * @param {Array<Array<string|Date>>|null} [opts.disableTimeRanges=null] - Disabled time ranges [[start, end], ...]
  * @param {number|null} [opts.step=null] - Minute step for timepicker
  * @param {Object|null} [opts.timepickerOptions=null] - Raw options forwarded to the timepicker plugin
- * @returns {boolean|Promise<boolean>} - true if enhancement applied, false otherwise (Promise when waitForInit)
+ *
+ * @param {boolean} [opts.waitForInit=false] - If true, retries until applied or attempts exhausted
+ * @param {number} [opts.maxAttempts=10] - Retry attempts when waitForInit is true
+ * @param {number} [opts.attemptInterval=200] - Delay between retries in ms
+ * @param {Function|null} [opts.onApplied=null] - Callback invoked per element where enhancements were applied
+ *
+ * @returns {boolean|Promise<boolean>} True if enhancement applied, false otherwise (Promise when waitForInit)
  */
 function enhanceDateTimePicker(inputOrSelector, opts = {}) {
     const defaults = {
@@ -837,6 +854,7 @@ function enhanceDateTimePicker(inputOrSelector, opts = {}) {
         changeMonth: true,
         changeYear: true,
         yearsBack: 80,
+        yearsForward: 5,
         showButtonPanel: false,
         dateFormat: null,
         minDate: null,
@@ -866,7 +884,65 @@ function enhanceDateTimePicker(inputOrSelector, opts = {}) {
         return options.waitForInit ? Promise.resolve(false) : false;
     }
 
+    /**
+     * Support passing a Knack field reference object:
+     *   { viewId: 'view_8995', fieldId: 'field_4939' }
+     * We will locate #kn-input-field_4939 inside the view and then target any contained date/time inputs:
+     */
+    const resolveFromFieldRef = (ref) => {
+        if (!ref || typeof ref !== 'object') return [];
+        const viewId = ref.viewId;
+        const fieldId = ref.fieldId;
+
+        if (!viewId || !fieldId) return [];
+
+        const viewEl = document.getElementById(viewId);
+        if (!viewEl) return [];
+
+        const containerId = `kn-input-${fieldId}`;
+        const fieldContainer = viewEl.querySelector(`#${containerId}`);
+        if (!fieldContainer) return [];
+
+        const base = `${viewId}-${fieldId}`;
+        const validIds = new Set([
+            base,
+            `${base}-time`,
+            `${base}-to`,
+            `${base}-time-to`
+        ]);
+
+        const inputs = Array.from(fieldContainer.querySelectorAll('input')).filter((input) => {
+            if (!input || !input.id) return false;
+            return validIds.has(input.id);
+        });
+
+        return inputs;
+    };
+
     const resolveElements = () => {
+        // Array of field refs: [{viewId, fieldId}, ...]
+        if (
+            Array.isArray(inputOrSelector) &&
+            inputOrSelector.length &&
+            typeof inputOrSelector[0] === 'object' &&
+            !(inputOrSelector[0] instanceof Element)
+        ) {
+            const all = inputOrSelector.flatMap((ref) => resolveFromFieldRef(ref));
+            return Array.from(new Set(all));
+        }
+
+        // Single field ref: {viewId, fieldId}
+        if (
+            inputOrSelector &&
+            typeof inputOrSelector === 'object' &&
+            !(inputOrSelector instanceof Element) &&
+            !NodeList.prototype.isPrototypeOf(inputOrSelector)
+        ) {
+            const asRef = resolveFromFieldRef(inputOrSelector);
+            if (asRef.length) return asRef;
+        }
+
+        // Original behaviours
         if (typeof inputOrSelector === 'string') return Array.from(document.querySelectorAll(inputOrSelector));
         if (NodeList.prototype.isPrototypeOf(inputOrSelector) || Array.isArray(inputOrSelector)) return Array.from(inputOrSelector);
         if (inputOrSelector instanceof Element) return [inputOrSelector];
@@ -884,6 +960,9 @@ function enhanceDateTimePicker(inputOrSelector, opts = {}) {
         /* Improve month/year select styling in jQuery UI datepicker */
         .ui-datepicker-title {
             display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 6px;
         }
         .ui-datepicker select.ui-datepicker-month, .ui-datepicker select.ui-datepicker-year {
             padding: 2px 6px;
@@ -892,7 +971,7 @@ function enhanceDateTimePicker(inputOrSelector, opts = {}) {
             background: #fff;
             color: #222;
             font-size: 13px;
-            margin-right: 6px;
+            margin-right: 0;
             display: inline-block;
         }
         .ui-datepicker .ui-datepicker-header {
@@ -914,31 +993,80 @@ function enhanceDateTimePicker(inputOrSelector, opts = {}) {
 
     const applyToElements = () => {
         let appliedAny = false;
-        els.forEach(el => {
+
+        els.forEach((el) => {
             try {
                 const datepickerEl = $(el);
                 if (!datepickerEl || !datepickerEl.hasClass) return;
 
                 let appliedOnElement = false;
 
+                // Date enhancements (month/year dropdowns, min/max date, etc.)
                 if (wantsDate && datepickerEl.hasClass('hasDatepicker')) {
                     const currentYear = new Date().getFullYear();
                     const startYear = currentYear - Math.max(0, options.yearsBack);
+                    const endYear = currentYear + Math.max(0, options.yearsForward);
+
                     const optObj = {
                         changeMonth: !!options.changeMonth,
                         changeYear: !!options.changeYear,
-                        yearRange: `${startYear}:${currentYear}`,
+                        yearRange: `${startYear}:${endYear}`,
                         showButtonPanel: !!options.showButtonPanel
                     };
+
+
                     if (options.dateFormat) optObj.dateFormat = options.dateFormat;
                     if (options.minDate !== null) optObj.minDate = options.minDate;
                     if (options.maxDate !== null) optObj.maxDate = options.maxDate;
 
                     datepickerEl.datepicker('option', optObj);
+                    // Ensure the "Today" button actually sets today's date (can be unreliable in Knack)
+                    if (optObj.showButtonPanel) {
+
+                        // Attach once per page load
+                        if (!document.documentElement.dataset.knackTodayHandlerAttached) {
+                            document.documentElement.dataset.knackTodayHandlerAttached = '1';
+
+                            document.addEventListener('click', (e) => {
+                                const btn = e.target && e.target.closest
+                                    ? e.target.closest('.ui-datepicker-current[data-handler="today"]')
+                                    : null;
+
+                                if (!btn) return;
+
+                                try {
+                                    const inst = window.jQuery && window.jQuery.datepicker
+                                        ? window.jQuery.datepicker._curInst
+                                        : null;
+
+                                    const input = inst && inst.input ? inst.input : null;
+                                    if (!input || !input.length) return;
+
+                                    input.datepicker('setDate', new Date());
+                                    input.datepicker('hide');
+                                } catch (err) {
+                                    // swallow
+                                }
+                            }, true);
+                        }
+                    }
                     appliedOnElement = true;
                 }
 
+                // Time enhancements with guard to avoid affecting date inputs
                 if (wantsTime && typeof datepickerEl.timepicker === 'function') {
+                    // Prevent accidentally initialising the timepicker on date inputs
+                    const inputId = datepickerEl.attr('id') || '';
+                    const inputName = datepickerEl.attr('name') || '';
+
+                    const isTimeInput =
+                        /-time(-to)?$/.test(inputId) ||
+                        inputName === 'time' ||
+                        inputName === 'to_time' ||
+                        datepickerEl.hasClass('kn-time');
+
+                    if (!isTimeInput) return;
+
                     const timeOpts = {};
                     if (options.timeFormat) timeOpts.timeFormat = options.timeFormat;
                     if (options.minTime !== null) timeOpts.minTime = options.minTime;
@@ -968,6 +1096,7 @@ function enhanceDateTimePicker(inputOrSelector, opts = {}) {
                 // ignore per-element failures
             }
         });
+
         return appliedAny;
     };
 
