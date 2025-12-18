@@ -6873,13 +6873,19 @@ function updateLabelText(viewId, viewType, fieldId, { params }) {
 function idleWatchDogTimeout() {
     if (document.querySelector('.kn-login')) return;
 
+    const ID_PREFIX = 'ktl-idle-';
+    const overlayId = ID_PREFIX + 'overlay';
+    const dialogId = ID_PREFIX + 'dialog';
+    const logoutBtnId = ID_PREFIX + 'logout-btn';
+    const stayBtnId = ID_PREFIX + 'stay-btn';
+
     // Remove any existing overlay/dialog to prevent duplicates
-    document.getElementById('overlay')?.remove();
-    document.getElementById('ktl-idle-dialog')?.remove();
+    document.getElementById(overlayId)?.remove();
+    document.getElementById(dialogId)?.remove();
 
     // Create the overlay and append it to the body
     const overlay = document.createElement('div');
-    overlay.id = 'overlay';
+    overlay.id = overlayId;
     Object.assign(overlay.style, {
         position: 'fixed',
         top: 0,
@@ -6888,24 +6894,24 @@ function idleWatchDogTimeout() {
         height: '100%',
         backgroundColor: 'black',
         opacity: 0.8,
-        zIndex: 1000,
+        zIndex: 100000, // higher z-index to avoid being covered
         display: 'block'
     });
     document.body.appendChild(overlay);
 
     // Create the dialog element
     const dialog = document.createElement('div');
-    dialog.id = 'ktl-idle-dialog';
+    dialog.id = dialogId;
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-labelledby', 'ktl-idle-dialog-title');
+    dialog.setAttribute('aria-labelledby', ID_PREFIX + 'title');
     dialog.setAttribute('tabindex', '-1');
     dialog.innerHTML = `
-        <h2 id="ktl-idle-dialog-title">Knack Logout</h2>
+        <h2 id="${ID_PREFIX}title">Knack Logout</h2>
         <p>You are about to be logged out. Do you wish to remain logged in?</p>
         <div class="ktl-dialog-buttons">
-            <button id="ktl-logout-btn" class="kn-button is-secondary">Logout</button>
-            <button id="ktl-stay-btn" class="kn-button is-secondary">Stay Logged In</button>
+            <button id="${logoutBtnId}" class="kn-button is-secondary">Logout</button>
+            <button id="${stayBtnId}" class="kn-button is-secondary">Stay Logged In</button>
         </div>
     `;
     document.body.appendChild(dialog);
@@ -6915,27 +6921,52 @@ function idleWatchDogTimeout() {
     // Move focus to the dialog for accessibility
     dialog.focus();
 
-    // Remove resize listener when dialog is closed to avoid duplicates
-    function closeIdleDialog() {
+    // Internal state to ensure logout is idempotent
+    let autoLogoutTimeout;
+    let logoutInvoked = false;
+
+    function cleanupUI() {
         overlay.remove();
         dialog.remove();
-        clearTimeout(autoLogoutTimeout);
         window.removeEventListener('resize', setDialogWidth);
-        // Restore focus to the previously focused element if possible
         if (previousActiveElement && typeof previousActiveElement.focus === 'function') {
             previousActiveElement.focus();
         }
     }
 
-    // Button event listeners
-    document.getElementById('ktl-logout-btn').onclick = function() {
-        closeIdleDialog();
-        Knack.user.destroy();
-    };
-    document.getElementById('ktl-stay-btn').onclick = function() {
-        closeIdleDialog();
-        ktl.scenes.resetIdleWatchdog();
-    };
+    function ensureLoggedOutFallback() {
+        // If we are not showing a login view after a short delay, force a reload
+        setTimeout(() => {
+            if (!document.querySelector('.kn-login')) {
+                try {
+                    Knack.user.destroy(); // try again
+                } catch (e) {
+                    // last resort: navigate to origin
+                    try { window.location.reload(); } catch (e) {}
+                }
+            }
+        }, 2000);
+    }
+
+    function performLogout() {
+        if (logoutInvoked) return;
+        logoutInvoked = true;
+        clearTimeout(autoLogoutTimeout);
+        cleanupUI();
+        try {
+            Knack.user.destroy();
+        } catch (e) {
+            console.warn('Error calling Knack.user.destroy()', e);
+        }
+        ensureLoggedOutFallback();
+    }
+
+    // Button event listeners (use addEventListener so we don't clobber any other handlers)
+    document.getElementById(logoutBtnId).addEventListener('click', performLogout);
+    document.getElementById(stayBtnId).addEventListener('click', function () {
+        cleanupUI();
+        try { ktl.scenes.resetIdleWatchdog(); } catch (e) { /* ignore */ }
+    });
 
     // Responsive dialog width
     function setDialogWidth() {
@@ -6945,13 +6976,15 @@ function idleWatchDogTimeout() {
     setDialogWidth();
     window.addEventListener('resize', setDialogWidth);
 
-    // Auto logout after 1 minute
-    const autoLogoutTimeout = setTimeout(() => {
-        closeIdleDialog();
-        Knack.user.destroy();
-    }, 1 * 60 * 1000);
+    // Auto logout after a short confirmation period (fixed 1 minute)
+    // Note: `ktl.scenes.getCfg().idleWatchDogDelay` controls the initial inactivity
+    // delay that triggers this dialog. This timeout is only the dialog confirmation
+    // window and must remain short (1 minute).
+    const autoLogoutMinutes = 1;
+    // Auto-logout simply triggers the idempotent performLogout(); the fallback
+    // will ensure the user is returned to the login screen if needed.
+    autoLogoutTimeout = setTimeout(performLogout, Math.max(0, autoLogoutMinutes) * 60 * 1000);
 }
-
 
 function setViewMaxWidth({ key: viewId }) {
     const kw = '_vmxw';
