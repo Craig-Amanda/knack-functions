@@ -7179,7 +7179,7 @@ function idleWatchDogTimeout() {
         height: '100%',
         backgroundColor: 'black',
         opacity: 0.8,
-        zIndex: 100000, // higher z-index to avoid being covered
+        zIndex: 2010, // higher z-index to avoid being covered
         display: 'block'
     });
     document.body.appendChild(overlay);
