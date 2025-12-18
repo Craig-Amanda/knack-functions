@@ -722,18 +722,56 @@ function debounce(func, wait) {
 }
 
 /**
- * Adds event listeners to an element or selector for input-related events.
- * - Supports multiple event types (default: 'change')
- * - Supports event delegation (optional)
- * - Handles NodeList, single element, or selector string
- * - Passes the event and element to the callback
+ * Resolves a selector string or Element into an Element (or null).
+ * @param {string|Element|null|undefined} input - Selector or Element
+ * @returns {Element|null}
+ */
+function resolveElement(input) {
+    if (!input) return null;
+    if (typeof input === 'string') return document.querySelector(input);
+    if (input instanceof Element) return input;
+    return null;
+}
+
+/**
+ * Resolves a selector string, Element, NodeList, or Array into an array of Elements.
+ * @param {string|Element|NodeList|Array<Element>|null|undefined} input
+ * @returns {Element[]}
+ */
+function resolveElements(input) {
+    if (!input) return [];
+
+    if (typeof input === 'string') {
+        return Array.from(document.querySelectorAll(input));
+    }
+
+    if (input instanceof Element) {
+        return [input];
+    }
+
+    if (NodeList.prototype.isPrototypeOf(input) || Array.isArray(input)) {
+        return Array.from(input).filter((el) => el instanceof Element);
+    }
+
+    return [];
+}
+
+/**
+ * Adds event listeners to an element (or selector) for input-related events.
  *
- * @param {HTMLElement|NodeList|string} target - Element, NodeList, or selector string
+ * Rules:
+ * - Uses native addEventListener for normal fields
+ * - Uses jQuery only for:
+ *   - Chosen change events
+ *   - jQuery UI datepicker calendar selections (onSelect)
+ *
+ * @param {HTMLElement|NodeList|Array<HTMLElement>|string} target - Element, collection, or selector
  * @param {Function} callback - Function(event, element) to call on event
- * @param {Object} [options] - Optional settings:
- *   - {string|string[]} events: Event(s) to listen for (default: 'change')
- *   - {string} delegate: Selector for event delegation (optional)
- *  - {boolean} runOnInit: If true, runs callback on initial load for each element (default: false)
+ * @param {Object} [options] - Optional settings
+ * @param {string|string[]} [options.events='change'] - Event(s) to listen for
+ * @param {string|null} [options.delegate=null] - Selector for event delegation
+ * @param {boolean} [options.runOnInit=false] - If true, runs callback once per matched element
+ * @returns {HTMLElement[]} List of elements that were wired (or matched for init)
  */
 function addInputEventListener(target, callback, options = {}) {
     const {
@@ -743,71 +781,175 @@ function addInputEventListener(target, callback, options = {}) {
     } = options;
 
     const eventList = Array.isArray(events) ? events : [events];
-    const attachedElements = [];
+    const wired = [];
 
-    // Helper to attach event(s) to a single element
-    function attach(el) {
-        eventList.forEach(eventType => {
-            if (delegate) {
-                el.addEventListener(eventType, function(e) {
-                    const possibleTargets = el.querySelectorAll(delegate);
-                    const targetEl = e.target.closest(delegate);
-                    if (targetEl && Array.from(possibleTargets).includes(targetEl)) {
-                        callback(e, targetEl);
-                    }
-                });
-            } else {
-                el.addEventListener(eventType, function(e) {
-                    callback(e, el);
-                });
-            }
+    const hasJq = () => !!(window.jQuery && window.jQuery.fn);
+    const jq = () => window.jQuery;
+
+    const isChosenSelect = (el) => {
+        if (!el || el.tagName !== 'SELECT') return false;
+
+        const cls = el.classList;
+        if (cls && (cls.contains('chosen-select') || cls.contains('chzn-select'))) return true;
+
+        // Chosen typically inserts a sibling container after the <select>
+        const next = el.nextElementSibling;
+        if (next && next.classList && (next.classList.contains('chosen-container') || next.classList.contains('chzn-container'))) return true;
+
+        return false;
+    };
+
+    const isDatepickerInput = (el) => {
+        // jQuery UI datepicker adds 'hasDatepicker' class to the input it is attached to
+        return !!(el && el.classList && el.classList.contains('hasDatepicker'));
+    };
+
+    const getInputLikeElements = (root) => {
+        if (!root) return [];
+        const tag = (root.tagName || '').toUpperCase();
+        if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return [root];
+        return Array.from(root.querySelectorAll('input, select, textarea'));
+    };
+
+    const runInitFor = (elements) => {
+        if (!runOnInit) return;
+        elements.forEach((el) => {
+            try { callback(null, el); } catch (_) {}
         });
-        // If this element has a jQuery UI datepicker attached, also wire its onSelect so
-        // calendar selections trigger the same callback. Preserve any existing onSelect.
-        try {
-            if (window.jQuery && window.jQuery.fn && typeof window.jQuery.fn.datepicker === 'function') {
-                const datepickerEl = $(el);
-                // Only attach if this element already has a datepicker instance (jQuery UI adds class 'hasDatepicker')
-                if (datepickerEl.hasClass && datepickerEl.hasClass('hasDatepicker')) {
-                    let existingOnSelect = null;
-                    try {
-                        existingOnSelect = datepickerEl.datepicker('option', 'onSelect');
-                    } catch (err) {
-                        existingOnSelect = null;
-                    }
+    };
 
-                    datepickerEl.datepicker('option', 'onSelect', function (dateText, inst) {
-                        // call previous handler if present
-                        if (typeof existingOnSelect === 'function') {
-                            try { existingOnSelect.call(this, dateText, inst); } catch (_) {}
-                        }
-                        // Create a small synthetic event-like object so callbacks expecting an Event can handle it
-                        const syntheticEvent = { type: 'datepicker', dateText: dateText, target: el };
-                        try { callback(syntheticEvent, el); } catch (_) {}
+    const addNative = (el, type, handler) => {
+        el.addEventListener(type, handler, false);
+    };
+
+    const addChosenJqDirect = (selectEl) => {
+        if (!hasJq()) return false;
+        try {
+            const j = jq();
+            j(selectEl)
+                .off('change.ktl_chosen')
+                .on('change.ktl_chosen', function (e) {
+                    callback(e, selectEl);
+                });
+            return true;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const addChosenJqDelegated = (rootEl) => {
+        if (!hasJq() || !delegate) return false;
+        try {
+            const j = jq();
+            j(rootEl).off('change.ktl_delegate_chosen');
+            j(rootEl).on(
+                'change.ktl_delegate_chosen',
+                `${delegate} select.chosen-select, ${delegate} select.chzn-select, ${delegate}.chosen-select, ${delegate}.chzn-select`,
+                function (e) {
+                    callback(e, this);
+                }
+            );
+            return true;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const wireDatepickerOnSelect = (inputEl) => {
+        if (!hasJq()) return;
+        const j = jq();
+
+        if (typeof j.fn.datepicker !== 'function') return;
+        if (!isDatepickerInput(inputEl)) return;
+
+        try {
+            const inputJq = j(inputEl);
+            let existingOnSelect = null;
+
+            try {
+                existingOnSelect = inputJq.datepicker('option', 'onSelect');
+            } catch (_) {
+                existingOnSelect = null;
+            }
+
+            inputJq.datepicker('option', 'onSelect', function (dateText, inst) {
+                if (typeof existingOnSelect === 'function') {
+                    try { existingOnSelect.call(this, dateText, inst); } catch (_) {}
+                }
+
+                const syntheticEvent = {
+                    type: 'datepicker',
+                    dateText: dateText,
+                    target: inputEl
+                };
+
+                try { callback(syntheticEvent, inputEl); } catch (_) {}
+            });
+        } catch (_) {
+            // Non-critical enhancement: ignore
+        }
+    };
+
+    const attachToRoot = (rootEl) => {
+        if (!(rootEl instanceof Element)) return;
+
+        // Delegated mode
+        if (delegate) {
+            const delegateMatches = Array.from(rootEl.querySelectorAll(delegate));
+
+            const includesChosen = delegateMatches.some((m) => {
+                if (!m) return false;
+                if (isChosenSelect(m)) return true;
+                return !!m.querySelector && (!!m.querySelector('select.chosen-select') || !!m.querySelector('select.chzn-select'));
+            });
+
+            if (includesChosen && addChosenJqDelegated(rootEl)) {
+                wired.push(rootEl);
+            } else {
+                eventList.forEach((type) => {
+                    addNative(rootEl, type, function (e) {
+                        const hit = (e.target && e.target.closest) ? e.target.closest(delegate) : null;
+                        if (!hit) return;
+                        if (!rootEl.contains(hit)) return;
+                        try { callback(e, hit); } catch (_) {}
                     });
+                });
+                wired.push(rootEl);
+            }
+
+            runInitFor(delegateMatches);
+            return;
+        }
+
+        // Non-delegated
+        const fields = getInputLikeElements(rootEl);
+        if (!fields.length) return;
+
+        fields.forEach((fieldEl) => {
+            wireDatepickerOnSelect(fieldEl);
+
+            if (isChosenSelect(fieldEl)) {
+                if (addChosenJqDirect(fieldEl)) {
+                    wired.push(fieldEl);
+                    return;
                 }
             }
-        } catch (e) {
-            // Swallow any errors - non-critical enhancement
-        }
 
-        // Run callback on initial load if requested
-        if (runOnInit) {
-            callback(null, el);
-        }
+            eventList.forEach((type) => {
+                addNative(fieldEl, type, function (e) {
+                    try { callback(e, fieldEl); } catch (_) {}
+                });
+            });
 
-        attachedElements.push(el);
-    }
+            wired.push(fieldEl);
+        });
 
-    if (typeof target === 'string') {
-        document.querySelectorAll(target).forEach(attach);
-    } else if (NodeList.prototype.isPrototypeOf(target) || Array.isArray(target)) {
-        target.forEach(attach);
-    } else if (target instanceof Element) {
-        attach(target);
-    }
+        runInitFor(fields);
+    };
 
-    return attachedElements;
+    resolveElements(target).forEach(attachToRoot);
+
+    return wired;
 }
 
 /**
@@ -919,7 +1061,7 @@ function enhanceDateTimePicker(inputOrSelector, opts = {}) {
         return inputs;
     };
 
-    const resolveElements = () => {
+    const resolveDateTimeElement = () => {
         // Array of field refs: [{viewId, fieldId}, ...]
         if (
             Array.isArray(inputOrSelector) &&
@@ -949,7 +1091,7 @@ function enhanceDateTimePicker(inputOrSelector, opts = {}) {
         return [];
     };
 
-    const els = resolveElements();
+    const els = resolveDateTimeElement();
     if (!els.length) return options.waitForInit ? Promise.resolve(false) : false;
 
     // Inject datepicker styles only when date mode is requested and styles are absent
