@@ -6186,22 +6186,50 @@ function replaceLargeNo(cellIdent, maxNum, replaceTxt, isLink) {
 }
 
 /**
+ * Normalise an Element or HTML string into a real DOM Element, ready for use by other functions.
+ * @param {Element|string|null} input
+ * @returns {Element|null}
+ */
+function normaliseToElement(input) {
+    if (!input) return null;
+    if (input instanceof Element) return input;
+
+    if (typeof input === 'string') {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = input.trim();
+        return wrapper;
+    }
+
+    return null;
+}
+
+/**
  * Get a 24-character hex ID from an element’s id or class tokens.
  * Checks the element’s `id` first, then each token in `classList`,
  * and returns the first value that matches a 24-char hex pattern.
  *
- * @param {Element|null} el - The DOM element to inspect.
+ * @param {Element|null} eleOrHtml - The DOM element to inspect.
  * @returns {string|null} The first matching 24-char hex ID, or null if none found.
  */
-function getIdFromElement(el) {
+function getIdFromElement(eleOrHtml) {
+    const el = normaliseToElement(eleOrHtml);
     if (!el) return null;
+
     const HEX24 = /^[a-fA-F0-9]{24}$/;
 
-    if (el.id && HEX24.test(el.id)) return el.id;
+    // If a wrapper was created, the actual node will be inside it
+    const candidates = el.matches && el.matches('span, div, a')
+        ? [el]
+        : Array.from(el.querySelectorAll('span, div, a'));
 
-    for (const token of el.classList || []) {
-        if (HEX24.test(token)) return token;
+    for (const node of candidates) {
+        if (node.id && HEX24.test(node.id)) return node.id;
+
+        for (const token of node.classList || []) {
+            if (HEX24.test(token)) return token;
+        }
     }
+
     return null;
 }
 
@@ -6209,27 +6237,28 @@ function getIdFromElement(el) {
  * Extract the connected record ID from a Knack table cell.
  * Targets the canonical connection node: `span[data-kn="connection-value"]`.
  * If not found, falls back to scanning descendant <span> elements for a 24-char hex token in id/class.
- * @param {HTMLTableCellElement|Element|null} cellEl - The <td> (or container) holding the connection.
+ * @param {HTMLTableCellElement|Element|null} cellElOrHtml - Accepts a <td>/<div> element OR an HTML string.
  * @returns {string|null} The connected record’s 24-char hex ID, or null if not found.
  *
  * @example
  * // <td class="field_196"><span><span class="673c...737f" data-kn="connection-value">JON DOE</span></span></td>
- * const clientId = getConnectionIdFromCell(cellEl); // '673c6b4ee5a91c02d47a737f'
  */
-function getConnectionIdFromCell(cellEl) {
-    if (!cellEl) return null;
+function getConnectionIdFromHtml(cellElOrHtml) {
+    const root = normaliseToElement(cellElOrHtml);
+    if (!root) return null;
 
     // Primary: explicit connection value node
-    const conn = cellEl.querySelector('span[data-kn="connection-value"]');
+    const conn = root.querySelector('span[data-kn="connection-value"]');
     const idFromConn = getIdFromElement(conn);
     if (idFromConn) return idFromConn;
 
     // Fallback: any descendant <span>
-    const spans = cellEl.querySelectorAll('span');
+    const spans = root.querySelectorAll('span');
     for (const s of spans) {
         const id = getIdFromElement(s);
         if (id) return id;
     }
+
     return null;
 }
 
