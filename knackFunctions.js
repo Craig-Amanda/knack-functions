@@ -108,6 +108,21 @@ function toggleVisibility(elements, condition) {
 }
 
 /**
+ * Find an element by its text content within a given selector.
+ * @param {string} selector - CSS selector to search within.
+ * @param {string} text - Text content to match.
+ * @param {boolean} [exact=true] - If true, match exact text; if false, match partial (includes).
+ * @returns {Element|undefined} The first matching element, or undefined if not found.
+ */
+function getElementByText(selector, text, exact = true) {
+    const elements = document.querySelectorAll(selector);
+    return Array.from(elements).find(el => {
+        const content = el.textContent.trim();
+        return exact ? content === text : content.includes(text);
+    });
+}
+
+/**
  * Enhanced Quill Rich Text Editor for Knack Replaces Knack's Redactor editor with Quill.js
  */
 
@@ -6201,6 +6216,23 @@ function normaliseToElement(input) {
     }
 
     return null;
+}
+
+ /** Retrieves the current scene information for a given view ID.
+ * @param {string} viewId - The ID of the view for which to retrieve the scene information.
+ * @returns {Object|null} An object containing the scene information, or null if the view ID is invalid:
+ *   - recId: The scene's record ID.
+ *   - sceneId: The scene's key.
+ *   - sceneSlug: The scene's slug. */
+function getCurrentSceneInfo(viewId) {
+    try {
+        const { scene } = Knack.views[viewId].model.view;
+        const { scene_id: recordId, key: sceneId, slug: sceneSlug } = scene;
+        return { recordId, sceneId, sceneSlug };
+    } catch (error) {
+        console.error(`Error retrieving scene information for view ID ${viewId}:`, error);
+        return null;
+    }
 }
 
 /**
