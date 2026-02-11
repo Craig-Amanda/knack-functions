@@ -7,6 +7,7 @@ const INPUT_CHECKBOX_CHECKED_SELECTOR = `${INPUT_CHECKBOX_SELECTOR}:checked`;
 const INPUT_RADIO_CHECKED_SELECTOR = `${INPUT_RADIO_SELECTOR}:checked`;
 const HEADER_CHECKBOX_SELECTOR = 'th input[type="checkbox"]';
 const CLASS_DISABLED = 'disabled';
+const DEFAULT_WRITE_CONCURRENCY = 3;
 console.log('KnackApps/ARC Beta 1.0 - knackFunctions.js loaded.');
 //jQuery extensions - BEGIN
 //Searches a selector for text like : contains, but with an exact match, and after a spaces trim.
@@ -3973,20 +3974,24 @@ class KnackAPI {
      * @param {number} [options.writeConcurrency=3] - Max concurrent create/update/delete requests (use Infinity for no limit)
      */
     constructor(options = {}) {
-        const writeConcurrency = this._resolveWriteConcurrency(options.writeConcurrency);
-
         this.options = {
             showSpinner: options.showSpinner !== undefined ? options.showSpinner : false,
             timeout: options.timeout || 60000,
             debug: options.debug || false,
             developerOnly: options.developerOnly !== undefined ? options.developerOnly : true,
             developerRoles: options.developerRoles || ['Developer'],
-            writeConcurrency
+            writeConcurrency: options.writeConcurrency
         };
+        this.options.writeConcurrency = this._resolveWriteConcurrency(this.options.writeConcurrency);
 
         this._activeRequests = 0;
         this._activeWrites = 0;
         this._writeQueue = [];
+        this._isDraining = false;
+        this._drainScheduled = false;
+        this._drainScheduler = typeof queueMicrotask === 'function'
+            ? queueMicrotask
+            : (fn) => setTimeout(fn, 0);
         this._initLogSettings();
     }
 
@@ -4305,7 +4310,7 @@ class KnackAPI {
      * @param {Array<Object>} recordsData - Array of record data objects to create
      * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after creation
      * @param {number} [timeout] - Optional timeout override
-     * @returns {Promise<Array<Object>>} - Array of responses from each create
+     * @returns {Promise<Array<Object>>} - Array of result objects from each create
      * @public
      */
     async createRecords(sceneId, viewId, recordsData, refreshViews, timeout) {
@@ -4314,8 +4319,11 @@ class KnackAPI {
         }
 
         const results = await Promise.all(
-            recordsData.map(recordData => this.createRecord(sceneId, viewId, recordData, [], timeout)
-                .catch(error => ({ error, recordData })))
+            recordsData.map((recordData) => {
+                return this.createRecord(sceneId, viewId, recordData, null, timeout)
+                    .then(data => ({ success: true, data, recordData, recordId: this._extractRecordId(data) }))
+                    .catch(error => ({ success: false, error, recordData, recordId: null }));
+            })
         );
 
         if (refreshViews) await this.refreshView(refreshViews);
@@ -4401,7 +4409,7 @@ class KnackAPI {
      * @param {Array<Object>} updates - Array of objects containing recordId and recordData
      * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after updates
      * @param {number} [timeout] - Optional timeout override
-     * @returns {Promise<Array<Object>>} - Array of responses from each update
+     * @returns {Promise<Array<Object>>} - Array of result objects from each update
      * @public
      */
     async updateRecords(sceneId, viewId, updates, refreshViews, timeout) {
@@ -4410,8 +4418,11 @@ class KnackAPI {
         }
 
         const results = await Promise.all(
-            updates.map(({ recordId, recordData }) => this.updateRecord(sceneId, viewId, recordId, recordData, [], timeout)
-                .catch(error => ({ error, recordId })))
+            updates.map(({ recordId, recordData }) => {
+                return this.updateRecord(sceneId, viewId, recordId, recordData, null, timeout)
+                    .then(data => ({ success: true, data, recordId, recordData }))
+                    .catch(error => ({ success: false, error, recordId, recordData }));
+            })
         );
 
         if (refreshViews) await this.refreshView(refreshViews);
@@ -4494,7 +4505,7 @@ class KnackAPI {
      * @param {Array<string>} recordIds - Array of record IDs to delete
      * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after deletions
      * @param {number} [timeout] - Optional timeout override
-     * @returns {Promise<Array<Object>>} - Array of responses from each delete
+     * @returns {Promise<Array<Object>>} - Array of result objects from each delete
      * @public
      */
     async deleteRecords(sceneId, viewId, recordIds, refreshViews, timeout) {
@@ -4503,8 +4514,11 @@ class KnackAPI {
         }
 
         const results = await Promise.all(
-            recordIds.map(recordId => this.deleteRecord(sceneId, viewId, recordId, [], timeout)
-                .catch(error => ({ error, recordId })))
+            recordIds.map((recordId) => {
+                return this.deleteRecord(sceneId, viewId, recordId, null, timeout)
+                    .then(data => ({ success: true, data, recordId }))
+                    .catch(error => ({ success: false, error, recordId }));
+            })
         );
 
         if (refreshViews) await this.refreshView(refreshViews);
@@ -4587,7 +4601,7 @@ class KnackAPI {
     }
 
     /**
-     * Update the write concurrency limit.
+     * Update the write concurrency limit. Updates apply to queued operations immediately.
      * @param {number} writeConcurrency - Max concurrent create/update/delete requests
      * @public
      */
@@ -5047,6 +5061,19 @@ class KnackAPI {
     }
 
     /**
+     * Extracts a record ID from an API response object.
+     * @param {Object} responseData - API response data
+     * @returns {string|null} - Record ID if found
+     * @private
+     */
+    _extractRecordId(responseData) {
+        if (!responseData || typeof responseData !== 'object') return null;
+        if (responseData.record?.id) return responseData.record.id;
+        if (responseData.id) return responseData.id;
+        return null;
+    }
+
+    /**
      * Normalises values for loose comparison between request and response.
      * Handles strings, numbers, booleans, arrays (order-insensitive), and simple objects.
      * @param {*} val - The value to normalise.
@@ -5097,7 +5124,10 @@ class KnackAPI {
             return Infinity;
         }
         const parsed = Number(writeConcurrency);
-        return Math.max(1, Number.isFinite(parsed) ? parsed : 3);
+        if (Number.isFinite(parsed)) {
+            return Math.max(1, Math.floor(parsed));
+        }
+        return DEFAULT_WRITE_CONCURRENCY;
     }
 
     /**
@@ -5122,18 +5152,47 @@ class KnackAPI {
      * @private
      */
     _drainWriteQueue() {
-        while (this._activeWrites < this.options.writeConcurrency && this._writeQueue.length > 0) {
-            const { task, resolve, reject } = this._writeQueue.shift();
-            this._activeWrites += 1;
-
-            Promise.resolve()
-                .then(task)
-                .then(resolve, reject)
-                .finally(() => {
-                    this._activeWrites = Math.max(0, this._activeWrites - 1);
-                    this._drainWriteQueue();
-                });
+        if (this._isDraining) {
+            this._scheduleDrain();
+            return;
         }
+
+        this._isDraining = true;
+        try {
+            while (this._activeWrites < this.options.writeConcurrency && this._writeQueue.length > 0) {
+                const { task, resolve, reject } = this._writeQueue.shift();
+                this._activeWrites += 1;
+
+                task()
+                    .then(resolve)
+                    .catch(reject)
+                    .finally(() => {
+                        this._activeWrites = Math.max(0, this._activeWrites - 1);
+                        this._scheduleDrain();
+                    });
+            }
+        } finally {
+            this._isDraining = false;
+            if (this._writeQueue.length > 0 && this._activeWrites >= this.options.writeConcurrency) {
+                this._scheduleDrain();
+            }
+        }
+    }
+
+    /**
+     * Schedules a queue drain without stacking multiple callbacks.
+     * @private
+     */
+    _scheduleDrain() {
+        if (this._drainScheduled) {
+            return;
+        }
+
+        this._drainScheduled = true;
+        this._drainScheduler(() => {
+            this._drainScheduled = false;
+            this._drainWriteQueue();
+        });
     }
 }
 
