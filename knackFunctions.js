@@ -3973,9 +3973,7 @@ class KnackAPI {
      * @param {number} [options.writeConcurrency=3] - Max concurrent create/update/delete requests (use Infinity for no limit)
      */
     constructor(options = {}) {
-        const writeConcurrency = options.writeConcurrency === Infinity
-            ? Infinity
-            : Math.max(1, Number.isFinite(options.writeConcurrency) ? options.writeConcurrency : 3);
+        const writeConcurrency = this._resolveWriteConcurrency(options.writeConcurrency);
 
         this.options = {
             showSpinner: options.showSpinner !== undefined ? options.showSpinner : false,
@@ -4301,6 +4299,30 @@ class KnackAPI {
     }
 
     /**
+     * Creates multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<Object>} recordsData - Array of record data objects to create
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after creation
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of responses from each create
+     * @public
+     */
+    async createRecords(sceneId, viewId, recordsData, refreshViews, timeout) {
+        if (!Array.isArray(recordsData)) {
+            throw new Error('recordsData must be an array');
+        }
+
+        const results = await Promise.all(
+            recordsData.map(recordData => this.createRecord(sceneId, viewId, recordData, [], timeout)
+                .catch(error => ({ error, recordData })))
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
+    }
+
+    /**
      * Updates a record in a Knack view with verification of updated fields
      * @param {string} sceneId - The scene ID/key
      * @param {string} viewId - The view ID/key
@@ -4372,6 +4394,30 @@ class KnackAPI {
         });
     }
 
+    /**
+     * Updates multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<Object>} updates - Array of objects containing recordId and recordData
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after updates
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of responses from each update
+     * @public
+     */
+    async updateRecords(sceneId, viewId, updates, refreshViews, timeout) {
+        if (!Array.isArray(updates)) {
+            throw new Error('updates must be an array');
+        }
+
+        const results = await Promise.all(
+            updates.map(({ recordId, recordData }) => this.updateRecord(sceneId, viewId, recordId, recordData, [], timeout)
+                .catch(error => ({ error, recordId })))
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
+    }
+
 
     /**
      * Updates multiple records with the same data, with a delay between each request
@@ -4439,6 +4485,30 @@ class KnackAPI {
                 clear();
             }
         });
+    }
+
+    /**
+     * Deletes multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<string>} recordIds - Array of record IDs to delete
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after deletions
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of responses from each delete
+     * @public
+     */
+    async deleteRecords(sceneId, viewId, recordIds, refreshViews, timeout) {
+        if (!Array.isArray(recordIds)) {
+            throw new Error('recordIds must be an array');
+        }
+
+        const results = await Promise.all(
+            recordIds.map(recordId => this.deleteRecord(sceneId, viewId, recordId, [], timeout)
+                .catch(error => ({ error, recordId })))
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
     }
 
     /**
@@ -4514,6 +4584,17 @@ class KnackAPI {
     setDebug(enabled) {
         this.options.debug = enabled;
         this._log('Debug mode set to', enabled);
+    }
+
+    /**
+     * Update the write concurrency limit.
+     * @param {number} writeConcurrency - Max concurrent create/update/delete requests
+     * @public
+     */
+    setWriteConcurrency(writeConcurrency) {
+        this.options.writeConcurrency = this._resolveWriteConcurrency(writeConcurrency);
+        this._log('Write concurrency set to', this.options.writeConcurrency);
+        this._drainWriteQueue();
     }
 
     /**
@@ -5003,6 +5084,20 @@ class KnackAPI {
      */
     _valuesEffectivelyEqual(a, b) {
         return this._normaliseForCompare(a) === this._normaliseForCompare(b);
+    }
+
+    /**
+     * Normalizes the write concurrency option.
+     * @param {number} writeConcurrency - Desired concurrency value
+     * @returns {number} - Normalized concurrency
+     * @private
+     */
+    _resolveWriteConcurrency(writeConcurrency) {
+        if (writeConcurrency === Infinity) {
+            return Infinity;
+        }
+        const parsed = Number(writeConcurrency);
+        return Math.max(1, Number.isFinite(parsed) ? parsed : 3);
     }
 
     /**
