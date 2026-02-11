@@ -3970,16 +3970,25 @@ class KnackAPI {
      * @param {boolean} [options.debug=false] - Whether to log debug information to console
      * @param {boolean} [options.developerOnly=true] - Whether to restrict logs to developers only
      * @param {Array<string>} [options.developerRoles=['Developer']] - User roles considered as developers
+     * @param {number} [options.writeConcurrency=3] - Max concurrent create/update/delete requests (use Infinity for no limit)
      */
     constructor(options = {}) {
+        const writeConcurrency = options.writeConcurrency === Infinity
+            ? Infinity
+            : Math.max(1, Number.isFinite(options.writeConcurrency) ? options.writeConcurrency : 3);
+
         this.options = {
             showSpinner: options.showSpinner !== undefined ? options.showSpinner : false,
             timeout: options.timeout || 60000,
             debug: options.debug || false,
             developerOnly: options.developerOnly !== undefined ? options.developerOnly : true,
-            developerRoles: options.developerRoles || ['Developer']
+            developerRoles: options.developerRoles || ['Developer'],
+            writeConcurrency
         };
 
+        this._activeRequests = 0;
+        this._activeWrites = 0;
+        this._writeQueue = [];
         this._initLogSettings();
     }
 
@@ -4267,26 +4276,28 @@ class KnackAPI {
      * @public
      */
     async createRecord(sceneId, viewId, recordData, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId);
-        this._log('Creating record', { url, data: recordData });
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId);
+            this._log('Creating record', { url, data: recordData });
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { controller, signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'POST',
-                    headers: this._buildHeaders(),
-                    body: JSON.stringify(recordData)
-                },
-                signal
-            );
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
-        }
+            try {
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'POST',
+                        headers: this._buildHeaders(),
+                        body: JSON.stringify(recordData)
+                    },
+                    signal
+                );
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
+            }
+        });
     }
 
     /**
@@ -4301,62 +4312,64 @@ class KnackAPI {
      * @public
      */
     async updateRecord(sceneId, viewId, recordId, recordData, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId, recordId);
-        this._log('Updating record', { url, data: recordData });
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId, recordId);
+            this._log('Updating record', { url, data: recordData });
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { controller, signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'PUT',
-                    headers: this._buildHeaders(),
-                    body: JSON.stringify(recordData)
-                },
-                signal
-            );
-
-            // --- basic verification & logging (non-breaking) ---
             try {
-                const recordObj = result?.record ?? result; // handle both shapes defensively
-                const requestedKeys = Object.keys(recordData || {});
-                const failed = [];
-                const succeeded = [];
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'PUT',
+                        headers: this._buildHeaders(),
+                        body: JSON.stringify(recordData)
+                    },
+                    signal
+                );
 
-                for (const key of requestedKeys) {
-                    const sentVal = recordData[key];
-                    const gotVal = this._extractResponseValueFromRecord(recordObj, key);
+                // --- basic verification & logging (non-breaking) ---
+                try {
+                    const recordObj = result?.record ?? result; // handle both shapes defensively
+                    const requestedKeys = Object.keys(recordData || {});
+                    const failed = [];
+                    const succeeded = [];
 
-                    if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
-                        failed.push({
-                            field: key,
-                            sent: sentVal,
-                            received: gotVal
-                        });
+                    for (const key of requestedKeys) {
+                        const sentVal = recordData[key];
+                        const gotVal = this._extractResponseValueFromRecord(recordObj, key);
+
+                        if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
+                            failed.push({
+                                field: key,
+                                sent: sentVal,
+                                received: gotVal
+                            });
+                        }
                     }
-                }
 
-                if (failed.length > 0) {
-                    const failedFields = failed.map(f => f.field).join(', ');
-                    this._log('Field update verification: failures detected', {
-                        sceneId,
-                        viewId,
-                        recordId,
-                        failedFields,
-                        failedCount: failed.length
-                    }, 'warn');
+                    if (failed.length > 0) {
+                        const failedFields = failed.map(f => f.field).join(', ');
+                        this._log('Field update verification: failures detected', {
+                            sceneId,
+                            viewId,
+                            recordId,
+                            failedFields,
+                            failedCount: failed.length
+                        }, 'warn');
+                    }
+                } catch (verifyErr) {
+                    this._log('Field update verification error', verifyErr, 'error');
                 }
-            } catch (verifyErr) {
-                this._log('Field update verification error', verifyErr, 'error');
+                // --- end verification ---
+
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
             }
-            // --- end verification ---
-
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
-        }
+        });
     }
 
 
@@ -4405,25 +4418,27 @@ class KnackAPI {
      * @public
      */
     async deleteRecord(sceneId, viewId, recordId, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId, recordId);
-        this._log('Deleting record', url);
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId, recordId);
+            this._log('Deleting record', url);
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { controller, signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'DELETE',
-                    headers: this._buildHeaders()
-                },
-                signal
-            );
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
-        }
+            try {
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'DELETE',
+                        headers: this._buildHeaders()
+                    },
+                    signal
+                );
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
+            }
+        });
     }
 
     /**
@@ -4533,9 +4548,15 @@ class KnackAPI {
     _toggleSpinner(show) {
         if (this.options.showSpinner) {
             if (show) {
-                Knack.showSpinner();
+                this._activeRequests += 1;
+                if (this._activeRequests === 1) {
+                    Knack.showSpinner();
+                }
             } else {
-                Knack.hideSpinner();
+                this._activeRequests = Math.max(0, this._activeRequests - 1);
+                if (this._activeRequests === 0) {
+                    Knack.hideSpinner();
+                }
             }
         }
     }
@@ -4982,6 +5003,42 @@ class KnackAPI {
      */
     _valuesEffectivelyEqual(a, b) {
         return this._normaliseForCompare(a) === this._normaliseForCompare(b);
+    }
+
+    /**
+     * Schedule a write operation respecting configured concurrency.
+     * @param {Function} task - Async function performing the write operation
+     * @returns {Promise<*>}
+     * @private
+     */
+    _scheduleWrite(task) {
+        if (this.options.writeConcurrency === Infinity) {
+            return task();
+        }
+
+        return new Promise((resolve, reject) => {
+            this._writeQueue.push({ task, resolve, reject });
+            this._drainWriteQueue();
+        });
+    }
+
+    /**
+     * Drains the write queue up to the configured concurrency limit.
+     * @private
+     */
+    _drainWriteQueue() {
+        while (this._activeWrites < this.options.writeConcurrency && this._writeQueue.length > 0) {
+            const { task, resolve, reject } = this._writeQueue.shift();
+            this._activeWrites += 1;
+
+            Promise.resolve()
+                .then(task)
+                .then(resolve, reject)
+                .finally(() => {
+                    this._activeWrites = Math.max(0, this._activeWrites - 1);
+                    this._drainWriteQueue();
+                });
+        }
     }
 }
 
