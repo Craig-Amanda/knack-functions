@@ -5635,6 +5635,42 @@ function clearInput(inputContainer, triggerChange = false) {
     });
 }
 
+/**
+ * Hides or shows a checkbox option by its value or label text.
+ * Works with both connection-picker checkboxes and multiple-choice checkboxes.
+ * @param {string} fieldId - The Knack field ID (e.g. 'field_2071').
+ * @param {string} identifier - The checkbox value (connection ID) or label text to match.
+ * @param {boolean} show - True to show, false to hide.
+ */
+function toggleCheckboxOption(fieldId, identifier, show) {
+    const fieldContainer = document.getElementById(`kn-input-${fieldId}`);
+    if (!fieldContainer) {
+        console.warn(`toggleCheckboxOption: Field container not found for ${fieldId}`);
+        return;
+    }
+
+    // Try matching by value first, then fall back to matching by label text
+    let checkbox = fieldContainer.querySelector(`input[type="checkbox"][value="${identifier}"]`);
+    if (!checkbox) {
+        const labels = fieldContainer.querySelectorAll('label.option, label.checkbox');
+        for (const label of labels) {
+            if (label.textContent.trim() === identifier) {
+                checkbox = label.querySelector('input[type="checkbox"]');
+                break;
+            }
+        }
+    }
+    if (!checkbox) {
+        console.warn(`toggleCheckboxOption: No checkbox found for "${identifier}" in ${fieldId}`);
+        return;
+    }
+
+    const optionLabel = checkbox.closest('label');
+    if (optionLabel) {
+        optionLabel.classList.toggle(CLASS_DISPLAY_NONE, !show);
+    }
+}
+
 /** Remove given options from select
  * @param {integer} fieldID - ID of select field
  * @param {array} removeArr - array of items to remove
