@@ -8,6 +8,32 @@ const INPUT_RADIO_CHECKED_SELECTOR = `${INPUT_RADIO_SELECTOR}:checked`;
 const HEADER_CHECKBOX_SELECTOR = 'th input[type="checkbox"]';
 const CLASS_DISABLED = 'disabled';
 console.log('KnackApps/ARC Beta 1.0 - knackFunctions.js loaded.');
+
+const normaliseField = (id) => String(id).startsWith('field_') ? id : `field_${id}`;
+const raw = (id) => String(id).startsWith('field_') ? `${id}_raw` : `field_${id}_raw`;
+const normaliseView = (id) => String(id).startsWith('view_') ? id : `view_${id}`;
+const normaliseScene = (id) => String(id).startsWith('scene_') ? id : `scene_${id}`;
+
+/**
+ * Extracts id and identifier from a Knack connection value.
+ * @param {Array|Object|null|undefined} value - Connection field value
+ * @returns {{id: string, identifier: string}|null} Extracted reference or null
+ * @example
+ * const ref = getConnectionRef(record.field_1234_raw);
+ * const name = ref ? ref.identifier : '';
+ */
+const getConnectionRef = (value) => {
+    if (Array.isArray(value)) {
+        const first = value[0];
+        return first && first.id ? { id: first.id, identifier: first.identifier || '' } : null;
+    }
+
+    if (value && value.id) {
+        return { id: value.id, identifier: value.identifier || '' };
+    }
+
+    return null;
+};
 //jQuery extensions - BEGIN
 //Searches a selector for text like : contains, but with an exact match, and after a spaces trim.
 $.expr[':'].textEquals = function (el, i, m) {
@@ -1535,6 +1561,239 @@ function getAllTableRows(viewId, callback, includeHeader = false, includeGroup =
     tableRows.forEach((row, index) => {
         callback(index, row);
     });
+}
+
+/**
+ * Returns the scene metadata for a given view id.
+ * Falls back to scanning scenes if direct lookup is missing.
+ *
+ * @param {string} viewId - Knack view id (with or without `view_` prefix)
+ * @returns {{ key: string, slug: (string|null) }|null} Scene info or null if not found
+ */
+function getSceneFromViewId(viewId) {
+    if (!viewId) return null;
+    const vid = normaliseView(viewId);
+
+    const directScene = Knack?.views?.[vid]?.model?.view?.scene;
+    if (directScene?.key) {
+        const key = normaliseScene(directScene.key);
+        const slug = directScene.slug ? String(directScene.slug) : null;
+        return { key, slug };
+    }
+
+    const scenes = Knack?.scenes?.models || [];
+    for (const scene of scenes) {
+        const views = scene?.views?.models || [];
+        for (const v of views) {
+            if (v?.attributes?.key === vid) {
+                const key = normaliseScene(scene?.attributes?.key) || null;
+                if (!key) return null;
+                const slug = scene?.attributes?.slug ? String(scene.attributes.slug) : null;
+                return { key, slug };
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Applies menu link filters by button text for a target view.
+ * @param {object} params
+ * @param {string|number} params.menuViewId
+ * @param {string|number} params.targetViewId
+ * @param {Array<{buttonText:string, fieldId?:string|number, operator?:string, value?:string, valLabel?:string, fieldName?:string, page?:number}>} params.rules
+ * @example
+ * applyMenuLinkFilters({
+ *   menuViewId: 1374,
+ *   targetViewId: 1305,
+ *   rules: [
+ *     { buttonText: 'All Tasks' },
+ *     { buttonText: 'Outstanding', fieldId: 1869, operator: 'is not', value: 'id' },
+ *     { buttonText: 'Completed', fieldId: 1869, operator: 'is', value: 'id' }
+ *   ]
+ * });
+ */
+function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [] } = {}) {
+    const viewId = normaliseView(menuViewId);
+    const targetId = normaliseView(targetViewId);
+    if (!viewId || !targetId) return;
+
+    const viewElement = getById(viewId);
+    if (!viewElement) return;
+
+    const ruleMap = new Map(
+        (Array.isArray(rules) ? rules : [])
+            .map((rule) => [String(rule?.buttonText || '').trim(), rule])
+            .filter(([label]) => Boolean(label))
+    );
+
+    if (!ruleMap.size) return;
+
+    const targetViewKey = targetId.replace('view_', '');
+
+    const buildHref = (query) => {
+        const base = String(window.location.href || '').split('?')[0];
+        if (!base) return '';
+        return query ? `${base}?${query}` : base;
+    };
+
+    const applyFilterInPlace = (filter, page = 1) => {
+        const sceneHash = Knack.getSceneHash();
+        const query = filter && Array.isArray(filter.rules) && filter.rules.length
+            ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
+            : `view_${targetViewKey}_page=${page}`;
+
+        Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
+        Knack.setHashVars();
+
+        try {
+            Knack.models[targetId].setFilters(filter || {});
+            Knack.models[targetId].fetch({
+                success: () => { if (Knack.hideSpinner) Knack.hideSpinner(); },
+                error: () => { if (Knack.hideSpinner) Knack.hideSpinner(); }
+            });
+        } catch (error) {
+            console.warn('[KF] Menu filter apply failed', { targetId, error });
+        }
+    };
+
+    const links = Array.from(viewElement.querySelectorAll('a'));
+    links.forEach((link) => {
+        const text = link.textContent?.trim();
+        if (!text || !ruleMap.has(text)) return;
+
+        const rule = ruleMap.get(text);
+        const fieldId = rule?.fieldId ? normaliseField(rule.fieldId) : '';
+        const operator = String(rule?.operator || '').trim();
+        const value = String(rule?.value || '').trim();
+        const page = Number.isFinite(Number(rule?.page)) ? Number(rule.page) : 1;
+
+        if (!fieldId || !operator || !value) {
+            link.setAttribute('href', buildHref(''));
+            link.dataset.filterTarget = targetId;
+            link.dataset.filter = '';
+            link.dataset.filterPage = String(page);
+            return;
+        }
+
+        const filter = {
+            match: 'and',
+            rules: [
+                {
+                    field: fieldId,
+                    operator,
+                    value,
+                    ...(rule?.valLabel ? { val_label: rule.valLabel } : {}),
+                    ...(rule?.fieldName ? { field_name: rule.fieldName } : {})
+                }
+            ]
+        };
+
+        const filterParam = encodeURIComponent(JSON.stringify(filter));
+        const query = `view_${targetViewKey}_filters=${filterParam}&view_${targetViewKey}_page=${page}`;
+        link.setAttribute('href', buildHref(query));
+        link.dataset.filterTarget = targetId;
+        link.dataset.filter = JSON.stringify(filter);
+        link.dataset.filterPage = String(page);
+    });
+
+    if (viewElement.dataset.menuFilterWired === 'true') return;
+
+    viewElement.addEventListener('click', (event) => {
+        const link = event.target.closest('a');
+        if (!link || link.dataset.filterTarget !== targetId) return;
+
+        event.preventDefault();
+
+        const page = Number(link.dataset.filterPage) || 1;
+        const filterJson = link.dataset.filter || '';
+        const filter = filterJson ? JSON.parse(filterJson) : null;
+
+        applyFilterInPlace(filter, page);
+
+        if (link.classList.contains('kf-menu-button')) {
+            viewElement.querySelectorAll('a.kf-menu-button').forEach((btn) => {
+                btn.classList.remove('is-active');
+            });
+            link.classList.add('is-active');
+        }
+    });
+
+    viewElement.dataset.menuFilterWired = 'true';
+}
+
+/**
+ * Render menu buttons inside a menu view.
+ * @param {HTMLElement} root
+ * @param {Array<{label: string, id?: string, isActive?: boolean, className?: string, colors?: {baseColor?: string, activeColor?: string, textColor?: string}, data?: Record<string, string>}>} menuItems
+ * @param {Map<string, {baseColor?: string, activeColor?: string, textColor?: string}>|Object|string} buttonColours
+ * @returns {void}
+ * @example
+ * renderMenuButtons(root, [
+ *   { label: 'All Platforms', isActive: true, colors: { baseColor: 'var(--knack-color-secondary)', activeColor: 'var(--knack-color-primary)' } },
+ *   { label: 'Prime', id: 'rec123' }
+ * ], new Map([['rec123', { baseColor: '#ff9900' }]]));
+ */
+function renderMenuButtons(root, menuItems = [], buttonColours = '#222222') {
+    if (!root) return;
+
+    const menuLinks = root.querySelector('.menu-links');
+    if (!menuLinks) return;
+
+    const defaultColor = typeof buttonColours === 'string' ? buttonColours : '#222222';
+    const colorMap = buttonColours instanceof Map
+        ? buttonColours
+        : new Map(Object.entries(buttonColours || {}));
+
+    const list = menuLinks.querySelector('.menu-links__list') || menuLinks;
+    list.classList.add('kf-menu-links');
+
+    list.querySelectorAll('.kf-menu-item').forEach((item) => item.remove());
+
+    const linkClassName = menuLinks.querySelector('a')?.className || 'knViewLink';
+    const fragment = document.createDocumentFragment();
+
+    (Array.isArray(menuItems) ? menuItems : []).forEach((item) => {
+        const label = String(item?.label || '').trim() || 'Menu';
+        if (!label) return;
+
+        const menuItem = document.createElement('li');
+        menuItem.className = 'kf-menu-item menu-links__list-item';
+
+        const link = document.createElement('a');
+        const extraClass = String(item?.className || '').trim();
+        link.className = `${linkClassName} kn-button kf-menu-button${extraClass ? ` ${extraClass}` : ''}`;
+        link.textContent = label;
+        link.href = '#';
+
+        if (item?.isActive) link.classList.add('is-active');
+        if (item?.id) link.dataset.platformId = String(item.id);
+
+        if (item?.data && typeof item.data === 'object') {
+            Object.entries(item.data).forEach(([key, value]) => {
+                if (!key) return;
+                link.dataset[key] = String(value);
+            });
+        }
+
+        const itemKey = item?.id ? String(item.id) : normaliseText(label);
+        const colors = item?.colors || colorMap.get(itemKey) || colorMap.get(normaliseText(label));
+
+        if (colors?.baseColor) {
+            link.style.setProperty('--kf-menu-color', colors.baseColor);
+            link.style.setProperty('--kf-menu-color-active', colors.activeColor || colors.baseColor);
+            if (colors.textColor) link.style.setProperty('--kf-menu-text-color', colors.textColor);
+        } else if (defaultColor) {
+            link.style.setProperty('--kf-menu-color', defaultColor);
+            link.style.setProperty('--kf-menu-color-active', defaultColor);
+        }
+
+        menuItem.appendChild(link);
+        fragment.appendChild(menuItem);
+    });
+
+    list.appendChild(fragment);
 }
 
 /** Update button color on form completion
