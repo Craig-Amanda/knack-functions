@@ -7,6 +7,7 @@ const INPUT_CHECKBOX_CHECKED_SELECTOR = `${INPUT_CHECKBOX_SELECTOR}:checked`;
 const INPUT_RADIO_CHECKED_SELECTOR = `${INPUT_RADIO_SELECTOR}:checked`;
 const HEADER_CHECKBOX_SELECTOR = 'th input[type="checkbox"]';
 const CLASS_DISABLED = 'disabled';
+const DEFAULT_WRITE_CONCURRENCY = 3;
 console.log('KnackApps/ARC Beta 1.0 - knackFunctions.js loaded.');
 
 const normaliseField = (id) => String(id).startsWith('field_') ? id : `field_${id}`;
@@ -4229,6 +4230,7 @@ class KnackAPI {
      * @param {boolean} [options.debug=false] - Whether to log debug information to console
      * @param {boolean} [options.developerOnly=true] - Whether to restrict logs to developers only
      * @param {Array<string>} [options.developerRoles=['Developer']] - User roles considered as developers
+     * @param {number} [options.writeConcurrency=3] - Max concurrent create/update/delete requests (use Infinity for no limit)
      */
     constructor(options = {}) {
         this.options = {
@@ -4236,9 +4238,19 @@ class KnackAPI {
             timeout: options.timeout || 60000,
             debug: options.debug || false,
             developerOnly: options.developerOnly !== undefined ? options.developerOnly : true,
-            developerRoles: options.developerRoles || ['Developer']
+            developerRoles: options.developerRoles || ['Developer'],
+            writeConcurrency: options.writeConcurrency
         };
+        this.options.writeConcurrency = this._resolveWriteConcurrency(this.options.writeConcurrency);
 
+        this._activeRequests = 0;
+        this._activeWrites = 0;
+        this._writeQueue = [];
+        this._isDraining = false;
+        this._drainScheduled = false;
+        this._drainScheduler = typeof queueMicrotask === 'function'
+            ? queueMicrotask
+            : (fn) => setTimeout(fn, 0);
         this._initLogSettings();
     }
 
@@ -4526,26 +4538,55 @@ class KnackAPI {
      * @public
      */
     async createRecord(sceneId, viewId, recordData, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId);
-        this._log('Creating record', { url, data: recordData });
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId);
+            this._log('Creating record', { url, data: recordData });
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { controller, signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'POST',
-                    headers: this._buildHeaders(),
-                    body: JSON.stringify(recordData)
-                },
-                signal
-            );
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
+            try {
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'POST',
+                        headers: this._buildHeaders(),
+                        body: JSON.stringify(recordData)
+                    },
+                    signal
+                );
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
+            }
+        });
+    }
+
+    /**
+     * Creates multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<Object>} recordsData - Array of record data objects to create
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after creation
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of result objects from each create
+     * @public
+     */
+    async createRecords(sceneId, viewId, recordsData, refreshViews, timeout) {
+        if (!Array.isArray(recordsData)) {
+            throw new Error('recordsData must be an array');
         }
+
+        const results = await Promise.all(
+            recordsData.map((recordData) => {
+                return this.createRecord(sceneId, viewId, recordData, null, timeout)
+                    .then(data => ({ success: true, data, recordData, recordId: this._extractRecordId(data) }))
+                    .catch(error => ({ success: false, error, recordData, recordId: null }));
+            })
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
     }
 
     /**
@@ -4560,62 +4601,91 @@ class KnackAPI {
      * @public
      */
     async updateRecord(sceneId, viewId, recordId, recordData, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId, recordId);
-        this._log('Updating record', { url, data: recordData });
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId, recordId);
+            this._log('Updating record', { url, data: recordData });
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { controller, signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'PUT',
-                    headers: this._buildHeaders(),
-                    body: JSON.stringify(recordData)
-                },
-                signal
-            );
-
-            // --- basic verification & logging (non-breaking) ---
             try {
-                const recordObj = result?.record ?? result; // handle both shapes defensively
-                const requestedKeys = Object.keys(recordData || {});
-                const failed = [];
-                const succeeded = [];
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'PUT',
+                        headers: this._buildHeaders(),
+                        body: JSON.stringify(recordData)
+                    },
+                    signal
+                );
 
-                for (const key of requestedKeys) {
-                    const sentVal = recordData[key];
-                    const gotVal = this._extractResponseValueFromRecord(recordObj, key);
+                // --- basic verification & logging (non-breaking) ---
+                try {
+                    const recordObj = result?.record ?? result; // handle both shapes defensively
+                    const requestedKeys = Object.keys(recordData || {});
+                    const failed = [];
+                    const succeeded = [];
 
-                    if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
-                        failed.push({
-                            field: key,
-                            sent: sentVal,
-                            received: gotVal
-                        });
+                    for (const key of requestedKeys) {
+                        const sentVal = recordData[key];
+                        const gotVal = this._extractResponseValueFromRecord(recordObj, key);
+
+                        if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
+                            failed.push({
+                                field: key,
+                                sent: sentVal,
+                                received: gotVal
+                            });
+                        }
                     }
-                }
 
-                if (failed.length > 0) {
-                    const failedFields = failed.map(f => f.field).join(', ');
-                    this._log('Field update verification: failures detected', {
-                        sceneId,
-                        viewId,
-                        recordId,
-                        failedFields,
-                        failedCount: failed.length
-                    }, 'warn');
+                    if (failed.length > 0) {
+                        const failedFields = failed.map(f => f.field).join(', ');
+                        this._log('Field update verification: failures detected', {
+                            sceneId,
+                            viewId,
+                            recordId,
+                            failedFields,
+                            failedCount: failed.length
+                        }, 'warn');
+                    }
+                } catch (verifyErr) {
+                    this._log('Field update verification error', verifyErr, 'error');
                 }
-            } catch (verifyErr) {
-                this._log('Field update verification error', verifyErr, 'error');
+                // --- end verification ---
+
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
             }
-            // --- end verification ---
+        });
+    }
 
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
+    /**
+     * Updates multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<Object>} updates - Array of objects containing recordId and recordData
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after updates
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of result objects from each update
+     * @public
+     */
+    async updateRecords(sceneId, viewId, updates, refreshViews, timeout) {
+        if (!Array.isArray(updates)) {
+            throw new Error('updates must be an array');
         }
+
+        const results = await Promise.all(
+            updates.map(({ recordId, recordData }) => {
+                return this.updateRecord(sceneId, viewId, recordId, recordData, null, timeout)
+                    .then(data => ({ success: true, data, recordId, recordData }))
+                    .catch(error => ({ success: false, error, recordId, recordData }));
+            })
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
     }
 
 
@@ -4664,25 +4734,54 @@ class KnackAPI {
      * @public
      */
     async deleteRecord(sceneId, viewId, recordId, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId, recordId);
-        this._log('Deleting record', url);
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId, recordId);
+            this._log('Deleting record', url);
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { controller, signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'DELETE',
-                    headers: this._buildHeaders()
-                },
-                signal
-            );
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
+            try {
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'DELETE',
+                        headers: this._buildHeaders()
+                    },
+                    signal
+                );
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
+            }
+        });
+    }
+
+    /**
+     * Deletes multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<string>} recordIds - Array of record IDs to delete
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after deletions
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of result objects from each delete
+     * @public
+     */
+    async deleteRecords(sceneId, viewId, recordIds, refreshViews, timeout) {
+        if (!Array.isArray(recordIds)) {
+            throw new Error('recordIds must be an array');
         }
+
+        const results = await Promise.all(
+            recordIds.map((recordId) => {
+                return this.deleteRecord(sceneId, viewId, recordId, null, timeout)
+                    .then(data => ({ success: true, data, recordId }))
+                    .catch(error => ({ success: false, error, recordId }));
+            })
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
     }
 
     /**
@@ -4761,6 +4860,17 @@ class KnackAPI {
     }
 
     /**
+     * Update the write concurrency limit. Updates apply to queued operations immediately.
+     * @param {number} writeConcurrency - Max concurrent create/update/delete requests
+     * @public
+     */
+    setWriteConcurrency(writeConcurrency) {
+        this.options.writeConcurrency = this._resolveWriteConcurrency(writeConcurrency);
+        this._log('Write concurrency set to', this.options.writeConcurrency);
+        this._drainWriteQueue();
+    }
+
+    /**
      * Log messages with levels (info, warn, error). Defaults to info.
      * @param {string} message - The message to log
      * @param {*} data - Optional data to log
@@ -4792,9 +4902,15 @@ class KnackAPI {
     _toggleSpinner(show) {
         if (this.options.showSpinner) {
             if (show) {
-                Knack.showSpinner();
+                this._activeRequests += 1;
+                if (this._activeRequests === 1) {
+                    Knack.showSpinner();
+                }
             } else {
-                Knack.hideSpinner();
+                this._activeRequests = Math.max(0, this._activeRequests - 1);
+                if (this._activeRequests === 0) {
+                    Knack.hideSpinner();
+                }
             }
         }
     }
@@ -5204,6 +5320,19 @@ class KnackAPI {
     }
 
     /**
+     * Extracts a record ID from an API response object.
+     * @param {Object} responseData - API response data
+     * @returns {string|null} - Record ID if found
+     * @private
+     */
+    _extractRecordId(responseData) {
+        if (!responseData || typeof responseData !== 'object') return null;
+        if (responseData.record?.id) return responseData.record.id;
+        if (responseData.id) return responseData.id;
+        return null;
+    }
+
+    /**
      * Normalises values for loose comparison between request and response.
      * Handles strings, numbers, booleans, arrays (order-insensitive), and simple objects.
      * @param {*} val - The value to normalise.
@@ -5241,6 +5370,88 @@ class KnackAPI {
      */
     _valuesEffectivelyEqual(a, b) {
         return this._normaliseForCompare(a) === this._normaliseForCompare(b);
+    }
+
+    /**
+     * Normalizes the write concurrency option.
+     * @param {number} writeConcurrency - Desired concurrency value
+     * @returns {number} - Normalized concurrency
+     * @private
+     */
+    _resolveWriteConcurrency(writeConcurrency) {
+        if (writeConcurrency === Infinity) {
+            return Infinity;
+        }
+        const parsed = Number(writeConcurrency);
+        if (Number.isFinite(parsed)) {
+            return Math.max(1, Math.floor(parsed));
+        }
+        return DEFAULT_WRITE_CONCURRENCY;
+    }
+
+    /**
+     * Schedule a write operation respecting configured concurrency.
+     * @param {Function} task - Async function performing the write operation
+     * @returns {Promise<*>}
+     * @private
+     */
+    _scheduleWrite(task) {
+        if (this.options.writeConcurrency === Infinity) {
+            return task();
+        }
+
+        return new Promise((resolve, reject) => {
+            this._writeQueue.push({ task, resolve, reject });
+            this._drainWriteQueue();
+        });
+    }
+
+    /**
+     * Drains the write queue up to the configured concurrency limit.
+     * @private
+     */
+    _drainWriteQueue() {
+        if (this._isDraining) {
+            this._scheduleDrain();
+            return;
+        }
+
+        this._isDraining = true;
+        try {
+            while (this._activeWrites < this.options.writeConcurrency && this._writeQueue.length > 0) {
+                const { task, resolve, reject } = this._writeQueue.shift();
+                this._activeWrites += 1;
+
+                task()
+                    .then(resolve)
+                    .catch(reject)
+                    .finally(() => {
+                        this._activeWrites = Math.max(0, this._activeWrites - 1);
+                        this._scheduleDrain();
+                    });
+            }
+        } finally {
+            this._isDraining = false;
+            if (this._writeQueue.length > 0 && this._activeWrites >= this.options.writeConcurrency) {
+                this._scheduleDrain();
+            }
+        }
+    }
+
+    /**
+     * Schedules a queue drain without stacking multiple callbacks.
+     * @private
+     */
+    _scheduleDrain() {
+        if (this._drainScheduled) {
+            return;
+        }
+
+        this._drainScheduled = true;
+        this._drainScheduler(() => {
+            this._drainScheduled = false;
+            this._drainWriteQueue();
+        });
     }
 }
 
