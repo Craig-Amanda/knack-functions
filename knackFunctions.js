@@ -4230,7 +4230,10 @@ class KnackAPI {
      * @param {boolean} [options.debug=false] - Whether to log debug information to console
      * @param {boolean} [options.developerOnly=true] - Whether to restrict logs to developers only
      * @param {Array<string>} [options.developerRoles=['Developer']] - User roles considered as developers
-     * @param {number} [options.writeConcurrency=3] - Max concurrent create/update/delete requests (use Infinity for no limit)
+     * @param {number} [options.writeConcurrency=5] - Max concurrent create/update/delete requests (use Infinity for no limit)
+     * @param {number} [options.retry429MaxAttempts=2] - Max attempts for 429 responses (initial + retries)
+     * @param {number} [options.retry429BaseDelayMs=500] - Base delay in ms for exponential 429 backoff
+     * @param {number} [options.retry429MaxDelayMs=10000] - Max delay in ms for 429 backoff
      */
     constructor(options = {}) {
         this.options = {
@@ -4239,7 +4242,10 @@ class KnackAPI {
             debug: options.debug || false,
             developerOnly: options.developerOnly !== undefined ? options.developerOnly : true,
             developerRoles: options.developerRoles || ['Developer'],
-            writeConcurrency: options.writeConcurrency
+            writeConcurrency: options.writeConcurrency,
+            retry429MaxAttempts: Number.isInteger(options.retry429MaxAttempts) && options.retry429MaxAttempts > 0 ? options.retry429MaxAttempts : 4,
+            retry429BaseDelayMs: Number.isFinite(options.retry429BaseDelayMs) && options.retry429BaseDelayMs >= 0 ? options.retry429BaseDelayMs : 500,
+            retry429MaxDelayMs: Number.isFinite(options.retry429MaxDelayMs) && options.retry429MaxDelayMs >= 0 ? options.retry429MaxDelayMs : 10000,
         };
         this.options.writeConcurrency = this._resolveWriteConcurrency(this.options.writeConcurrency);
 
@@ -5005,10 +5011,24 @@ class KnackAPI {
         this._toggleSpinner(true);
 
         try {
-            const response = await fetch(url, { ...options, signal });
-            const data = await this._handleResponse(response);
-            this._log('API response', data);
-            return data;
+            const maxAttempts = Math.max(1, this.options.retry429MaxAttempts || 2);
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                const response = await fetch(url, { ...options, signal });
+
+                if (response.status === 429 && attempt < maxAttempts) {
+                    const delayMs = this._get429RetryDelayMs(response, attempt);
+                    this._log('429 received, retrying request', { url, attempt, maxAttempts, delayMs }, 'warn');
+                    await this._sleep(delayMs, signal);
+                    continue;
+                }
+
+                const data = await this._handleResponse(response);
+                this._log('API response', data);
+                return data;
+            }
+
+            throw new Error('Request failed after retry attempts');
         } catch (error) {
             if (error.name === 'AbortError') {
                 throw new Error('Request timeout');
@@ -5017,6 +5037,71 @@ class KnackAPI {
         } finally {
             this._toggleSpinner(false);
         }
+    }
+
+    /**
+     * Returns the retry delay for HTTP 429 responses.
+     * @param {Response} response - Fetch response
+     * @param {number} attempt - Current attempt number (1-based)
+     * @returns {number} - Delay in milliseconds
+     * @private
+     */
+    _get429RetryDelayMs(response, attempt) {
+        const retryAfter = response.headers.get('Retry-After');
+
+        if (retryAfter) {
+            const retryAfterSeconds = Number(retryAfter);
+            if (Number.isFinite(retryAfterSeconds)) {
+                return Math.max(0, retryAfterSeconds * 1000);
+            }
+
+            const retryAfterDate = Date.parse(retryAfter);
+            if (!Number.isNaN(retryAfterDate)) {
+                return Math.max(0, retryAfterDate - Date.now());
+            }
+        }
+
+        const baseDelay = Math.max(50, this.options.retry429BaseDelayMs || 500);
+        const maxDelay = Math.max(baseDelay, this.options.retry429MaxDelayMs || 10000);
+        const exponentialDelay = Math.min(maxDelay, baseDelay * Math.pow(2, Math.max(0, attempt - 1)));
+        const jitter = Math.floor(Math.random() * Math.min(250, Math.floor(baseDelay / 2)));
+
+        return exponentialDelay + jitter;
+    }
+
+    /**
+     * Delay helper for retries.
+     * @param {number} ms - Delay in milliseconds
+     * @param {AbortSignal} [signal] - Optional abort signal
+     * @returns {Promise<void>}
+     * @private
+     */
+    _sleep(ms, signal) {
+        return new Promise((resolve, reject) => {
+            const delayMs = Math.max(0, ms || 0);
+
+            if (signal?.aborted) {
+                reject(new DOMException('Aborted', 'AbortError'));
+                return;
+            }
+
+            const timeoutId = setTimeout(() => {
+                if (signal) {
+                    signal.removeEventListener('abort', onAbort);
+                }
+                resolve();
+            }, delayMs);
+
+            const onAbort = () => {
+                clearTimeout(timeoutId);
+                signal.removeEventListener('abort', onAbort);
+                reject(new DOMException('Aborted', 'AbortError'));
+            };
+
+            if (signal) {
+                signal.addEventListener('abort', onAbort, { once: true });
+            }
+        });
     }
 
     /**
