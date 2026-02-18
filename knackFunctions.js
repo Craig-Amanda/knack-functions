@@ -7,7 +7,55 @@ const INPUT_CHECKBOX_CHECKED_SELECTOR = `${INPUT_CHECKBOX_SELECTOR}:checked`;
 const INPUT_RADIO_CHECKED_SELECTOR = `${INPUT_RADIO_SELECTOR}:checked`;
 const HEADER_CHECKBOX_SELECTOR = 'th input[type="checkbox"]';
 const CLASS_DISABLED = 'disabled';
-console.log('KnackApps/ARC Beta 1.0 - knackFunctions.js loaded.');
+
+const normaliseField = (id) => String(id).startsWith('field_') ? id : `field_${id}`;
+const normaliseRaw = (id) => String(id).startsWith('field_') ? `${id}_raw` : `field_${id}_raw`;
+const normaliseView = (id) => String(id).startsWith('view_') ? id : `view_${id}`;
+const normaliseScene = (id) => String(id).startsWith('scene_') ? id : `scene_${id}`;
+
+/**
+ * Gets an element by ID scoped to an optional context.
+ * - `id` may be an id string (with or without leading '#').
+ * - `context` may be a selector or Element; defaults to `document`.
+ * Returns Element or null.
+ */
+function getById(id, { context } = {}) {
+    if (!id && id !== 0) return null;
+    const root = context ? resolveElement(context) : document;
+    if (!root) return null;
+    const idStr = String(id).replace(/^#/, '');
+    if (root === document && typeof document.getElementById === 'function') {
+        return document.getElementById(idStr);
+    }
+    // For element roots use querySelector to scope the lookup
+    try {
+        return root.querySelector(`[id="${idStr.replace(/"/g, '\\"')}"]`);
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Extracts id and identifier from a Knack connection value.
+ * @param {Array|Object|null|undefined} value - Connection field value
+ * @returns {{id: string, identifier: string}|null} Extracted reference or null
+ * @example
+ * const ref = getConnectionRef(record.field_1234_raw);
+ * const name = ref ? ref.identifier : '';
+ */
+const getConnectionRef = (value) => {
+    if (Array.isArray(value)) {
+        const first = value[0];
+        return first && first.id ? { id: first.id, identifier: first.identifier || '' } : null;
+    }
+
+    if (value && value.id) {
+        return { id: value.id, identifier: value.identifier || '' };
+    }
+
+    return null;
+};
+
 //jQuery extensions - BEGIN
 //Searches a selector for text like : contains, but with an exact match, and after a spaces trim.
 $.expr[':'].textEquals = function (el, i, m) {
@@ -1552,6 +1600,411 @@ function getAllTableRows(viewId, callback, includeHeader = false, includeGroup =
     });
 }
 
+/**
+ * Returns the scene metadata for a given view id.
+ * Falls back to scanning scenes if direct lookup is missing.
+ *
+ * @param {string} viewId - Knack view id (with or without `view_` prefix)
+ * @returns {{ key: string, slug: (string|null) }|null} Scene info or null if not found
+ */
+function getSceneFromViewId(viewId) {
+    if (!viewId) return null;
+    const vid = normaliseView(viewId);
+
+    const directScene = Knack?.views?.[vid]?.model?.view?.scene;
+    if (directScene?.key) {
+        const key = normaliseScene(directScene.key);
+        const slug = directScene.slug ? String(directScene.slug) : null;
+        return { key, slug };
+    }
+
+    const scenes = Knack?.scenes?.models || [];
+    for (const scene of scenes) {
+        const views = scene?.views?.models || [];
+        for (const v of views) {
+            if (v?.attributes?.key === vid) {
+                const key = normaliseScene(scene?.attributes?.key) || null;
+                if (!key) return null;
+                const slug = scene?.attributes?.slug ? String(scene.attributes.slug) : null;
+                return { key, slug };
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Normalises text for reliable comparisons:
+ * - converts to string
+ * - converts <br> / <br/> to a space
+ * - strips any remaining HTML tags
+ * - lowercases
+ * - removes ALL whitespace (spaces, tabs, newlines)
+ */
+//ANCHOR - Helpers - Text Normalization
+function normaliseText(value) {
+    const str = String(value ?? '');
+
+    return str
+        .replace(/<br\s*\/?>/gi, ' ')     // treat <br> as a space
+        .replace(/<[^>]*>/g, '')         // strip other tags
+        .toLowerCase()
+        .replace(/\s+/g, '');            // remove all whitespace
+}
+
+/**
+ * Applies menu-based filters to any target view with app-configurable behavior.
+ * Designed for generic use across table/list/details/calendar targets.
+ *
+ * @param {object} params
+ * @param {string|number} params.menuViewId - Source menu view id.
+ * @param {string|number} params.targetViewId - Target view id to filter.
+ * @param {Array<object>} [params.rules=[]] - Rule list keyed by button text.
+ * @param {object} [params.app={}] - App-specific behavior configuration.
+ * @param {string} [params.app.namespace='kf'] - Namespace for data attributes / wire marker.
+ * @param {string} [params.app.linkSelector='a'] - Link selector within menu view.
+ * @param {string} [params.app.buttonSelector='a.kf-menu-button'] - Selector used for active-state toggling.
+ * @param {string} [params.app.activeClass='is-active'] - Active class name.
+ * @param {boolean} [params.app.captureClick=false] - Bind menu click handler in capture phase.
+ * @param {boolean} [params.app.stopPropagation=false] - Stop propagation for handled menu clicks.
+ * @param {boolean} [params.app.stopImmediatePropagation=false] - Stop immediate propagation for handled menu clicks.
+ * @param {boolean} [params.app.syncHash=true] - Sync URL hash/query when filters are applied.
+ * @param {boolean} [params.app.rerenderCalendar=true] - Repaint calendar views after fetch.
+ * @param {number} [params.app.calendarDeferredRenderMs=60] - Deferred calendar render delay.
+ * @param {number} [params.app.calendarFirstApplyRetryMs=180] - Extra first-apply retry delay for calendars.
+ * @param {number} [params.app.calendarFirstApplyRefetchMs=0] - Optional one-time first-apply refetch delay for calendars.
+ * @param {(ctx: { rule: object, fieldId: string, operator: string, value: any }) => (object|null)} [params.app.buildFilter]
+ *        Optional custom filter builder. Return null for "show all".
+ * @param {(ctx: { targetId: string, filter: object|null, page: number }) => void} [params.app.onBeforeApply]
+ * @param {(ctx: { targetId: string, filter: object|null, page: number, targetType: string }) => void} [params.app.onAfterApply]
+ * @param {(ctx: { targetId: string, error: Error }) => void} [params.app.onError]
+ *
+ * @example
+ * applyMenuLinkFilters({
+ *   menuViewId: 2056,
+ *   targetViewId: 1320,
+ *   rules: [
+ *     { buttonText: 'All Parks' },
+ *     { buttonText: 'Tattershall Lakes', fieldId: 407, operator: 'is', value: ['65973d...'] }
+ *   ],
+ *   app: {
+ *     namespace: 'spot',
+ *     buttonSelector: 'a.kf-menu-button',
+ *     rerenderCalendar: true,
+ *   }
+ * });
+ */
+function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} } = {}) {
+    const viewId = normaliseView(menuViewId);
+    const targetId = normaliseView(targetViewId);
+    if (!viewId || !targetId) return;
+
+    const config = {
+        namespace: 'kf',
+        linkSelector: 'a',
+        buttonSelector: 'a.kf-menu-button',
+        activeClass: 'is-active',
+        captureClick: false,
+        stopPropagation: false,
+        stopImmediatePropagation: false,
+        syncHash: true,
+        rerenderCalendar: true,
+        calendarDeferredRenderMs: 60,
+        calendarFirstApplyRetryMs: 180,
+        calendarFirstApplyRefetchMs: 0,
+        buildFilter: null,
+        onBeforeApply: null,
+        onAfterApply: null,
+        onError: null,
+        ...app
+    };
+
+    const viewElement = getById(viewId);
+    if (!viewElement) return;
+    const linkSelector = config.linkSelector;
+
+    const hasValue = (value) => {
+        if (Array.isArray(value)) return value.length > 0;
+        if (value && typeof value === 'object') return Object.keys(value).length > 0;
+        if (typeof value === 'number') return Number.isFinite(value);
+        return String(value || '').trim().length > 0;
+    };
+
+    const defaultBuildFilter = ({ fieldId, operator, value, rule }) => {
+        if (!fieldId || !operator || !hasValue(value)) return null;
+
+        return {
+            match: 'and',
+            rules: [
+                {
+                    field: fieldId,
+                    operator,
+                    value,
+                    ...(rule?.valLabel ? { val_label: rule.valLabel } : {}),
+                    ...(rule?.fieldName ? { field_name: rule.fieldName } : {})
+                }
+            ]
+        };
+    };
+
+    const buildFilterFn = typeof config.buildFilter === 'function'
+        ? config.buildFilter
+        : defaultBuildFilter;
+
+    const ruleMap = new Map(
+        (Array.isArray(rules) ? rules : [])
+            .map((rule) => [String(rule?.buttonText || '').trim(), rule])
+            .filter(([label]) => Boolean(label))
+    );
+    if (!ruleMap.size) return;
+
+    const targetViewKey = targetId.replace('view_', '');
+    const wireAttr = `data-${config.namespace}-menu-filter-wired`;
+    let hasAppliedOnce = false;
+
+    const getTargetViewContext = () => {
+        const targetView = Knack?.views?.[targetId];
+        const targetModel = targetView?.model || Knack?.models?.[targetId];
+        const targetType = targetView?.model?.view?.type || targetView?.model?.attributes?.type || '';
+        return { targetView, targetModel, targetType };
+    };
+
+    const buildHref = (query) => {
+        const base = String(window.location.href || '').split('?')[0];
+        if (!base) return '';
+        return query ? `${base}?${query}` : base;
+    };
+
+    const rerenderCalendarIfNeeded = (targetView) => {
+        if (!config.rerenderCalendar) return;
+
+        const targetType = targetView?.model?.view?.type || targetView?.model?.attributes?.type;
+        if (targetType !== 'calendar' || typeof targetView?.renderRecords !== 'function') return;
+
+        if (typeof targetView?.model?.trigger === 'function') {
+            targetView.model.trigger('change');
+        }
+        if (typeof targetView?.renderView === 'function') {
+            targetView.renderView();
+        }
+        targetView.renderRecords();
+
+        const deferredMs = Number(config.calendarDeferredRenderMs) || 0;
+        if (deferredMs > 0) {
+            setTimeout(() => {
+                try {
+                    targetView.renderRecords();
+                } catch (_) {}
+            }, deferredMs);
+        }
+    };
+
+    const applyFilterInPlace = (filter, page = 1) => {
+        const sceneHash = Knack.getSceneHash();
+        const query = filter && Array.isArray(filter.rules) && filter.rules.length
+            ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
+            : `view_${targetViewKey}_page=${page}`;
+
+        if (typeof config.onBeforeApply === 'function') {
+            try { config.onBeforeApply({ targetId, filter, page }); } catch (_) {}
+        }
+
+        if (config.syncHash) {
+            Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
+            Knack.setHashVars();
+        }
+
+        try {
+            const { targetView, targetModel, targetType } = getTargetViewContext();
+            if (!targetModel) return;
+
+            targetModel.setFilters(filter || {});
+            targetModel.fetch({
+                success: () => {
+                    rerenderCalendarIfNeeded(targetView);
+
+                    const firstRetryMs = Number(config.calendarFirstApplyRetryMs) || 0;
+                    const firstRefetchMs = Number(config.calendarFirstApplyRefetchMs) || 0;
+                    if (!hasAppliedOnce && targetType === 'calendar' && firstRefetchMs > 0) {
+                        hasAppliedOnce = true;
+                        setTimeout(() => {
+                            applyFilterInPlace(filter, page);
+                        }, firstRefetchMs);
+                    } else if (!hasAppliedOnce && targetType === 'calendar' && firstRetryMs > 0) {
+                        hasAppliedOnce = true;
+                        setTimeout(() => {
+                            rerenderCalendarIfNeeded(targetView);
+                        }, firstRetryMs);
+                    }
+
+                    if (typeof config.onAfterApply === 'function') {
+                        try { config.onAfterApply({ targetId, filter, page, targetType }); } catch (_) {}
+                    }
+
+                    if (Knack.hideSpinner) Knack.hideSpinner();
+                },
+                error: () => {
+                    if (Knack.hideSpinner) Knack.hideSpinner();
+                }
+            });
+        } catch (error) {
+            if (typeof config.onError === 'function') {
+                try {
+                    config.onError({ targetId, error });
+                    return;
+                } catch (_) {}
+            }
+            console.warn('[KF] Menu filter apply failed', { targetId, error });
+        }
+    };
+
+    const links = Array.from(viewElement.querySelectorAll(linkSelector));
+    links.forEach((link) => {
+        const text = link.textContent?.trim();
+        if (!text || !ruleMap.has(text)) return;
+
+        const rule = ruleMap.get(text);
+        const fieldId = rule?.fieldId ? normaliseField(rule.fieldId) : '';
+        const operator = String(rule?.operator || '').trim();
+        const value = rule?.value;
+        const page = Number.isFinite(Number(rule?.page)) ? Number(rule.page) : 1;
+        const filter = buildFilterFn({ rule, fieldId, operator, value });
+
+        if (!filter) {
+            link.setAttribute('href', buildHref(''));
+            link.dataset.filterTarget = targetId;
+            link.dataset.filter = '';
+            link.dataset.filterPage = String(page);
+            return;
+        }
+
+        const filterParam = encodeURIComponent(JSON.stringify(filter));
+        const query = `view_${targetViewKey}_filters=${filterParam}&view_${targetViewKey}_page=${page}`;
+        link.setAttribute('href', buildHref(query));
+        link.dataset.filterTarget = targetId;
+        link.dataset.filter = JSON.stringify(filter);
+        link.dataset.filterPage = String(page);
+    });
+
+    if (viewElement.getAttribute(wireAttr) === 'true') return;
+
+    viewElement.addEventListener('click', (event) => {
+        const link = event.target.closest(linkSelector);
+        if (!link || link.dataset.filterTarget !== targetId) return;
+
+        event.preventDefault();
+        if (config.stopPropagation) {
+            event.stopPropagation();
+        }
+        if (config.stopImmediatePropagation) {
+            event.stopImmediatePropagation();
+        }
+
+        const page = Number(link.dataset.filterPage) || 1;
+        const filterJson = link.dataset.filter || '';
+        const filter = filterJson ? JSON.parse(filterJson) : null;
+
+        applyFilterInPlace(filter, page);
+
+        if (config.buttonSelector) {
+            viewElement.querySelectorAll(config.buttonSelector).forEach((btn) => {
+                btn.classList.remove(config.activeClass);
+            });
+            link.classList.add(config.activeClass);
+        }
+    }, !!config.captureClick);
+
+    viewElement.setAttribute(wireAttr, 'true');
+}
+
+function ensureMenuButtonActiveStyles() {
+    if (document.getElementById('kf-menu-button-active-style')) return;
+
+    const style = document.createElement('style');
+    style.id = 'kf-menu-button-active-style';
+    style.textContent = `
+        .kf-menu-button.is-active {
+            border-color: rgba(0, 0, 0, 0.45) !important;
+            filter: brightness(0.92);
+            transform: translateY(1px);
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+/**
+ * Render menu buttons inside a menu view.
+ * @param {object} options
+ * @param {HTMLElement} options.root
+ * @param {Array<{label: string, id?: string, isActive?: boolean, className?: string, colors?: {baseColor?: string, activeColor?: string, textColor?: string}, data?: Record<string, string>}>} [options.menuItems=[]]
+ * @param {string} [options.buttonClass=''] - Optional class to apply to every generated button (in addition to default classes)
+ * @returns {void}
+ * @example
+ * renderMenuButtons({
+ *   root,
+ *   menuItems: [
+ *   { label: 'All Platforms', isActive: true, colors: { baseColor: 'var(--knack-color-secondary)', activeColor: 'var(--knack-color-primary)' } },
+ *   { label: 'Prime', id: 'rec123' }
+ *   ],
+ *   buttonClass: 'my-custom-button-class'
+ * });
+ */
+function renderMenuButtons({ root, menuItems = [], buttonClass = '' } = {}) {
+    if (!root) return;
+
+    ensureMenuButtonActiveStyles();
+
+    const menuLinks = root.querySelector('.menu-links');
+    if (!menuLinks) return;
+
+    const list = menuLinks.querySelector('.menu-links__list') || menuLinks;
+    list.classList.add('kf-menu-links');
+
+    list.querySelectorAll('.kf-menu-item').forEach((item) => item.remove());
+
+    const linkClassName = menuLinks.querySelector('a')?.className || '';
+    const fragment = document.createDocumentFragment();
+    const globalCustomClass = String(buttonClass || '').trim();
+
+    (Array.isArray(menuItems) ? menuItems : []).forEach((item) => {
+        const label = String(item?.label || '').trim() || 'Menu';
+        if (!label) return;
+
+        const menuItem = document.createElement('li');
+        menuItem.className = 'kf-menu-item menu-links__list-item';
+
+        const link = document.createElement('a');
+        const extraClass = String(item?.className || '').trim();
+        link.className = `${linkClassName} kn-button kf-menu-button${globalCustomClass ? ` ${globalCustomClass}` : ''}${extraClass ? ` ${extraClass}` : ''}`;
+        link.textContent = label;
+        link.href = '#';
+
+        if (item?.isActive) link.classList.add('is-active');
+        if (item?.id) link.dataset.platformId = String(item.id);
+
+        if (item?.data && typeof item.data === 'object') {
+            Object.entries(item.data).forEach(([key, value]) => {
+                if (!key) return;
+                link.dataset[key] = String(value);
+            });
+        }
+
+        const colors = item?.colors;
+
+        if (colors?.baseColor) {
+            link.style.setProperty('--kf-menu-color', colors.baseColor);
+            link.style.setProperty('--kf-menu-color-active', colors.activeColor || colors.baseColor);
+            if (colors.textColor) link.style.setProperty('--kf-menu-text-color', colors.textColor);
+        }
+
+        menuItem.appendChild(link);
+        fragment.appendChild(menuItem);
+    });
+
+    list.appendChild(fragment);
+}
+
 /** Update button color on form completion
  * @param {string} completedField - The field containing completed forms
  * @param {object} mappingObject - The mapping object for view IDs
@@ -2246,16 +2699,17 @@ function getWeekNumber(date) { //knack
  * @param {string} bcgGridColour - background colour of current week */
 async function updateWeekNumberObject( conxId, formDate, value, typeValue ) { //knack
     const sGrid = WEEK_NUM_SHARED_AREA_GRID;
+    const api = getKnackApiClient();
 
     const weekNumber = getWeekNumber(convertToDateObj(formDate));
     const weekNumberField = sGrid.weekNumberFields[weekNumber - 1];
 
     const filter = createFilterForWeekObj(sGrid, conxId, typeValue);
-    const weeklyTasks = await caAPI(sGrid.sceneId, sGrid.viewId, null, {}, 'get', filter);
-    const weeklyTaskId = weeklyTasks.records[0].id;
+    const weeklyTasks = await api.getRecords(sGrid.sceneId, sGrid.viewId, { filters: filter });
+    const weeklyTaskId = weeklyTasks?.[0]?.id;
 
     if (weeklyTaskId) {
-        await caAPI(sGrid.sceneId, sGrid.viewId, weeklyTaskId, {[weekNumberField]: value}, 'put');
+        await api.updateRecord(sGrid.sceneId, sGrid.viewId, weeklyTaskId, {[weekNumberField]: value});
     }
 }
 
@@ -3050,6 +3504,7 @@ function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, rendered
  * @param {string|null} connectionId - The ID of the connection to select (optional).
  * @param {string} connectionObject - The connection object to use for API calls. */
 async function addConnectionIdToRecord(viewId, conxFieldIdInput, connectionId = null, connectionObject) {
+    const api = getKnackApiClient();
     const viewElement = $(`#${viewId}`).length > 0 ? $(`#${viewId}`) : $(`#connection-form-view:has(input[value="${viewId}"])`);
 
     const connectionField = viewElement.find(`#kn-input-field_${conxFieldIdInput}`);
@@ -3071,7 +3526,7 @@ async function addConnectionIdToRecord(viewId, conxFieldIdInput, connectionId = 
     } else {
         const { sceneIdAPI, viewIdAPI, clientPKField } = CONNECTION_FIELDS_OBJECT[connectionObject];
         try {
-            const response = await caAPI(sceneIdAPI, viewIdAPI, connectionId, {}, 'get', {}, [], false);
+            const response = await api.getRecord(sceneIdAPI, viewIdAPI, connectionId);
             const optionText = response[`${clientPKField}_raw`];
             const searchInput = connectionField.find('.chzn-search input');
 
@@ -3724,21 +4179,20 @@ function extractPostcode(address) {
 }
 
 /**
- * Returns the appropriate viewer URL for a given file type.
+ * Returns the URL to open for a file type.
+ * Uses direct asset URLs to avoid external viewer blank-screen/network issues.
  * @param {string} extension - File extension (lowercase, no dot)
  * @param {string} url - Direct asset URL
- * @return {string} - Viewer URL
+ * @return {string} - URL to open
  */
 function fileViewer(extension, url) {
-    if (OFFICE_EXTENSIONS.includes(extension)) {
-        return `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(url)}`;
+    const ext = String(extension || '').toLowerCase();
+    if (OFFICE_EXTENSIONS.includes(ext) || ext === "pdf") {
+        return url;
     }
-    if (extension === "pdf") {
-        return `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(url)}`;
-    }
-    // Fallback to Google Docs Viewer for other types
-    return `https://docs.google.com/gview?url=${encodeURIComponent(url)}`;
+    return url;
 }
+
 /**num of whole weeks between two dates
  * @param {Date} date1 - 24/05/2023
  * @param {Date} date2 - 24/05/2023 **/
@@ -3954,20 +4408,6 @@ function filterSelectByText(viewId, fieldTofilter, textToMatch){
     }
 }
 
-/** Make a delayed API call loop
- * @param {string} sceneKey - The scene key with the view that has records to update.
- * @param {string} viewId - The view key of the view that has records to update
- * @param {array} recordIdArr - An array of record IDs to be updated.
- * @param {object} data - The data to be sent to the API it will send the same data to each record
- * @param {array} viewToRefresh - An array of view keys to be refreshed.
- * @param {integer} delay - The delay in milliseconds between each API call. */
-async function delayAPIPut (sceneKey = null, viewId = null, recordIdArr = [], data, viewToRefresh = [], delay = 500) {
-    for (var i = 0; i < recordIdArr.length; i++) {
-        caAPI (sceneKey, viewId, recordIdArr[i], data, 'put', {}, viewToRefresh, true);
-        await API_TIMER(delay);
-    }
-}
-
 /**
  * KnackAPI Class
  * Handles CRUD operations, filtering, sorting, pagination, and formatting
@@ -3977,6 +4417,10 @@ async function delayAPIPut (sceneKey = null, viewId = null, recordIdArr = [], da
  * @version 1.0.1
  */
 class KnackAPI {
+    static get DEFAULT_WRITE_CONCURRENCY() {
+        return 3;
+    }
+
     /**
      * Creates a new KnackAPI instance
      * @param {Object} options - Configuration options
@@ -3985,6 +4429,10 @@ class KnackAPI {
      * @param {boolean} [options.debug=false] - Whether to log debug information to console
      * @param {boolean} [options.developerOnly=true] - Whether to restrict logs to developers only
      * @param {Array<string>} [options.developerRoles=['Developer']] - User roles considered as developers
+     * @param {number} [options.writeConcurrency=3] - Max concurrent create/update/delete requests (use Infinity for no limit)
+     * @param {number} [options.retry429MaxAttempts=4] - Max attempts for 429 responses (initial + retries)
+     * @param {number} [options.retry429BaseDelayMs=500] - Base delay in ms for exponential 429 backoff
+     * @param {number} [options.retry429MaxDelayMs=10000] - Max delay in ms for 429 backoff
      */
     constructor(options = {}) {
         this.options = {
@@ -3992,9 +4440,22 @@ class KnackAPI {
             timeout: options.timeout || 60000,
             debug: options.debug || false,
             developerOnly: options.developerOnly !== undefined ? options.developerOnly : true,
-            developerRoles: options.developerRoles || ['Developer']
+            developerRoles: options.developerRoles || ['Developer'],
+            writeConcurrency: options.writeConcurrency,
+            retry429MaxAttempts: Number.isInteger(options.retry429MaxAttempts) && options.retry429MaxAttempts > 0 ? options.retry429MaxAttempts : 4,
+            retry429BaseDelayMs: Number.isFinite(options.retry429BaseDelayMs) && options.retry429BaseDelayMs >= 0 ? options.retry429BaseDelayMs : 500,
+            retry429MaxDelayMs: Number.isFinite(options.retry429MaxDelayMs) && options.retry429MaxDelayMs >= 0 ? options.retry429MaxDelayMs : 10000,
         };
+        this.options.writeConcurrency = this._resolveWriteConcurrency(this.options.writeConcurrency);
 
+        this._activeRequests = 0;
+        this._activeWrites = 0;
+        this._writeQueue = [];
+        this._isDraining = false;
+        this._drainScheduled = false;
+        this._drainScheduler = typeof queueMicrotask === 'function'
+            ? queueMicrotask
+            : (fn) => setTimeout(fn, 0);
         this._initLogSettings();
     }
 
@@ -4047,7 +4508,7 @@ class KnackAPI {
         const url = this._formatApiUrl(sceneId, viewId) + this._formatParams(params);
         this._log('Getting records', url);
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+        const { signal, clear } = this._createAbortController(timeout);
 
         try {
             const responseData = await this._executeRequest(
@@ -4188,7 +4649,7 @@ class KnackAPI {
         const formattedUrl = url + this._formatParams(params);
         this._log('Getting child records', formattedUrl);
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+        const { signal, clear } = this._createAbortController(timeout);
 
         try {
             const responseData = await this._executeRequest(
@@ -4282,26 +4743,55 @@ class KnackAPI {
      * @public
      */
     async createRecord(sceneId, viewId, recordData, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId);
-        this._log('Creating record', { url, data: recordData });
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId);
+            this._log('Creating record', { url, data: recordData });
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'POST',
-                    headers: this._buildHeaders(),
-                    body: JSON.stringify(recordData)
-                },
-                signal
-            );
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
+            try {
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'POST',
+                        headers: this._buildHeaders(),
+                        body: JSON.stringify(recordData)
+                    },
+                    signal
+                );
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
+            }
+        });
+    }
+
+    /**
+     * Creates multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<Object>} recordsData - Array of record data objects to create
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after creation
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of result objects from each create
+     * @public
+     */
+    async createRecords(sceneId, viewId, recordsData, refreshViews, timeout) {
+        if (!Array.isArray(recordsData)) {
+            throw new Error('recordsData must be an array');
         }
+
+        const results = await Promise.all(
+            recordsData.map((recordData) => {
+                return this.createRecord(sceneId, viewId, recordData, null, timeout)
+                    .then(data => ({ success: true, data, recordData, recordId: this._extractRecordId(data) }))
+                    .catch(error => ({ success: false, error, recordData, recordId: null }));
+            })
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
     }
 
     /**
@@ -4316,62 +4806,89 @@ class KnackAPI {
      * @public
      */
     async updateRecord(sceneId, viewId, recordId, recordData, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId, recordId);
-        this._log('Updating record', { url, data: recordData });
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId, recordId);
+            this._log('Updating record', { url, data: recordData });
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'PUT',
-                    headers: this._buildHeaders(),
-                    body: JSON.stringify(recordData)
-                },
-                signal
-            );
-
-            // --- basic verification & logging (non-breaking) ---
             try {
-                const recordObj = result?.record ?? result; // handle both shapes defensively
-                const requestedKeys = Object.keys(recordData || {});
-                const failed = [];
-                const succeeded = [];
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'PUT',
+                        headers: this._buildHeaders(),
+                        body: JSON.stringify(recordData)
+                    },
+                    signal
+                );
 
-                for (const key of requestedKeys) {
-                    const sentVal = recordData[key];
-                    const gotVal = this._extractResponseValueFromRecord(recordObj, key);
+                // --- basic verification & logging (non-breaking) ---
+                try {
+                    const recordObj = result?.record ?? result; // handle both shapes defensively
+                    const requestedKeys = Object.keys(recordData || {});
+                    const failed = [];
+                    for (const key of requestedKeys) {
+                        const sentVal = recordData[key];
+                        const gotVal = this._extractResponseValueFromRecord(recordObj, key);
 
-                    if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
-                        failed.push({
-                            field: key,
-                            sent: sentVal,
-                            received: gotVal
-                        });
+                        if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
+                            failed.push({
+                                field: key,
+                                sent: sentVal,
+                                received: gotVal
+                            });
+                        }
                     }
-                }
 
-                if (failed.length > 0) {
-                    const failedFields = failed.map(f => f.field).join(', ');
-                    this._log('Field update verification: failures detected', {
-                        sceneId,
-                        viewId,
-                        recordId,
-                        failedFields,
-                        failedCount: failed.length
-                    }, 'warn');
+                    if (failed.length > 0) {
+                        const failedFields = failed.map(f => f.field).join(', ');
+                        this._log('Field update verification: failures detected', {
+                            sceneId,
+                            viewId,
+                            recordId,
+                            failedFields,
+                            failedCount: failed.length
+                        }, 'warn');
+                    }
+                } catch (verifyErr) {
+                    this._log('Field update verification error', verifyErr, 'error');
                 }
-            } catch (verifyErr) {
-                this._log('Field update verification error', verifyErr, 'error');
+                // --- end verification ---
+
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
             }
-            // --- end verification ---
+        });
+    }
 
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
+    /**
+     * Updates multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<Object>} updates - Array of objects containing recordId and recordData
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after updates
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of result objects from each update
+     * @public
+     */
+    async updateRecords(sceneId, viewId, updates, refreshViews, timeout) {
+        if (!Array.isArray(updates)) {
+            throw new Error('updates must be an array');
         }
+
+        const results = await Promise.all(
+            updates.map(({ recordId, recordData }) => {
+                return this.updateRecord(sceneId, viewId, recordId, recordData, null, timeout)
+                    .then(data => ({ success: true, data, recordId, recordData }))
+                    .catch(error => ({ success: false, error, recordId, recordData }));
+            })
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
     }
 
 
@@ -4420,25 +4937,54 @@ class KnackAPI {
      * @public
      */
     async deleteRecord(sceneId, viewId, recordId, refreshViews, timeout) {
-        const url = this._formatApiUrl(sceneId, viewId, recordId);
-        this._log('Deleting record', url);
+        return this._scheduleWrite(async () => {
+            const url = this._formatApiUrl(sceneId, viewId, recordId);
+            this._log('Deleting record', url);
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+            const { signal, clear } = this._createAbortController(timeout);
 
-        try {
-            const result = await this._executeRequest(
-                url,
-                {
-                    method: 'DELETE',
-                    headers: this._buildHeaders()
-                },
-                signal
-            );
-            if (refreshViews) await this.refreshView(refreshViews);
-            return result;
-        } finally {
-            clear();
+            try {
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'DELETE',
+                        headers: this._buildHeaders()
+                    },
+                    signal
+                );
+                if (refreshViews) await this.refreshView(refreshViews);
+                return result;
+            } finally {
+                clear();
+            }
+        });
+    }
+
+    /**
+     * Deletes multiple records with concurrency control.
+     * @param {string} sceneId - The scene ID/key
+     * @param {string} viewId - The view ID/key
+     * @param {Array<string>} recordIds - Array of record IDs to delete
+     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after deletions
+     * @param {number} [timeout] - Optional timeout override
+     * @returns {Promise<Array<Object>>} - Array of result objects from each delete
+     * @public
+     */
+    async deleteRecords(sceneId, viewId, recordIds, refreshViews, timeout) {
+        if (!Array.isArray(recordIds)) {
+            throw new Error('recordIds must be an array');
         }
+
+        const results = await Promise.all(
+            recordIds.map((recordId) => {
+                return this.deleteRecord(sceneId, viewId, recordId, null, timeout)
+                    .then(data => ({ success: true, data, recordId }))
+                    .catch(error => ({ success: false, error, recordId }));
+            })
+        );
+
+        if (refreshViews) await this.refreshView(refreshViews);
+        return results;
     }
 
     /**
@@ -4494,7 +5040,7 @@ class KnackAPI {
      * @public
      */
     forceLog(message, data) {
-        this._log(message, data, true);
+        this._log(message, data, 'info', true);
     }
 
     /**
@@ -4517,11 +5063,22 @@ class KnackAPI {
     }
 
     /**
+     * Update the write concurrency limit. Updates apply to queued operations immediately.
+     * @param {number} writeConcurrency - Max concurrent create/update/delete requests
+     * @public
+     */
+    setWriteConcurrency(writeConcurrency) {
+        this.options.writeConcurrency = this._resolveWriteConcurrency(writeConcurrency);
+        this._log('Write concurrency set to', this.options.writeConcurrency);
+        this._drainWriteQueue();
+    }
+
+    /**
      * Log messages with levels (info, warn, error). Defaults to info.
      * @param {string} message - The message to log
      * @param {*} data - Optional data to log
-     * @param {boolean} [forceLog=false] - Force logging regardless of developer status
      * @param {'info'|'warn'|'error'} [level='info'] - Log level
+        * @param {boolean} [forceLog=false] - Force logging regardless of developer status
      * @private
      */
     _log(message, data, level = 'info', forceLog = false) {
@@ -4548,9 +5105,15 @@ class KnackAPI {
     _toggleSpinner(show) {
         if (this.options.showSpinner) {
             if (show) {
-                Knack.showSpinner();
+                this._activeRequests += 1;
+                if (this._activeRequests === 1) {
+                    Knack.showSpinner();
+                }
             } else {
-                Knack.hideSpinner();
+                this._activeRequests = Math.max(0, this._activeRequests - 1);
+                if (this._activeRequests === 0) {
+                    Knack.hideSpinner();
+                }
             }
         }
     }
@@ -4574,7 +5137,7 @@ class KnackAPI {
      */
     _createAbortController(timeout) {
         const controller = new AbortController();
-        const timeoutMs = timeout || this.options.timeout;
+        const timeoutMs = timeout ?? this.options.timeout;
 
         const timeoutId = setTimeout(() => {
             controller.abort();
@@ -4645,10 +5208,24 @@ class KnackAPI {
         this._toggleSpinner(true);
 
         try {
-            const response = await fetch(url, { ...options, signal });
-            const data = await this._handleResponse(response);
-            this._log('API response', data);
-            return data;
+            const maxAttempts = Math.max(1, this.options.retry429MaxAttempts || 2);
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                const response = await fetch(url, { ...options, signal });
+
+                if (response.status === 429 && attempt < maxAttempts) {
+                    const delayMs = this._get429RetryDelayMs(response, attempt);
+                    this._log('429 received, retrying request', { url, attempt, maxAttempts, delayMs }, 'warn');
+                    await this._sleep(delayMs, signal);
+                    continue;
+                }
+
+                const data = await this._handleResponse(response);
+                this._log('API response', data);
+                return data;
+            }
+
+            throw new Error('Request failed after retry attempts');
         } catch (error) {
             if (error.name === 'AbortError') {
                 throw new Error('Request timeout');
@@ -4657,6 +5234,71 @@ class KnackAPI {
         } finally {
             this._toggleSpinner(false);
         }
+    }
+
+    /**
+     * Returns the retry delay for HTTP 429 responses.
+     * @param {Response} response - Fetch response
+     * @param {number} attempt - Current attempt number (1-based)
+     * @returns {number} - Delay in milliseconds
+     * @private
+     */
+    _get429RetryDelayMs(response, attempt) {
+        const retryAfter = response.headers.get('Retry-After');
+
+        if (retryAfter) {
+            const retryAfterSeconds = Number(retryAfter);
+            if (Number.isFinite(retryAfterSeconds)) {
+                return Math.max(0, retryAfterSeconds * 1000);
+            }
+
+            const retryAfterDate = Date.parse(retryAfter);
+            if (!Number.isNaN(retryAfterDate)) {
+                return Math.max(0, retryAfterDate - Date.now());
+            }
+        }
+
+        const baseDelay = Math.max(50, this.options.retry429BaseDelayMs || 500);
+        const maxDelay = Math.max(baseDelay, this.options.retry429MaxDelayMs || 10000);
+        const exponentialDelay = Math.min(maxDelay, baseDelay * Math.pow(2, Math.max(0, attempt - 1)));
+        const jitter = Math.floor(Math.random() * Math.min(250, Math.floor(baseDelay / 2)));
+
+        return exponentialDelay + jitter;
+    }
+
+    /**
+     * Delay helper for retries.
+     * @param {number} ms - Delay in milliseconds
+     * @param {AbortSignal} [signal] - Optional abort signal
+     * @returns {Promise<void>}
+     * @private
+     */
+    _sleep(ms, signal) {
+        return new Promise((resolve, reject) => {
+            const delayMs = Math.max(0, ms || 0);
+
+            if (signal?.aborted) {
+                reject(new DOMException('Aborted', 'AbortError'));
+                return;
+            }
+
+            const timeoutId = setTimeout(() => {
+                if (signal) {
+                    signal.removeEventListener('abort', onAbort);
+                }
+                resolve();
+            }, delayMs);
+
+            const onAbort = () => {
+                clearTimeout(timeoutId);
+                signal.removeEventListener('abort', onAbort);
+                reject(new DOMException('Aborted', 'AbortError'));
+            };
+
+            if (signal) {
+                signal.addEventListener('abort', onAbort, { once: true });
+            }
+        });
     }
 
     /**
@@ -4960,6 +5602,19 @@ class KnackAPI {
     }
 
     /**
+     * Extracts a record ID from an API response object.
+     * @param {Object} responseData - API response data
+     * @returns {string|null} - Record ID if found
+     * @private
+     */
+    _extractRecordId(responseData) {
+        if (!responseData || typeof responseData !== 'object') return null;
+        if (responseData.record?.id) return responseData.record.id;
+        if (responseData.id) return responseData.id;
+        return null;
+    }
+
+    /**
      * Normalises values for loose comparison between request and response.
      * Handles strings, numbers, booleans, arrays (order-insensitive), and simple objects.
      * @param {*} val - The value to normalise.
@@ -4998,122 +5653,116 @@ class KnackAPI {
     _valuesEffectivelyEqual(a, b) {
         return this._normaliseForCompare(a) === this._normaliseForCompare(b);
     }
-}
 
-/** Generic Knack API call function.
-* Most of the code provided by @cortexrd
-* BTW, you can use connected records by enclosing your recId param in braces.  Ex: [myRecId]
-* @param {string} sceneKey - The scene key with the view to get records from, parent > child pass in the slug of the scene.
-* @param {string} viewId - The view key of the view that shows the records
-* @param {string} recId - The record ID of the record to be updated or the parent record id if parent > child.
-* @param {object} apiData - The data to be sent to the API. Pass an empty object if its a GET request.
-* @param {string} requestType - The type of request to be sent to the API get/put/post.
-* @param {object} apiFilter - The filter to be sent to the API. Only needed if you want certain records from the get/put/post
-* @param {array} viewsToRefresh - An array of view keys to be refreshed.
-* @param {boolean} showSpinner - Whether or not to show the Knack spinner.
-* @return {object} data - The data returned from the API. */
-async function caAPI(sceneKey = null, viewId = null, recId = null,	apiData = {}, requestType = "", apiFilter = {},	viewsToRefresh = [], showSpinner = false) {
-    return new Promise(function (resolve, reject) {
-        requestType = requestType.toUpperCase();
+    /**
+     * Normalizes the write concurrency option.
+     * @param {number} writeConcurrency - Desired concurrency value
+     * @returns {number} - Normalized concurrency
+     * @private
+     */
+    _resolveWriteConcurrency(writeConcurrency) {
+        if (writeConcurrency === Infinity) {
+            return Infinity;
+        }
+        const parsed = Number(writeConcurrency);
+        if (Number.isFinite(parsed)) {
+            return Math.max(1, Math.floor(parsed));
+        }
+        return KnackAPI.DEFAULT_WRITE_CONCURRENCY;
+    }
 
-        if ( viewId ===	null /*recId === null || @@@ can be null for post req*/ /*data === null ||*/ ||
-                !(requestType === "PUT" || requestType === "GET" || requestType === "POST" ||	requestType === "DELETE") ) {
-            reject(new Error("Called caAPI with invalid parameters: view = " +	viewId + ", recId = " + recId + ", reqType = " + requestType));
+    /**
+     * Schedule a write operation respecting configured concurrency.
+     * @param {Function} task - Async function performing the write operation
+     * @returns {Promise<*>}
+     * @private
+     */
+    _scheduleWrite(task) {
+        if (this.options.writeConcurrency === Infinity) {
+            return task();
+        }
+
+        return new Promise((resolve, reject) => {
+            this._writeQueue.push({ task, resolve, reject });
+            this._drainWriteQueue();
+        });
+    }
+
+    /**
+     * Drains the write queue up to the configured concurrency limit.
+     * @private
+     */
+    _drainWriteQueue() {
+        if (this._isDraining) {
+            this._scheduleDrain();
             return;
         }
 
-        const failsafeTimeout = setTimeout(function () {
-            if (intervalId) {
-                clearInterval(intervalId);
-                reject(new Error("Called caAPI with invalid scene key"));
-                return;
+        this._isDraining = true;
+        try {
+            while (this._activeWrites < this.options.writeConcurrency && this._writeQueue.length > 0) {
+                const { task, resolve, reject } = this._writeQueue.shift();
+                this._activeWrites += 1;
+
+                task()
+                    .then(resolve)
+                    .catch(reject)
+                    .finally(() => {
+                        this._activeWrites = Math.max(0, this._activeWrites - 1);
+                        this._scheduleDrain();
+                    });
             }
-        }, 5000);
-
-        // testRenderKeyRegex(sceneKey)  will check to see if you pass in a slug or a scene key slug is used for parent > child
-        let sceneId = sceneKey.startsWith('scene_') ? sceneKey : Knack.scenes.getBySlug(sceneKey).attributes.key;
-
-        // allow an interval between each try of the API call 100 ms works for most cases
-        let intervalId = setInterval(function () {
-            if (!sceneId) {
-                sceneId = sceneKey.startsWith('scene_') ? sceneKey : Knack.scenes.getBySlug(sceneKey).attributes.key;
-            } else {
-                clearInterval(intervalId);
-                intervalId = null;
-                clearTimeout(failsafeTimeout);
-                let apiURL = `https://api.knack.com/v1/pages/${sceneId}/views/${viewId}/records/`;
-
-                if (recId && !sceneKey.startsWith('scene_')) {
-                    // if parent > child GET
-                    apiURL = `${apiURL}?${sceneKey}_id=${recId}`;
-                } else if (recId && sceneKey.startsWith('scene_')) {
-                    // Normal API call
-                    apiURL = `${apiURL}${recId}`;
-                } else if (!$.isEmptyObject(apiFilter)) {
-                    // if filter is passed in
-                    apiURL = `${apiURL}?filters=${encodeURIComponent(
-                        JSON.stringify(apiFilter)
-                    )}`;
-                }
-
-                if (showSpinner) Knack.showSpinner();
-                if (ktl.account.isDeveloper()) {
-                    // if account is developer log the API call
-                    console.log('apiURL =', apiURL);
-                    console.log(`caAPI - sceneKey: ${sceneKey}, caAPI - viewId: ${viewId}, recId: ${recId}, requestType: ${requestType}, apiData: ${JSON.stringify(apiData)}, apiFilter: apiFilter: ${JSON.stringify(apiFilter)}`);
-                }
-
-                $.ajax({
-                    url: apiURL,
-                    type: requestType,
-                    crossDomain: true, //Attempting to reduce the frequent but intermittent CORS error message.
-                    retryLimit: 4, //Make this configurable by app,
-                    headers: {
-                        Authorization: Knack.getUserToken(),
-                        'X-Knack-Application-Id': Knack.application_id,
-                        'X-Knack-REST-API-Key': 'knack',
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*.knack.com",
-                    },
-                    data: JSON.stringify(apiData),
-                    success: function (data, textStatus, jqXHR) {
-                        Knack.hideSpinner();
-                        if (ktl.account.isDeveloper()) { // if account is developer log the API call
-                            ktl.log.clog('green', "caAPI data : ");
-                            console.log(data);
-                        }
-
-                        if (viewsToRefresh.length === 0) {
-                            resolve(data);
-                        } else {
-                            ktl.views.refreshViewArray(viewsToRefresh).then(function () {
-                                resolve(data);
-                            });
-                        }
-                    },
-                    error: function (response /*jqXHR*/) {
-                        ktl.log.clog('purple', 'caAPI error:');
-                        console.log("retries:", this.retryLimit, "\nresponse:", response);
-
-                        if (this.retryLimit-- > 0) {
-                            const ajaxParams = this; //Backup 'this' otherwise this will become the Window object in the setTimeout.
-                            setTimeout(function () {
-                                $.ajax(ajaxParams);
-                            }, 500);
-                            return;
-                        } else {
-                            //All retries have failed, log this.
-                            console.log("retry limit reached");
-                            Knack.hideSpinner();
-                            response.caller = "caAPI";
-                            response.viewId = viewId;
-                            reject(response);
-                        }
-                    },
-                });
+        } finally {
+            this._isDraining = false;
+            if (this._writeQueue.length > 0 && this._activeWrites >= this.options.writeConcurrency) {
+                this._scheduleDrain();
             }
-        }, 100);
+        }
+    }
+
+    /**
+     * Schedules a queue drain without stacking multiple callbacks.
+     * @private
+     */
+    _scheduleDrain() {
+        if (this._drainScheduled) {
+            return;
+        }
+
+        this._drainScheduled = true;
+        this._drainScheduler(() => {
+            this._drainScheduled = false;
+            this._drainWriteQueue();
+        });
+    }
+}
+
+/**
+ * Returns a shared KnackAPI client for utility-level API calls.
+ * Prefers a preconfigured global client when available.
+ * @returns {KnackAPI}
+ */
+function getKnackApiClient() {
+    if (typeof window !== 'undefined' && window.knackAPI instanceof KnackAPI) {
+        return window.knackAPI;
+    }
+
+    if (typeof window !== 'undefined' && window.__knackFunctionsApiClient instanceof KnackAPI) {
+        return window.__knackFunctionsApiClient;
+    }
+
+    const fallbackClient = new KnackAPI({
+        showSpinner: false,
+        debug: false,
+        developerOnly: true,
+        developerRoles: ['Developer']
     });
+
+    if (typeof window !== 'undefined') {
+        window.__knackFunctionsApiClient = fallbackClient;
+    }
+
+    return fallbackClient;
 }
 
 /** Retrieves a nested value from an object using a dot-separated path.
@@ -5671,32 +6320,6 @@ function toggleCheckboxOption(fieldId, identifier, show) {
     }
 }
 
-/** Remove given options from select
- * @param {integer} fieldID - ID of select field
- * @param {array} removeArr - array of items to remove
- * @return {boolean} - false if not array */
-function removeOpsFromSelect(fieldID, removeArr) {
-    if ($.isArray(removeArr)) {
-        $(removeArr).each(function (i, val) {
-            $(`${fieldID} option`).filter(`[value="${val}"]`).remove();
-        });
-        return true;
-    } else return false;
-}
-
-/** Remove given options from checkbox or radio butttons
- * @param {integer} fieldID - ID of select field
- * @param {array} removeArr - array of items to remove
- * @return {boolean} - false if not array */
-function removeFrmRadioCheckBox(fieldID, removeArr) {
-    if ($.isArray(removeArr)) {
-        $(removeArr).each(function (i, val) {
-            removeElement(`#kn-input-field_${fieldID} .control:contains("${val}")`);
-        });
-        return true;
-    } else return false;
-}
-
 /**** Function to change the label text of a radio button
  * @param {integer} fieldId - field id of radio
  * @param {string} originalLabelText - current label text
@@ -6107,7 +6730,7 @@ function openFileFromBtn(viewId, btnText, filePath, openInNewWindow = false) {
 
                     // Parse the file extension from the path
                     const arr = filePath.split('.');
-                    const extension = arr[arr.length - 1];
+                    const extension = (arr[arr.length - 1] || '').toLowerCase();
 
                     // Generate API URL to access the file
                     const url = `https://api.knack.com/v1/applications/${Knack.application_id}/download/asset/${filePath}`;
@@ -7069,11 +7692,13 @@ function updateLinksAndAssets(viewId) {
             // Use Knack's default behaviour for images
             el.setAttribute('href', `${sanitiseURL(window.location.href)}kn-asset/1542-3553-3690-${info.assetId}/${info.fileName}`);
         } else if (OFFICE_EXTENSIONS.includes(info.extension)) {
-            el.setAttribute('href', `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(info.assetUrl)}`);
+            el.setAttribute('href', info.assetUrl);
             el.setAttribute('target', '_blank');
+            el.setAttribute('rel', 'noopener noreferrer');
         } else if (info.extension === "pdf") {
-            el.setAttribute('href', `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(info.assetUrl)}`);
+            el.setAttribute('href', info.assetUrl);
             el.setAttribute('target', '_blank');
+            el.setAttribute('rel', 'noopener noreferrer');
         } else {
             el.setAttribute('href', info.assetUrl);
             el.setAttribute('download', info.fileName);
