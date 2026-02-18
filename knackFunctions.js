@@ -11,10 +11,9 @@ const DEFAULT_WRITE_CONCURRENCY = 3;
 console.log('KnackApps/ARC Beta 1.0 - knackFunctions.js loaded.');
 
 const normaliseField = (id) => String(id).startsWith('field_') ? id : `field_${id}`;
-const raw = (id) => String(id).startsWith('field_') ? `${id}_raw` : `field_${id}_raw`;
+const normaliseRaw = (id) => String(id).startsWith('field_') ? `${id}_raw` : `field_${id}_raw`;
 const normaliseView = (id) => String(id).startsWith('view_') ? id : `view_${id}`;
 const normaliseScene = (id) => String(id).startsWith('scene_') ? id : `scene_${id}`;
-
 
 /**
  * Gets an element by ID scoped to an optional context.
@@ -58,6 +57,7 @@ const getConnectionRef = (value) => {
 
     return null;
 };
+
 //jQuery extensions - BEGIN
 //Searches a selector for text like : contains, but with an exact match, and after a spaces trim.
 $.expr[':'].textEquals = function (el, i, m) {
@@ -4379,20 +4379,6 @@ function filterSelectByText(viewId, fieldTofilter, textToMatch){
     }
 }
 
-/** Make a delayed API call loop
- * @param {string} sceneKey - The scene key with the view that has records to update.
- * @param {string} viewId - The view key of the view that has records to update
- * @param {array} recordIdArr - An array of record IDs to be updated.
- * @param {object} data - The data to be sent to the API it will send the same data to each record
- * @param {array} viewToRefresh - An array of view keys to be refreshed.
- * @param {integer} delay - The delay in milliseconds between each API call. */
-async function delayAPIPut (sceneKey = null, viewId = null, recordIdArr = [], data, viewToRefresh = [], delay = 500) {
-    for (var i = 0; i < recordIdArr.length; i++) {
-        caAPI (sceneKey, viewId, recordIdArr[i], data, 'put', {}, viewToRefresh, true);
-        await API_TIMER(delay);
-    }
-}
-
 /**
  * KnackAPI Class
  * Handles CRUD operations, filtering, sorting, pagination, and formatting
@@ -5733,6 +5719,11 @@ class KnackAPI {
 * @param {boolean} showSpinner - Whether or not to show the Knack spinner.
 * @return {object} data - The data returned from the API. */
 async function caAPI(sceneKey = null, viewId = null, recId = null,	apiData = {}, requestType = "", apiFilter = {},	viewsToRefresh = [], showSpinner = false) {
+    if (!caAPI._deprecatedWarned) {
+        console.warn('[DEPRECATED] caAPI is deprecated and will be removed in a future release. Use the KnackAPI class (getRecords, getRecord, createRecord, updateRecord, deleteRecord, etc.) instead.');
+        caAPI._deprecatedWarned = true;
+    }
+
     return new Promise(function (resolve, reject) {
         requestType = requestType.toUpperCase();
 
@@ -6353,32 +6344,6 @@ function clearInput(inputContainer, triggerChange = false) {
             });
         });
     });
-}
-
-/** Remove given options from select
- * @param {integer} fieldID - ID of select field
- * @param {array} removeArr - array of items to remove
- * @return {boolean} - false if not array */
-function removeOpsFromSelect(fieldID, removeArr) {
-    if ($.isArray(removeArr)) {
-        $(removeArr).each(function (i, val) {
-            $(`${fieldID} option`).filter(`[value="${val}"]`).remove();
-        });
-        return true;
-    } else return false;
-}
-
-/** Remove given options from checkbox or radio butttons
- * @param {integer} fieldID - ID of select field
- * @param {array} removeArr - array of items to remove
- * @return {boolean} - false if not array */
-function removeFrmRadioCheckBox(fieldID, removeArr) {
-    if ($.isArray(removeArr)) {
-        $(removeArr).each(function (i, val) {
-            removeElement(`#kn-input-field_${fieldID} .control:contains("${val}")`);
-        });
-        return true;
-    } else return false;
 }
 
 /**** Function to change the label text of a radio button
