@@ -7,8 +7,6 @@ const INPUT_CHECKBOX_CHECKED_SELECTOR = `${INPUT_CHECKBOX_SELECTOR}:checked`;
 const INPUT_RADIO_CHECKED_SELECTOR = `${INPUT_RADIO_SELECTOR}:checked`;
 const HEADER_CHECKBOX_SELECTOR = 'th input[type="checkbox"]';
 const CLASS_DISABLED = 'disabled';
-const DEFAULT_WRITE_CONCURRENCY = 3;
-console.log('KnackApps/ARC Beta 1.0 - knackFunctions.js loaded.');
 
 const normaliseField = (id) => String(id).startsWith('field_') ? id : `field_${id}`;
 const normaliseRaw = (id) => String(id).startsWith('field_') ? `${id}_raw` : `field_${id}_raw`;
@@ -2687,16 +2685,17 @@ function getWeekNumber(date) { //knack
  * @param {string} bcgGridColour - background colour of current week */
 async function updateWeekNumberObject( conxId, formDate, value, typeValue ) { //knack
     const sGrid = WEEK_NUM_SHARED_AREA_GRID;
+    const api = getKnackApiClient();
 
     const weekNumber = getWeekNumber(convertToDateObj(formDate));
     const weekNumberField = sGrid.weekNumberFields[weekNumber - 1];
 
     const filter = createFilterForWeekObj(sGrid, conxId, typeValue);
-    const weeklyTasks = await caAPI(sGrid.sceneId, sGrid.viewId, null, {}, 'get', filter);
-    const weeklyTaskId = weeklyTasks.records[0].id;
+    const weeklyTasks = await api.getRecords(sGrid.sceneId, sGrid.viewId, { filters: filter });
+    const weeklyTaskId = weeklyTasks?.[0]?.id;
 
     if (weeklyTaskId) {
-        await caAPI(sGrid.sceneId, sGrid.viewId, weeklyTaskId, {[weekNumberField]: value}, 'put');
+        await api.updateRecord(sGrid.sceneId, sGrid.viewId, weeklyTaskId, {[weekNumberField]: value});
     }
 }
 
@@ -3491,6 +3490,7 @@ function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, rendered
  * @param {string|null} connectionId - The ID of the connection to select (optional).
  * @param {string} connectionObject - The connection object to use for API calls. */
 async function addConnectionIdToRecord(viewId, conxFieldIdInput, connectionId = null, connectionObject) {
+    const api = getKnackApiClient();
     const viewElement = $(`#${viewId}`).length > 0 ? $(`#${viewId}`) : $(`#connection-form-view:has(input[value="${viewId}"])`);
 
     const connectionField = viewElement.find(`#kn-input-field_${conxFieldIdInput}`);
@@ -3512,7 +3512,7 @@ async function addConnectionIdToRecord(viewId, conxFieldIdInput, connectionId = 
     } else {
         const { sceneIdAPI, viewIdAPI, clientPKField } = CONNECTION_FIELDS_OBJECT[connectionObject];
         try {
-            const response = await caAPI(sceneIdAPI, viewIdAPI, connectionId, {}, 'get', {}, [], false);
+            const response = await api.getRecord(sceneIdAPI, viewIdAPI, connectionId);
             const optionText = response[`${clientPKField}_raw`];
             const searchInput = connectionField.find('.chzn-search input');
 
@@ -4403,6 +4403,10 @@ function filterSelectByText(viewId, fieldTofilter, textToMatch){
  * @version 1.0.1
  */
 class KnackAPI {
+    static get DEFAULT_WRITE_CONCURRENCY() {
+        return 3;
+    }
+
     /**
      * Creates a new KnackAPI instance
      * @param {Object} options - Configuration options
@@ -4411,8 +4415,8 @@ class KnackAPI {
      * @param {boolean} [options.debug=false] - Whether to log debug information to console
      * @param {boolean} [options.developerOnly=true] - Whether to restrict logs to developers only
      * @param {Array<string>} [options.developerRoles=['Developer']] - User roles considered as developers
-     * @param {number} [options.writeConcurrency=5] - Max concurrent create/update/delete requests (use Infinity for no limit)
-     * @param {number} [options.retry429MaxAttempts=2] - Max attempts for 429 responses (initial + retries)
+     * @param {number} [options.writeConcurrency=3] - Max concurrent create/update/delete requests (use Infinity for no limit)
+     * @param {number} [options.retry429MaxAttempts=4] - Max attempts for 429 responses (initial + retries)
      * @param {number} [options.retry429BaseDelayMs=500] - Base delay in ms for exponential 429 backoff
      * @param {number} [options.retry429MaxDelayMs=10000] - Max delay in ms for 429 backoff
      */
@@ -4490,7 +4494,7 @@ class KnackAPI {
         const url = this._formatApiUrl(sceneId, viewId) + this._formatParams(params);
         this._log('Getting records', url);
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+        const { signal, clear } = this._createAbortController(timeout);
 
         try {
             const responseData = await this._executeRequest(
@@ -4631,7 +4635,7 @@ class KnackAPI {
         const formattedUrl = url + this._formatParams(params);
         this._log('Getting child records', formattedUrl);
 
-        const { controller, signal, clear } = this._createAbortController(timeout);
+        const { signal, clear } = this._createAbortController(timeout);
 
         try {
             const responseData = await this._executeRequest(
@@ -4729,7 +4733,7 @@ class KnackAPI {
             const url = this._formatApiUrl(sceneId, viewId);
             this._log('Creating record', { url, data: recordData });
 
-            const { controller, signal, clear } = this._createAbortController(timeout);
+            const { signal, clear } = this._createAbortController(timeout);
 
             try {
                 const result = await this._executeRequest(
@@ -4792,7 +4796,7 @@ class KnackAPI {
             const url = this._formatApiUrl(sceneId, viewId, recordId);
             this._log('Updating record', { url, data: recordData });
 
-            const { controller, signal, clear } = this._createAbortController(timeout);
+            const { signal, clear } = this._createAbortController(timeout);
 
             try {
                 const result = await this._executeRequest(
@@ -4810,8 +4814,6 @@ class KnackAPI {
                     const recordObj = result?.record ?? result; // handle both shapes defensively
                     const requestedKeys = Object.keys(recordData || {});
                     const failed = [];
-                    const succeeded = [];
-
                     for (const key of requestedKeys) {
                         const sentVal = recordData[key];
                         const gotVal = this._extractResponseValueFromRecord(recordObj, key);
@@ -4925,7 +4927,7 @@ class KnackAPI {
             const url = this._formatApiUrl(sceneId, viewId, recordId);
             this._log('Deleting record', url);
 
-            const { controller, signal, clear } = this._createAbortController(timeout);
+            const { signal, clear } = this._createAbortController(timeout);
 
             try {
                 const result = await this._executeRequest(
@@ -5024,7 +5026,7 @@ class KnackAPI {
      * @public
      */
     forceLog(message, data) {
-        this._log(message, data, true);
+        this._log(message, data, 'info', true);
     }
 
     /**
@@ -5061,8 +5063,8 @@ class KnackAPI {
      * Log messages with levels (info, warn, error). Defaults to info.
      * @param {string} message - The message to log
      * @param {*} data - Optional data to log
-     * @param {boolean} [forceLog=false] - Force logging regardless of developer status
      * @param {'info'|'warn'|'error'} [level='info'] - Log level
+        * @param {boolean} [forceLog=false] - Force logging regardless of developer status
      * @private
      */
     _log(message, data, level = 'info', forceLog = false) {
@@ -5121,7 +5123,7 @@ class KnackAPI {
      */
     _createAbortController(timeout) {
         const controller = new AbortController();
-        const timeoutMs = timeout || this.options.timeout;
+        const timeoutMs = timeout ?? this.options.timeout;
 
         const timeoutId = setTimeout(() => {
             controller.abort();
@@ -5652,7 +5654,7 @@ class KnackAPI {
         if (Number.isFinite(parsed)) {
             return Math.max(1, Math.floor(parsed));
         }
-        return DEFAULT_WRITE_CONCURRENCY;
+        return KnackAPI.DEFAULT_WRITE_CONCURRENCY;
     }
 
     /**
@@ -5721,125 +5723,32 @@ class KnackAPI {
     }
 }
 
-/** Generic Knack API call function.
-* Most of the code provided by @cortexrd
-* BTW, you can use connected records by enclosing your recId param in braces.  Ex: [myRecId]
-* @param {string} sceneKey - The scene key with the view to get records from, parent > child pass in the slug of the scene.
-* @param {string} viewId - The view key of the view that shows the records
-* @param {string} recId - The record ID of the record to be updated or the parent record id if parent > child.
-* @param {object} apiData - The data to be sent to the API. Pass an empty object if its a GET request.
-* @param {string} requestType - The type of request to be sent to the API get/put/post.
-* @param {object} apiFilter - The filter to be sent to the API. Only needed if you want certain records from the get/put/post
-* @param {array} viewsToRefresh - An array of view keys to be refreshed.
-* @param {boolean} showSpinner - Whether or not to show the Knack spinner.
-* @return {object} data - The data returned from the API. */
-async function caAPI(sceneKey = null, viewId = null, recId = null,	apiData = {}, requestType = "", apiFilter = {},	viewsToRefresh = [], showSpinner = false) {
-    if (!caAPI._deprecatedWarned) {
-        console.warn('[DEPRECATED] caAPI is deprecated and will be removed in a future release. Use the KnackAPI class (getRecords, getRecord, createRecord, updateRecord, deleteRecord, etc.) instead.');
-        caAPI._deprecatedWarned = true;
+/**
+ * Returns a shared KnackAPI client for utility-level API calls.
+ * Prefers a preconfigured global client when available.
+ * @returns {KnackAPI}
+ */
+function getKnackApiClient() {
+    if (typeof window !== 'undefined' && window.knackAPI instanceof KnackAPI) {
+        return window.knackAPI;
     }
 
-    return new Promise(function (resolve, reject) {
-        requestType = requestType.toUpperCase();
+    if (typeof window !== 'undefined' && window.__knackFunctionsApiClient instanceof KnackAPI) {
+        return window.__knackFunctionsApiClient;
+    }
 
-        if ( viewId ===	null /*recId === null || @@@ can be null for post req*/ /*data === null ||*/ ||
-                !(requestType === "PUT" || requestType === "GET" || requestType === "POST" ||	requestType === "DELETE") ) {
-            reject(new Error("Called caAPI with invalid parameters: view = " +	viewId + ", recId = " + recId + ", reqType = " + requestType));
-            return;
-        }
-
-        const failsafeTimeout = setTimeout(function () {
-            if (intervalId) {
-                clearInterval(intervalId);
-                reject(new Error("Called caAPI with invalid scene key"));
-                return;
-            }
-        }, 5000);
-
-        // testRenderKeyRegex(sceneKey)  will check to see if you pass in a slug or a scene key slug is used for parent > child
-        let sceneId = sceneKey.startsWith('scene_') ? sceneKey : Knack.scenes.getBySlug(sceneKey).attributes.key;
-
-        // allow an interval between each try of the API call 100 ms works for most cases
-        let intervalId = setInterval(function () {
-            if (!sceneId) {
-                sceneId = sceneKey.startsWith('scene_') ? sceneKey : Knack.scenes.getBySlug(sceneKey).attributes.key;
-            } else {
-                clearInterval(intervalId);
-                intervalId = null;
-                clearTimeout(failsafeTimeout);
-                let apiURL = `https://api.knack.com/v1/pages/${sceneId}/views/${viewId}/records/`;
-
-                if (recId && !sceneKey.startsWith('scene_')) {
-                    // if parent > child GET
-                    apiURL = `${apiURL}?${sceneKey}_id=${recId}`;
-                } else if (recId && sceneKey.startsWith('scene_')) {
-                    // Normal API call
-                    apiURL = `${apiURL}${recId}`;
-                } else if (!$.isEmptyObject(apiFilter)) {
-                    // if filter is passed in
-                    apiURL = `${apiURL}?filters=${encodeURIComponent(
-                        JSON.stringify(apiFilter)
-                    )}`;
-                }
-
-                if (showSpinner) Knack.showSpinner();
-                if (ktl.account.isDeveloper()) {
-                    // if account is developer log the API call
-                    console.log('apiURL =', apiURL);
-                    console.log(`caAPI - sceneKey: ${sceneKey}, caAPI - viewId: ${viewId}, recId: ${recId}, requestType: ${requestType}, apiData: ${JSON.stringify(apiData)}, apiFilter: apiFilter: ${JSON.stringify(apiFilter)}`);
-                }
-
-                $.ajax({
-                    url: apiURL,
-                    type: requestType,
-                    crossDomain: true, //Attempting to reduce the frequent but intermittent CORS error message.
-                    retryLimit: 4, //Make this configurable by app,
-                    headers: {
-                        Authorization: Knack.getUserToken(),
-                        'X-Knack-Application-Id': Knack.application_id,
-                        'X-Knack-REST-API-Key': 'knack',
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*.knack.com",
-                    },
-                    data: JSON.stringify(apiData),
-                    success: function (data, textStatus, jqXHR) {
-                        Knack.hideSpinner();
-                        if (ktl.account.isDeveloper()) { // if account is developer log the API call
-                            ktl.log.clog('green', "caAPI data : ");
-                            console.log(data);
-                        }
-
-                        if (viewsToRefresh.length === 0) {
-                            resolve(data);
-                        } else {
-                            ktl.views.refreshViewArray(viewsToRefresh).then(function () {
-                                resolve(data);
-                            });
-                        }
-                    },
-                    error: function (response /*jqXHR*/) {
-                        ktl.log.clog('purple', 'caAPI error:');
-                        console.log("retries:", this.retryLimit, "\nresponse:", response);
-
-                        if (this.retryLimit-- > 0) {
-                            const ajaxParams = this; //Backup 'this' otherwise this will become the Window object in the setTimeout.
-                            setTimeout(function () {
-                                $.ajax(ajaxParams);
-                            }, 500);
-                            return;
-                        } else {
-                            //All retries have failed, log this.
-                            console.log("retry limit reached");
-                            Knack.hideSpinner();
-                            response.caller = "caAPI";
-                            response.viewId = viewId;
-                            reject(response);
-                        }
-                    },
-                });
-            }
-        }, 100);
+    const fallbackClient = new KnackAPI({
+        showSpinner: false,
+        debug: false,
+        developerOnly: true,
+        developerRoles: ['Developer']
     });
+
+    if (typeof window !== 'undefined') {
+        window.__knackFunctionsApiClient = fallbackClient;
+    }
+
+    return fallbackClient;
 }
 
 /** Retrieves a nested value from an object using a dot-separated path.
