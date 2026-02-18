@@ -109,6 +109,21 @@ function toggleVisibility(elements, condition) {
 }
 
 /**
+ * Find an element by its text content within a given selector.
+ * @param {string} selector - CSS selector to search within.
+ * @param {string} text - Text content to match.
+ * @param {boolean} [exact=true] - If true, match exact text; if false, match partial (includes).
+ * @returns {Element|undefined} The first matching element, or undefined if not found.
+ */
+function getElementByText(selector, text, exact = true) {
+    const elements = document.querySelectorAll(selector);
+    return Array.from(elements).find(el => {
+        const content = el.textContent.trim();
+        return exact ? content === text : content.includes(text);
+    });
+}
+
+/**
  * Enhanced Quill Rich Text Editor for Knack Replaces Knack's Redactor editor with Quill.js
  */
 
@@ -5831,6 +5846,42 @@ function clearInput(inputContainer, triggerChange = false) {
     });
 }
 
+/**
+ * Hides or shows a checkbox option by its value or label text.
+ * Works with both connection-picker checkboxes and multiple-choice checkboxes.
+ * @param {string} fieldId - The Knack field ID (e.g. 'field_2071').
+ * @param {string} identifier - The checkbox value (connection ID) or label text to match.
+ * @param {boolean} show - True to show, false to hide.
+ */
+function toggleCheckboxOption(fieldId, identifier, show) {
+    const fieldContainer = document.getElementById(`kn-input-${fieldId}`);
+    if (!fieldContainer) {
+        console.warn(`toggleCheckboxOption: Field container not found for ${fieldId}`);
+        return;
+    }
+
+    // Try matching by value first, then fall back to matching by label text
+    let checkbox = fieldContainer.querySelector(`input[type="checkbox"][value="${identifier}"]`);
+    if (!checkbox) {
+        const labels = fieldContainer.querySelectorAll('label.option, label.checkbox');
+        for (const label of labels) {
+            if (label.textContent.trim() === identifier) {
+                checkbox = label.querySelector('input[type="checkbox"]');
+                break;
+            }
+        }
+    }
+    if (!checkbox) {
+        console.warn(`toggleCheckboxOption: No checkbox found for "${identifier}" in ${fieldId}`);
+        return;
+    }
+
+    const optionLabel = checkbox.closest('label');
+    if (optionLabel) {
+        optionLabel.classList.toggle(CLASS_DISPLAY_NONE, !show);
+    }
+}
+
 /** Remove given options from select
  * @param {integer} fieldID - ID of select field
  * @param {array} removeArr - array of items to remove
@@ -6397,22 +6448,67 @@ function replaceLargeNo(cellIdent, maxNum, replaceTxt, isLink) {
 }
 
 /**
+ * Normalise an Element or HTML string into a real DOM Element, ready for use by other functions.
+ * @param {Element|string|null} input
+ * @returns {Element|null}
+ */
+function normaliseToElement(input) {
+    if (!input) return null;
+    if (input instanceof Element) return input;
+
+    if (typeof input === 'string') {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = input.trim();
+        return wrapper;
+    }
+
+    return null;
+}
+
+ /** Retrieves the current scene information for a given view ID.
+ * @param {string} viewId - The ID of the view for which to retrieve the scene information.
+ * @returns {Object|null} An object containing the scene information, or null if the view ID is invalid:
+ *   - recId: The scene's record ID.
+ *   - sceneId: The scene's key.
+ *   - sceneSlug: The scene's slug. */
+function getCurrentSceneInfo(viewId) {
+    try {
+        const { scene } = Knack.views[viewId].model.view;
+        const { scene_id: recordId, key: sceneId, slug: sceneSlug } = scene;
+        return { recordId, sceneId, sceneSlug };
+    } catch (error) {
+        console.error(`Error retrieving scene information for view ID ${viewId}:`, error);
+        return null;
+    }
+}
+
+/**
  * Get a 24-character hex ID from an element’s id or class tokens.
  * Checks the element’s `id` first, then each token in `classList`,
  * and returns the first value that matches a 24-char hex pattern.
  *
- * @param {Element|null} el - The DOM element to inspect.
+ * @param {Element|null} eleOrHtml - The DOM element to inspect.
  * @returns {string|null} The first matching 24-char hex ID, or null if none found.
  */
-function getIdFromElement(el) {
+function getIdFromElement(eleOrHtml) {
+    const el = normaliseToElement(eleOrHtml);
     if (!el) return null;
+
     const HEX24 = /^[a-fA-F0-9]{24}$/;
 
-    if (el.id && HEX24.test(el.id)) return el.id;
+    // If a wrapper was created, the actual node will be inside it
+    const candidates = el.matches && el.matches('span, div, a')
+        ? [el]
+        : Array.from(el.querySelectorAll('span, div, a'));
 
-    for (const token of el.classList || []) {
-        if (HEX24.test(token)) return token;
+    for (const node of candidates) {
+        if (node.id && HEX24.test(node.id)) return node.id;
+
+        for (const token of node.classList || []) {
+            if (HEX24.test(token)) return token;
+        }
     }
+
     return null;
 }
 
@@ -6420,27 +6516,28 @@ function getIdFromElement(el) {
  * Extract the connected record ID from a Knack table cell.
  * Targets the canonical connection node: `span[data-kn="connection-value"]`.
  * If not found, falls back to scanning descendant <span> elements for a 24-char hex token in id/class.
- * @param {HTMLTableCellElement|Element|null} cellEl - The <td> (or container) holding the connection.
+ * @param {HTMLTableCellElement|Element|null} cellElOrHtml - Accepts a <td>/<div> element OR an HTML string.
  * @returns {string|null} The connected record’s 24-char hex ID, or null if not found.
  *
  * @example
  * // <td class="field_196"><span><span class="673c...737f" data-kn="connection-value">JON DOE</span></span></td>
- * const clientId = getConnectionIdFromCell(cellEl); // '673c6b4ee5a91c02d47a737f'
  */
-function getConnectionIdFromCell(cellEl) {
-    if (!cellEl) return null;
+function getConnectionIdFromHtml(cellElOrHtml) {
+    const root = normaliseToElement(cellElOrHtml);
+    if (!root) return null;
 
     // Primary: explicit connection value node
-    const conn = cellEl.querySelector('span[data-kn="connection-value"]');
+    const conn = root.querySelector('span[data-kn="connection-value"]');
     const idFromConn = getIdFromElement(conn);
     if (idFromConn) return idFromConn;
 
     // Fallback: any descendant <span>
-    const spans = cellEl.querySelectorAll('span');
+    const spans = root.querySelectorAll('span');
     for (const s of spans) {
         const id = getIdFromElement(s);
         if (id) return id;
     }
+
     return null;
 }
 
