@@ -1918,36 +1918,54 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
     viewElement.setAttribute(wireAttr, 'true');
 }
 
+function ensureMenuButtonActiveStyles() {
+    if (document.getElementById('kf-menu-button-active-style')) return;
+
+    const style = document.createElement('style');
+    style.id = 'kf-menu-button-active-style';
+    style.textContent = `
+        .kf-menu-button.is-active {
+            border-color: rgba(0, 0, 0, 0.45) !important;
+            filter: brightness(0.92);
+            transform: translateY(1px);
+        }
+    `;
+    document.head.appendChild(style);
+}
+
 /**
  * Render menu buttons inside a menu view.
- * @param {HTMLElement} root
- * @param {Array<{label: string, id?: string, isActive?: boolean, className?: string, colors?: {baseColor?: string, activeColor?: string, textColor?: string}, data?: Record<string, string>}>} menuItems
- * @param {Map<string, {baseColor?: string, activeColor?: string, textColor?: string}>|Object|string} buttonColours
+ * @param {object} options
+ * @param {HTMLElement} options.root
+ * @param {Array<{label: string, id?: string, isActive?: boolean, className?: string, colors?: {baseColor?: string, activeColor?: string, textColor?: string}, data?: Record<string, string>}>} [options.menuItems=[]]
+ * @param {string} [options.buttonClass=''] - Optional class to apply to every generated button (in addition to default classes)
  * @returns {void}
  * @example
- * renderMenuButtons(root, [
+ * renderMenuButtons({
+ *   root,
+ *   menuItems: [
  *   { label: 'All Platforms', isActive: true, colors: { baseColor: 'var(--knack-color-secondary)', activeColor: 'var(--knack-color-primary)' } },
  *   { label: 'Prime', id: 'rec123' }
- * ], new Map([['rec123', { baseColor: '#ff9900' }]]));
+ *   ],
+ *   buttonClass: 'my-custom-button-class'
+ * });
  */
-function renderMenuButtons(root, menuItems = [], buttonColours = '#222222') {
+function renderMenuButtons({ root, menuItems = [], buttonClass = '' } = {}) {
     if (!root) return;
+
+    ensureMenuButtonActiveStyles();
 
     const menuLinks = root.querySelector('.menu-links');
     if (!menuLinks) return;
-
-    const defaultColor = typeof buttonColours === 'string' ? buttonColours : '#222222';
-    const colorMap = buttonColours instanceof Map
-        ? buttonColours
-        : new Map(Object.entries(buttonColours || {}));
 
     const list = menuLinks.querySelector('.menu-links__list') || menuLinks;
     list.classList.add('kf-menu-links');
 
     list.querySelectorAll('.kf-menu-item').forEach((item) => item.remove());
 
-    const linkClassName = menuLinks.querySelector('a')?.className || 'knViewLink';
+    const linkClassName = menuLinks.querySelector('a')?.className || '';
     const fragment = document.createDocumentFragment();
+    const globalCustomClass = String(buttonClass || '').trim();
 
     (Array.isArray(menuItems) ? menuItems : []).forEach((item) => {
         const label = String(item?.label || '').trim() || 'Menu';
@@ -1958,7 +1976,7 @@ function renderMenuButtons(root, menuItems = [], buttonColours = '#222222') {
 
         const link = document.createElement('a');
         const extraClass = String(item?.className || '').trim();
-        link.className = `${linkClassName} kn-button kf-menu-button${extraClass ? ` ${extraClass}` : ''}`;
+        link.className = `${linkClassName} kn-button kf-menu-button${globalCustomClass ? ` ${globalCustomClass}` : ''}${extraClass ? ` ${extraClass}` : ''}`;
         link.textContent = label;
         link.href = '#';
 
@@ -1972,16 +1990,12 @@ function renderMenuButtons(root, menuItems = [], buttonColours = '#222222') {
             });
         }
 
-        const itemKey = item?.id ? String(item.id) : normaliseText(label);
-        const colors = item?.colors || colorMap.get(itemKey) || colorMap.get(normaliseText(label));
+        const colors = item?.colors;
 
         if (colors?.baseColor) {
             link.style.setProperty('--kf-menu-color', colors.baseColor);
             link.style.setProperty('--kf-menu-color-active', colors.activeColor || colors.baseColor);
             if (colors.textColor) link.style.setProperty('--kf-menu-text-color', colors.textColor);
-        } else if (defaultColor) {
-            link.style.setProperty('--kf-menu-color', defaultColor);
-            link.style.setProperty('--kf-menu-color-active', defaultColor);
         }
 
         menuItem.appendChild(link);
