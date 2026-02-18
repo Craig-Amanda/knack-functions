@@ -15,6 +15,29 @@ const raw = (id) => String(id).startsWith('field_') ? `${id}_raw` : `field_${id}
 const normaliseView = (id) => String(id).startsWith('view_') ? id : `view_${id}`;
 const normaliseScene = (id) => String(id).startsWith('scene_') ? id : `scene_${id}`;
 
+
+/**
+ * Gets an element by ID scoped to an optional context.
+ * - `id` may be an id string (with or without leading '#').
+ * - `context` may be a selector or Element; defaults to `document`.
+ * Returns Element or null.
+ */
+function getById(id, { context } = {}) {
+    if (!id && id !== 0) return null;
+    const root = context ? resolveElement(context) : document;
+    if (!root) return null;
+    const idStr = String(id).replace(/^#/, '');
+    if (root === document && typeof document.getElementById === 'function') {
+        return document.getElementById(idStr);
+    }
+    // For element roots use querySelector to scope the lookup
+    try {
+        return root.querySelector(`[id="${idStr.replace(/"/g, '\\"')}"]`);
+    } catch (e) {
+        return null;
+    }
+}
+
 /**
  * Extracts id and identifier from a Knack connection value.
  * @param {Array|Object|null|undefined} value - Connection field value
@@ -1599,86 +1622,106 @@ function getSceneFromViewId(viewId) {
 }
 
 /**
- * Applies menu link filters by button text for a target view.
+ * Normalises text for reliable comparisons:
+ * - converts to string
+ * - converts <br> / <br/> to a space
+ * - strips any remaining HTML tags
+ * - lowercases
+ * - removes ALL whitespace (spaces, tabs, newlines)
+ */
+//ANCHOR - Helpers - Text Normalization
+function normaliseText(value) {
+    const str = String(value ?? '');
+
+    return str
+        .replace(/<br\s*\/?>/gi, ' ')     // treat <br> as a space
+        .replace(/<[^>]*>/g, '')         // strip other tags
+        .toLowerCase()
+        .replace(/\s+/g, '');            // remove all whitespace
+}
+
+/**
+ * Applies menu-based filters to any target view with app-configurable behavior.
+ * Designed for generic use across table/list/details/calendar targets.
+ *
  * @param {object} params
- * @param {string|number} params.menuViewId
- * @param {string|number} params.targetViewId
- * @param {Array<{buttonText:string, fieldId?:string|number, operator?:string, value?:string, valLabel?:string, fieldName?:string, page?:number}>} params.rules
+ * @param {string|number} params.menuViewId - Source menu view id.
+ * @param {string|number} params.targetViewId - Target view id to filter.
+ * @param {Array<object>} [params.rules=[]] - Rule list keyed by button text.
+ * @param {object} [params.app={}] - App-specific behavior configuration.
+ * @param {string} [params.app.namespace='kf'] - Namespace for data attributes / wire marker.
+ * @param {string} [params.app.linkSelector='a'] - Link selector within menu view.
+ * @param {string} [params.app.buttonSelector='a.kf-menu-button'] - Selector used for active-state toggling.
+ * @param {string} [params.app.activeClass='is-active'] - Active class name.
+ * @param {boolean} [params.app.captureClick=false] - Bind menu click handler in capture phase.
+ * @param {boolean} [params.app.stopPropagation=false] - Stop propagation for handled menu clicks.
+ * @param {boolean} [params.app.stopImmediatePropagation=false] - Stop immediate propagation for handled menu clicks.
+ * @param {boolean} [params.app.syncHash=true] - Sync URL hash/query when filters are applied.
+ * @param {boolean} [params.app.rerenderCalendar=true] - Repaint calendar views after fetch.
+ * @param {number} [params.app.calendarDeferredRenderMs=60] - Deferred calendar render delay.
+ * @param {number} [params.app.calendarFirstApplyRetryMs=180] - Extra first-apply retry delay for calendars.
+ * @param {number} [params.app.calendarFirstApplyRefetchMs=0] - Optional one-time first-apply refetch delay for calendars.
+ * @param {(ctx: { rule: object, fieldId: string, operator: string, value: any }) => (object|null)} [params.app.buildFilter]
+ *        Optional custom filter builder. Return null for "show all".
+ * @param {(ctx: { targetId: string, filter: object|null, page: number }) => void} [params.app.onBeforeApply]
+ * @param {(ctx: { targetId: string, filter: object|null, page: number, targetType: string }) => void} [params.app.onAfterApply]
+ * @param {(ctx: { targetId: string, error: Error }) => void} [params.app.onError]
+ *
  * @example
  * applyMenuLinkFilters({
- *   menuViewId: 1374,
- *   targetViewId: 1305,
+ *   menuViewId: 2056,
+ *   targetViewId: 1320,
  *   rules: [
- *     { buttonText: 'All Tasks' },
- *     { buttonText: 'Outstanding', fieldId: 1869, operator: 'is not', value: 'id' },
- *     { buttonText: 'Completed', fieldId: 1869, operator: 'is', value: 'id' }
- *   ]
+ *     { buttonText: 'All Parks' },
+ *     { buttonText: 'Tattershall Lakes', fieldId: 407, operator: 'is', value: ['65973d...'] }
+ *   ],
+ *   app: {
+ *     namespace: 'spot',
+ *     buttonSelector: 'a.kf-menu-button',
+ *     rerenderCalendar: true,
+ *   }
  * });
  */
-function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [] } = {}) {
+function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} } = {}) {
     const viewId = normaliseView(menuViewId);
     const targetId = normaliseView(targetViewId);
     if (!viewId || !targetId) return;
 
+    const config = {
+        namespace: 'kf',
+        linkSelector: 'a',
+        buttonSelector: 'a.kf-menu-button',
+        activeClass: 'is-active',
+        captureClick: false,
+        stopPropagation: false,
+        stopImmediatePropagation: false,
+        syncHash: true,
+        rerenderCalendar: true,
+        calendarDeferredRenderMs: 60,
+        calendarFirstApplyRetryMs: 180,
+        calendarFirstApplyRefetchMs: 0,
+        buildFilter: null,
+        onBeforeApply: null,
+        onAfterApply: null,
+        onError: null,
+        ...app
+    };
+
     const viewElement = getById(viewId);
     if (!viewElement) return;
+    const linkSelector = config.linkSelector;
 
-    const ruleMap = new Map(
-        (Array.isArray(rules) ? rules : [])
-            .map((rule) => [String(rule?.buttonText || '').trim(), rule])
-            .filter(([label]) => Boolean(label))
-    );
-
-    if (!ruleMap.size) return;
-
-    const targetViewKey = targetId.replace('view_', '');
-
-    const buildHref = (query) => {
-        const base = String(window.location.href || '').split('?')[0];
-        if (!base) return '';
-        return query ? `${base}?${query}` : base;
+    const hasValue = (value) => {
+        if (Array.isArray(value)) return value.length > 0;
+        if (value && typeof value === 'object') return Object.keys(value).length > 0;
+        if (typeof value === 'number') return Number.isFinite(value);
+        return String(value || '').trim().length > 0;
     };
 
-    const applyFilterInPlace = (filter, page = 1) => {
-        const sceneHash = Knack.getSceneHash();
-        const query = filter && Array.isArray(filter.rules) && filter.rules.length
-            ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
-            : `view_${targetViewKey}_page=${page}`;
+    const defaultBuildFilter = ({ fieldId, operator, value, rule }) => {
+        if (!fieldId || !operator || !hasValue(value)) return null;
 
-        Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
-        Knack.setHashVars();
-
-        try {
-            Knack.models[targetId].setFilters(filter || {});
-            Knack.models[targetId].fetch({
-                success: () => { if (Knack.hideSpinner) Knack.hideSpinner(); },
-                error: () => { if (Knack.hideSpinner) Knack.hideSpinner(); }
-            });
-        } catch (error) {
-            console.warn('[KF] Menu filter apply failed', { targetId, error });
-        }
-    };
-
-    const links = Array.from(viewElement.querySelectorAll('a'));
-    links.forEach((link) => {
-        const text = link.textContent?.trim();
-        if (!text || !ruleMap.has(text)) return;
-
-        const rule = ruleMap.get(text);
-        const fieldId = rule?.fieldId ? normaliseField(rule.fieldId) : '';
-        const operator = String(rule?.operator || '').trim();
-        const value = String(rule?.value || '').trim();
-        const page = Number.isFinite(Number(rule?.page)) ? Number(rule.page) : 1;
-
-        if (!fieldId || !operator || !value) {
-            link.setAttribute('href', buildHref(''));
-            link.dataset.filterTarget = targetId;
-            link.dataset.filter = '';
-            link.dataset.filterPage = String(page);
-            return;
-        }
-
-        const filter = {
+        return {
             match: 'and',
             rules: [
                 {
@@ -1690,6 +1733,138 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [] } = {}) {
                 }
             ]
         };
+    };
+
+    const buildFilterFn = typeof config.buildFilter === 'function'
+        ? config.buildFilter
+        : defaultBuildFilter;
+
+    const ruleMap = new Map(
+        (Array.isArray(rules) ? rules : [])
+            .map((rule) => [String(rule?.buttonText || '').trim(), rule])
+            .filter(([label]) => Boolean(label))
+    );
+    if (!ruleMap.size) return;
+
+    const targetViewKey = targetId.replace('view_', '');
+    const wireAttr = `data-${config.namespace}-menu-filter-wired`;
+    let hasAppliedOnce = false;
+
+    const getTargetViewContext = () => {
+        const targetView = Knack?.views?.[targetId];
+        const targetModel = targetView?.model || Knack?.models?.[targetId];
+        const targetType = targetView?.model?.view?.type || targetView?.model?.attributes?.type || '';
+        return { targetView, targetModel, targetType };
+    };
+
+    const buildHref = (query) => {
+        const base = String(window.location.href || '').split('?')[0];
+        if (!base) return '';
+        return query ? `${base}?${query}` : base;
+    };
+
+    const rerenderCalendarIfNeeded = (targetView) => {
+        if (!config.rerenderCalendar) return;
+
+        const targetType = targetView?.model?.view?.type || targetView?.model?.attributes?.type;
+        if (targetType !== 'calendar' || typeof targetView?.renderRecords !== 'function') return;
+
+        if (typeof targetView?.model?.trigger === 'function') {
+            targetView.model.trigger('change');
+        }
+        if (typeof targetView?.renderView === 'function') {
+            targetView.renderView();
+        }
+        targetView.renderRecords();
+
+        const deferredMs = Number(config.calendarDeferredRenderMs) || 0;
+        if (deferredMs > 0) {
+            setTimeout(() => {
+                try {
+                    targetView.renderRecords();
+                } catch (_) {}
+            }, deferredMs);
+        }
+    };
+
+    const applyFilterInPlace = (filter, page = 1) => {
+        const sceneHash = Knack.getSceneHash();
+        const query = filter && Array.isArray(filter.rules) && filter.rules.length
+            ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
+            : `view_${targetViewKey}_page=${page}`;
+
+        if (typeof config.onBeforeApply === 'function') {
+            try { config.onBeforeApply({ targetId, filter, page }); } catch (_) {}
+        }
+
+        if (config.syncHash) {
+            Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
+            Knack.setHashVars();
+        }
+
+        try {
+            const { targetView, targetModel, targetType } = getTargetViewContext();
+            if (!targetModel) return;
+
+            targetModel.setFilters(filter || {});
+            targetModel.fetch({
+                success: () => {
+                    rerenderCalendarIfNeeded(targetView);
+
+                    const firstRetryMs = Number(config.calendarFirstApplyRetryMs) || 0;
+                    const firstRefetchMs = Number(config.calendarFirstApplyRefetchMs) || 0;
+                    if (!hasAppliedOnce && targetType === 'calendar' && firstRefetchMs > 0) {
+                        hasAppliedOnce = true;
+                        setTimeout(() => {
+                            applyFilterInPlace(filter, page);
+                        }, firstRefetchMs);
+                    } else if (!hasAppliedOnce && targetType === 'calendar' && firstRetryMs > 0) {
+                        hasAppliedOnce = true;
+                        setTimeout(() => {
+                            rerenderCalendarIfNeeded(targetView);
+                        }, firstRetryMs);
+                    }
+
+                    if (typeof config.onAfterApply === 'function') {
+                        try { config.onAfterApply({ targetId, filter, page, targetType }); } catch (_) {}
+                    }
+
+                    if (Knack.hideSpinner) Knack.hideSpinner();
+                },
+                error: () => {
+                    if (Knack.hideSpinner) Knack.hideSpinner();
+                }
+            });
+        } catch (error) {
+            if (typeof config.onError === 'function') {
+                try {
+                    config.onError({ targetId, error });
+                    return;
+                } catch (_) {}
+            }
+            console.warn('[KF] Menu filter apply failed', { targetId, error });
+        }
+    };
+
+    const links = Array.from(viewElement.querySelectorAll(linkSelector));
+    links.forEach((link) => {
+        const text = link.textContent?.trim();
+        if (!text || !ruleMap.has(text)) return;
+
+        const rule = ruleMap.get(text);
+        const fieldId = rule?.fieldId ? normaliseField(rule.fieldId) : '';
+        const operator = String(rule?.operator || '').trim();
+        const value = rule?.value;
+        const page = Number.isFinite(Number(rule?.page)) ? Number(rule.page) : 1;
+        const filter = buildFilterFn({ rule, fieldId, operator, value });
+
+        if (!filter) {
+            link.setAttribute('href', buildHref(''));
+            link.dataset.filterTarget = targetId;
+            link.dataset.filter = '';
+            link.dataset.filterPage = String(page);
+            return;
+        }
 
         const filterParam = encodeURIComponent(JSON.stringify(filter));
         const query = `view_${targetViewKey}_filters=${filterParam}&view_${targetViewKey}_page=${page}`;
@@ -1699,13 +1874,19 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [] } = {}) {
         link.dataset.filterPage = String(page);
     });
 
-    if (viewElement.dataset.menuFilterWired === 'true') return;
+    if (viewElement.getAttribute(wireAttr) === 'true') return;
 
     viewElement.addEventListener('click', (event) => {
-        const link = event.target.closest('a');
+        const link = event.target.closest(linkSelector);
         if (!link || link.dataset.filterTarget !== targetId) return;
 
         event.preventDefault();
+        if (config.stopPropagation) {
+            event.stopPropagation();
+        }
+        if (config.stopImmediatePropagation) {
+            event.stopImmediatePropagation();
+        }
 
         const page = Number(link.dataset.filterPage) || 1;
         const filterJson = link.dataset.filter || '';
@@ -1713,15 +1894,15 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [] } = {}) {
 
         applyFilterInPlace(filter, page);
 
-        if (link.classList.contains('kf-menu-button')) {
-            viewElement.querySelectorAll('a.kf-menu-button').forEach((btn) => {
-                btn.classList.remove('is-active');
+        if (config.buttonSelector) {
+            viewElement.querySelectorAll(config.buttonSelector).forEach((btn) => {
+                btn.classList.remove(config.activeClass);
             });
-            link.classList.add('is-active');
+            link.classList.add(config.activeClass);
         }
-    });
+    }, !!config.captureClick);
 
-    viewElement.dataset.menuFilterWired = 'true';
+    viewElement.setAttribute(wireAttr, 'true');
 }
 
 /**
@@ -3969,21 +4150,20 @@ function extractPostcode(address) {
 }
 
 /**
- * Returns the appropriate viewer URL for a given file type.
+ * Returns the URL to open for a file type.
+ * Uses direct asset URLs to avoid external viewer blank-screen/network issues.
  * @param {string} extension - File extension (lowercase, no dot)
  * @param {string} url - Direct asset URL
- * @return {string} - Viewer URL
+ * @return {string} - URL to open
  */
 function fileViewer(extension, url) {
-    if (OFFICE_EXTENSIONS.includes(extension)) {
-        return `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(url)}`;
+    const ext = String(extension || '').toLowerCase();
+    if (OFFICE_EXTENSIONS.includes(ext) || ext === "pdf") {
+        return url;
     }
-    if (extension === "pdf") {
-        return `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(url)}`;
-    }
-    // Fallback to Google Docs Viewer for other types
-    return `https://docs.google.com/gview?url=${encodeURIComponent(url)}`;
+    return url;
 }
+
 /**num of whole weeks between two dates
  * @param {Date} date1 - 24/05/2023
  * @param {Date} date2 - 24/05/2023 **/
@@ -6611,7 +6791,7 @@ function openFileFromBtn(viewId, btnText, filePath, openInNewWindow = false) {
 
                     // Parse the file extension from the path
                     const arr = filePath.split('.');
-                    const extension = arr[arr.length - 1];
+                    const extension = (arr[arr.length - 1] || '').toLowerCase();
 
                     // Generate API URL to access the file
                     const url = `https://api.knack.com/v1/applications/${Knack.application_id}/download/asset/${filePath}`;
@@ -7527,11 +7707,13 @@ function updateLinksAndAssets(viewId) {
             // Use Knack's default behaviour for images
             el.setAttribute('href', `${sanitiseURL(window.location.href)}kn-asset/1542-3553-3690-${info.assetId}/${info.fileName}`);
         } else if (OFFICE_EXTENSIONS.includes(info.extension)) {
-            el.setAttribute('href', `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(info.assetUrl)}`);
+            el.setAttribute('href', info.assetUrl);
             el.setAttribute('target', '_blank');
+            el.setAttribute('rel', 'noopener noreferrer');
         } else if (info.extension === "pdf") {
-            el.setAttribute('href', `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(info.assetUrl)}`);
+            el.setAttribute('href', info.assetUrl);
             el.setAttribute('target', '_blank');
+            el.setAttribute('rel', 'noopener noreferrer');
         } else {
             el.setAttribute('href', info.assetUrl);
             el.setAttribute('download', info.fileName);
