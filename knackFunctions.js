@@ -31,6 +31,22 @@ class KnackNavigator {
             : '';
     }
 
+    normalizeFieldMap(fieldMap = {}) {
+        return Object.fromEntries(
+            Object.entries(fieldMap || {}).map(([fieldKey, fieldValue]) => [
+                fieldKey,
+                this.normalizeFieldId(fieldValue),
+            ])
+        );
+    }
+
+    getFieldWrapper(viewRoot, fieldId) {
+        if (!(viewRoot instanceof Element)) return null;
+        const normalizedFieldId = this.normalizeFieldId(fieldId);
+        if (!normalizedFieldId) return null;
+        return viewRoot.querySelector(`#kn-input-${normalizedFieldId}`);
+    }
+
     normalizeRawFieldId(fieldId) {
         const normalized = this.normalizeFieldId(fieldId);
         return normalized ? `${normalized}_raw` : '';
@@ -1128,6 +1144,7 @@ function resolveElements(input) {
  * - Uses jQuery only for:
  *   - Chosen change events
  *   - jQuery UI datepicker calendar selections (onSelect)
+ *   - jQuery timepicker selections (onSelect)
  *
  * @param {HTMLElement|NodeList|Array<HTMLElement>|string} target - Element, collection, or selector
  * @param {Function} callback - Function(event, element) to call on event
@@ -1166,6 +1183,11 @@ function addInputEventListener(target, callback, options = {}) {
     const isDatepickerInput = (el) => {
         // jQuery UI datepicker adds 'hasDatepicker' class to the input it is attached to
         return !!(el && el.classList && el.classList.contains('hasDatepicker'));
+    };
+
+    const isTimepickerInput = (el) => {
+        // jQuery timepicker commonly marks attached input with ui-timepicker-input
+        return !!(el && el.classList && el.classList.contains('ui-timepicker-input'));
     };
 
     const getInputLikeElements = (root) => {
@@ -1254,6 +1276,65 @@ function addInputEventListener(target, callback, options = {}) {
         }
     };
 
+    const wireTimepickerOnSelect = (inputEl) => {
+        if (!hasJq()) return;
+        const j = jq();
+
+        if (typeof j.fn.timepicker !== 'function') return;
+        if (!isTimepickerInput(inputEl)) return;
+
+        try {
+            const inputJq = j(inputEl);
+            let existingOnSelect = null;
+
+            try {
+                existingOnSelect = inputJq.timepicker('option', 'onSelect');
+            } catch (_) {
+                existingOnSelect = null;
+            }
+
+            inputJq.timepicker('option', 'onSelect', function (timeText, inst) {
+                if (typeof existingOnSelect === 'function') {
+                    try { existingOnSelect.call(this, timeText, inst); } catch (_) {}
+                }
+
+                if (typeof timeText === 'string') {
+                    inputEl.value = timeText;
+                }
+
+                const syntheticEvent = {
+                    type: 'timepicker',
+                    timeText: timeText,
+                    target: inputEl
+                };
+
+                window.setTimeout(function () {
+                    try { callback(syntheticEvent, inputEl); } catch (_) {}
+                }, 0);
+            });
+        } catch (_) {
+            // Non-critical enhancement: ignore
+        }
+    };
+
+    const wireTimepickerEvents = (inputEl) => {
+        if (!hasJq()) return;
+        if (!inputEl || inputEl.tagName !== 'INPUT') return;
+
+        try {
+            const j = jq();
+            const inputJq = j(inputEl);
+
+            inputJq
+                .off('changeTime.ktl_timepicker selectTime.ktl_timepicker')
+                .on('changeTime.ktl_timepicker selectTime.ktl_timepicker', function (e) {
+                    try { callback(e, inputEl); } catch (_) {}
+                });
+        } catch (_) {
+            // Non-critical enhancement: ignore
+        }
+    };
+
     const attachToRoot = (rootEl) => {
         if (!(rootEl instanceof Element)) return;
 
@@ -1291,6 +1372,8 @@ function addInputEventListener(target, callback, options = {}) {
 
         fields.forEach((fieldEl) => {
             wireDatepickerOnSelect(fieldEl);
+            wireTimepickerOnSelect(fieldEl);
+            wireTimepickerEvents(fieldEl);
 
             if (isChosenSelect(fieldEl)) {
                 if (addChosenJqDirect(fieldEl)) {
@@ -2921,6 +3004,166 @@ function parseDateObject(input) {
     }
 
     return null;
+}
+
+/**
+ * Read date/time values from a Knack datetime wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @returns {{date: string, time: string}}
+ */
+function getDateTimeParts(fieldWrap) {
+    if (!fieldWrap) return { date: '', time: '' };
+    const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
+    const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+    return {
+        date: dateInput ? dateInput.value : '',
+        time: timeInput ? timeInput.value : '',
+    };
+}
+
+/**
+ * Write date/time values to a Knack datetime wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @param {{date?: string, time?: string}} [parts]
+ * @param {{emitEvents?: boolean}} [options]
+ * @returns {void}
+ */
+function setDateTimeParts(fieldWrap, parts = {}, options = {}) {
+    if (!fieldWrap) return;
+    const emitEvents = options.emitEvents !== false;
+    const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
+    const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+
+    if (dateInput) {
+        dateInput.value = parts.date || '';
+        if (emitEvents) {
+            dateInput.dispatchEvent(new Event('input', { bubbles: true }));
+            dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+
+    if (timeInput) {
+        timeInput.value = parts.time || '';
+        if (emitEvents) {
+            timeInput.dispatchEvent(new Event('input', { bubbles: true }));
+            timeInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+}
+
+/**
+ * Read from/to values from a Knack calendar from/to control wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @returns {{from: {date: string, time: string}, to: {date: string, time: string}}}
+ */
+function getCalendarFromToParts(fieldWrap) {
+    if (!fieldWrap) {
+        return {
+            from: { date: '', time: '' },
+            to: { date: '', time: '' },
+        };
+    }
+
+    const fromDateInput = fieldWrap.querySelector('.kn-datetime input[name="date"]');
+    const fromTimeInput = fieldWrap.querySelector('.kn-datetime input[name="time"]');
+    const toDateInput = fieldWrap.querySelector('.kn-datetime input[name="to_date"], .kn-datetime input[id$="-to"]:not([id*="-time-"])');
+    const toTimeInput = fieldWrap.querySelector('.kn-datetime input[name="to_time"], .kn-datetime input[id$="-time-to"]');
+
+    return {
+        from: {
+            date: fromDateInput ? fromDateInput.value : '',
+            time: fromTimeInput ? fromTimeInput.value : '',
+        },
+        to: {
+            date: toDateInput ? toDateInput.value : '',
+            time: toTimeInput ? toTimeInput.value : '',
+        },
+    };
+}
+
+/**
+ * Write from/to values to a Knack calendar from/to control wrapper.
+ * @param {HTMLElement|null} fieldWrap - .kn-input-field_123
+ * @param {{from?: {date?: string, time?: string}, to?: {date?: string, time?: string}}} [parts]
+ * @param {{emitEvents?: boolean}} [options]
+ * @returns {void}
+ */
+function setCalendarFromToParts(fieldWrap, parts = {}, options = {}) {
+    if (!fieldWrap) return;
+    const emitEvents = options.emitEvents !== false;
+
+    const fromDateInput = fieldWrap.querySelector('.kn-datetime input[name="date"]');
+    const fromTimeInput = fieldWrap.querySelector('.kn-datetime input[name="time"]');
+    const toDateInput = fieldWrap.querySelector('.kn-datetime input[name="to_date"], .kn-datetime input[id$="-to"]:not([id*="-time-"])');
+    const toTimeInput = fieldWrap.querySelector('.kn-datetime input[name="to_time"], .kn-datetime input[id$="-time-to"]');
+
+    const setAndTrigger = (input, value) => {
+        if (!input) return;
+        input.value = value || '';
+        if (emitEvents) {
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    };
+
+    setAndTrigger(fromDateInput, parts.from?.date);
+    setAndTrigger(fromTimeInput, parts.from?.time);
+    setAndTrigger(toDateInput, parts.to?.date);
+    setAndTrigger(toTimeInput, parts.to?.time);
+}
+
+/**
+ * Parse UK date/time parts into a Date.
+ * Accepts date as dd/mm/yyyy and time as either HH:mm or h:mmam/pm.
+ * @param {{date?: string, time?: string}} parts
+ * @returns {Date|null}
+ */
+function parseDateTimeParts(parts) {
+    const dateText = String(parts?.date || '').trim();
+    const timeText = String(parts?.time || '').trim();
+    const dateMatch = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!dateMatch) return null;
+
+    const day = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]);
+    const year = Number(dateMatch[3]);
+
+    let hours = 0;
+    let minutes = 0;
+    if (timeText) {
+        const ampmMatch = timeText.match(/^(\d{1,2}):(\d{2})\s*([ap]m)$/i);
+        const twentyFourMatch = timeText.match(/^(\d{1,2}):(\d{2})$/);
+        if (ampmMatch) {
+            hours = Number(ampmMatch[1]) % 12;
+            minutes = Number(ampmMatch[2]);
+            if (ampmMatch[3].toLowerCase() === 'pm') hours += 12;
+        } else if (twentyFourMatch) {
+            hours = Number(twentyFourMatch[1]);
+            minutes = Number(twentyFourMatch[2]);
+        } else {
+            return null;
+        }
+    }
+
+    return new Date(year, month - 1, day, hours, minutes, 0, 0);
+}
+
+/**
+ * Format a Date into UK date/time parts.
+ * @param {Date} dateObj
+ * @returns {{date: string, time: string}}
+ */
+function formatDateTimeParts(dateObj) {
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const year = dateObj.getFullYear();
+    const hours = String(dateObj.getHours()).padStart(2, '0');
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+
+    return {
+        date: `${day}/${month}/${year}`,
+        time: `${hours}:${minutes}`,
+    };
 }
 
 /** Offset a date and return a UK date string (dd/mm/yyyy).
