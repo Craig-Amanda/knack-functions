@@ -8,16 +8,342 @@ const INPUT_RADIO_CHECKED_SELECTOR = `${INPUT_RADIO_SELECTOR}:checked`;
 const HEADER_CHECKBOX_SELECTOR = 'th input[type="checkbox"]';
 const CLASS_DISABLED = 'disabled';
 
-const normaliseField = (id) => String(id).startsWith('field_') ? id : `field_${id}`;
-const normaliseRaw = (id) => String(id).startsWith('field_') ? `${id}_raw` : `field_${id}_raw`;
-const normaliseView = (id) => String(id).startsWith('view_') ? id : `view_${id}`;
-const normaliseScene = (id) => String(id).startsWith('scene_') ? id : `scene_${id}`;
+/**
+ * Lightweight Knack metadata navigator.
+ * Provides view and field metadata lookups with memoization.
+ */
+class KnackNavigator {
+    constructor() {
+        this._viewCache = new Map();
+        this._fieldMetaCache = new Map();
+        this._fieldTypeCache = new Map();
+    }
+
+    normalizeViewId(viewId) {
+        return viewId || viewId === 0
+            ? (String(viewId).startsWith('view_') ? String(viewId) : `view_${viewId}`)
+            : '';
+    }
+
+    normalizeFieldId(fieldId) {
+        return fieldId || fieldId === 0
+            ? (String(fieldId).startsWith('field_') ? String(fieldId) : `field_${fieldId}`)
+            : '';
+    }
+
+    normalizeFieldMap(fieldMap = {}) {
+        return Object.fromEntries(
+            Object.entries(fieldMap || {}).map(([fieldKey, fieldValue]) => [
+                fieldKey,
+                this.normalizeFieldId(fieldValue),
+            ])
+        );
+    }
+
+    getFieldWrapper(viewRoot, fieldId) {
+        if (!(viewRoot instanceof Element)) return null;
+        const normalizedFieldId = this.normalizeFieldId(fieldId);
+        if (!normalizedFieldId) return null;
+        return viewRoot.querySelector(`#kn-input-${normalizedFieldId}`);
+    }
+
+    normalizeRawFieldId(fieldId) {
+        const normalized = this.normalizeFieldId(fieldId);
+        return normalized ? `${normalized}_raw` : '';
+    }
+
+    normalizeSceneId(sceneId) {
+        return sceneId || sceneId === 0
+            ? (String(sceneId).startsWith('scene_') ? String(sceneId) : `scene_${sceneId}`)
+            : '';
+    }
+
+    getViewObject(viewId) {
+        const vid = this.normalizeViewId(viewId);
+        if (!vid) return null;
+        if (this._viewCache.has(vid)) return this._viewCache.get(vid);
+
+        const direct = Knack?.views?.[vid]?.model?.view;
+        if (direct) {
+            this._viewCache.set(vid, direct);
+            return direct;
+        }
+
+        const scenes = Knack?.scenes?.models || [];
+        for (const scene of scenes) {
+            const views = scene?.views?.models || [];
+            for (const viewModel of views) {
+                if (viewModel?.attributes?.key === vid) {
+                    this._viewCache.set(vid, viewModel.attributes);
+                    return viewModel.attributes;
+                }
+            }
+        }
+
+        this._viewCache.set(vid, null);
+        return null;
+    }
+
+    getFieldMeta(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return null;
+        if (this._fieldMetaCache.has(key)) return this._fieldMetaCache.get(key);
+
+        const objects = Knack?.objects?.models || [];
+        let fieldMeta = null;
+
+        for (const objModel of objects) {
+            const fields = objModel?.fields?.models || [];
+            const match = fields.find((fieldModel) => {
+                const attributes = fieldModel?.attributes || {};
+                return fieldModel?.id === key || attributes?.key === key;
+            });
+
+            const attributes = match?.attributes || null;
+            if (attributes && typeof attributes === 'object') {
+                fieldMeta = attributes;
+                break;
+            }
+        }
+
+        this._fieldMetaCache.set(key, fieldMeta);
+        return fieldMeta;
+    }
+
+    getFieldType(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return '';
+        if (this._fieldTypeCache.has(key)) return this._fieldTypeCache.get(key);
+
+        const fieldMeta = this.getFieldMeta(key);
+        const fieldType = String(fieldMeta?.type || '').trim().toLowerCase();
+        this._fieldTypeCache.set(key, fieldType);
+        return fieldType;
+    }
+
+    getFieldIdFromLabel(viewId, fieldLabel) {
+        const normalizedLabel = String(fieldLabel || '').trim().toLowerCase();
+        if (!normalizedLabel) return '';
+
+        const viewObject = this.getViewObject(viewId);
+        const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
+        const match = fields.find((field) => {
+            const fieldName = String(field?.name || '').trim().toLowerCase();
+            const fieldLabelText = String(field?.label || '').trim().toLowerCase();
+            return fieldName === normalizedLabel || fieldLabelText === normalizedLabel;
+        });
+
+        return this.normalizeFieldId(match?.key || match?.id || '');
+    }
+}
+
+const knackNavigator = new KnackNavigator();
+
+/**
+ * Knack field value resolver for display/raw/typed/API output modes.
+ * Handles per-field-type normalization using Knack object metadata.
+ */
+class KnackValueResolver {
+    constructor(navigator) {
+        this.navigator = navigator;
+    }
+
+    normalizeFieldKey(fieldKey) {
+        const value = String(fieldKey || '').trim();
+        if (!value) return '';
+        if (/^field_\d+$/.test(value)) return value;
+        if (/^\d+$/.test(value)) return `field_${value}`;
+        return '';
+    }
+
+    getFieldMeta(fieldKey) {
+        const key = this.normalizeFieldKey(fieldKey);
+        if (!key) return null;
+        return this.navigator?.getFieldMeta ? this.navigator.getFieldMeta(key) : null;
+    }
+
+    getFieldType(fieldKey) {
+        const key = this.normalizeFieldKey(fieldKey);
+        if (!key) return '';
+        return this.navigator?.getFieldType ? this.navigator.getFieldType(key) : '';
+    }
+
+    resolve(record, fieldKey, { mode = 'typed', preferRaw = true, fallback = undefined } = {}) {
+        const key = this.normalizeFieldKey(fieldKey);
+        if (!record || !key) return fallback;
+
+        const rawKey = `${key}_raw`;
+        const rawValue = record?.[rawKey];
+        const displayValue = record?.[key];
+        const fieldType = this.getFieldType(key);
+
+        if (mode === 'raw') return rawValue ?? fallback;
+        if (mode === 'display') return displayValue ?? fallback;
+        if (mode === 'api') {
+            const apiValue = this.toApiValue({ rawValue, displayValue, fieldType });
+            return apiValue === undefined ? fallback : apiValue;
+        }
+
+        const typedValue = this.toTypedValue({ rawValue, displayValue, fieldType, preferRaw });
+        return typedValue === undefined ? fallback : typedValue;
+    }
+
+    toTypedValue({ rawValue, displayValue, fieldType, preferRaw }) {
+        const sourceValue = preferRaw ? (rawValue ?? displayValue) : (displayValue ?? rawValue);
+        if (sourceValue === undefined || sourceValue === null || sourceValue === '') return undefined;
+
+        if (fieldType === 'connection') {
+            const ids = this.toConnectionIds(rawValue ?? sourceValue);
+            return ids.length <= 1 ? (ids[0] ?? '') : ids;
+        }
+
+        if (fieldType === 'multiple_choice') {
+            const choiceValues = this.toStringArray(rawValue ?? sourceValue);
+            return choiceValues.length <= 1 ? (choiceValues[0] ?? '') : choiceValues;
+        }
+
+        if (Array.isArray(sourceValue)) return this.toStringArray(sourceValue);
+        return sourceValue;
+    }
+
+    toApiValue({ rawValue, displayValue, fieldType }) {
+        const displayString = typeof displayValue === 'string' ? displayValue.trim() : '';
+
+        if (fieldType === 'connection') {
+            const ids = this.toConnectionIds(rawValue);
+            if (!ids.length) return undefined;
+            return ids.length === 1 ? ids[0] : ids;
+        }
+
+        if (fieldType === 'multiple_choice') {
+            const values = this.toStringArray(rawValue ?? displayValue);
+            return values.length ? values : undefined;
+        }
+
+        const base = rawValue !== undefined ? rawValue : displayValue;
+        if (base === undefined || base === null) return undefined;
+        if (typeof base === 'string') {
+            const trimmed = base.trim();
+            return trimmed ? trimmed : undefined;
+        }
+        if (typeof base === 'number') return String(base);
+        if (typeof base === 'boolean') return base ? 'true' : 'false';
+        return undefined;
+    }
+
+    toConnectionIds(value) {
+        if (!value) return [];
+        if (Array.isArray(value)) {
+            return value
+                .map((item) => {
+                    if (!item) return '';
+                    if (typeof item === 'object') return String(item.id || item.record_id || item._id || '').trim();
+                    return String(item || '').trim();
+                })
+                .filter(Boolean);
+        }
+        if (typeof value === 'object') {
+            const id = String(value.id || value.record_id || value._id || '').trim();
+            return id ? [id] : [];
+        }
+        const primitiveId = String(value || '').trim();
+        return primitiveId ? [primitiveId] : [];
+    }
+
+    /**
+     * Extracts a single connection reference from a Knack connection value.
+     * @param {Array|Object|null|undefined} value - Connection field value
+     * @returns {{id: string, identifier: string}|null} First valid reference or null
+     */
+    toConnectionRef(value) {
+        if (Array.isArray(value)) {
+            const first = value[0];
+            const firstId = String(first?.id || first?.record_id || first?._id || '').trim();
+            if (!firstId) return null;
+            return {
+                id: firstId,
+                identifier: String(first?.identifier || '').trim()
+            };
+        }
+
+        if (value && typeof value === 'object') {
+            const id = String(value.id || value.record_id || value._id || '').trim();
+            if (!id) return null;
+            return {
+                id,
+                identifier: String(value.identifier || '').trim()
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * Extracts a field value from a Knack record response.
+     * Checks display key first, then `_raw` key.
+     * @param {Object} recordObj - Knack record object
+     * @param {string|number} fieldKey - Field key (with or without `field_` prefix)
+     * @returns {*} Field value if found, otherwise undefined
+     */
+    extractResponseFieldValue(recordObj, fieldKey) {
+        if (!recordObj || typeof recordObj !== 'object') return undefined;
+
+        const normalizedKey = this.normalizeFieldKey(fieldKey);
+        const fallbackKey = String(fieldKey || '').trim();
+        const fieldId = normalizedKey || fallbackKey;
+        if (!fieldId) return undefined;
+
+        if (Object.prototype.hasOwnProperty.call(recordObj, fieldId)) {
+            return recordObj[fieldId];
+        }
+
+        const rawKey = `${fieldId}_raw`;
+        if (Object.prototype.hasOwnProperty.call(recordObj, rawKey)) {
+            return recordObj[rawKey];
+        }
+
+        return undefined;
+    }
+
+    toStringArray(value) {
+        if (!value) return [];
+        if (Array.isArray(value)) {
+            return value
+                .map((item) => {
+                    if (item == null) return '';
+                    if (typeof item === 'string') return item.trim();
+                    if (typeof item === 'object') {
+                        return String(item.identifier || item.name || item.title || item.label || item.value || item.id || '').trim();
+                    }
+                    return String(item).trim();
+                })
+                .filter(Boolean);
+        }
+        if (typeof value === 'string' && value.includes(',')) {
+            return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+        }
+        const single = this.toStringSafe(value);
+        return single ? [single] : [];
+    }
+
+    toStringSafe(value) {
+        if (value === undefined || value === null) return '';
+        try {
+            return String(value).trim();
+        } catch (_) {
+            return '';
+        }
+    }
+}
+
+const knackValueResolver = new KnackValueResolver(knackNavigator);
 
 /**
  * Gets an element by ID scoped to an optional context.
- * - `id` may be an id string (with or without leading '#').
- * - `context` may be a selector or Element; defaults to `document`.
- * Returns Element or null.
+ * @param {string|number} id - The ID of the element, with or without leading '#'.
+ * @param {Object} [options] - Optional parameters.
+ * @param {string|HTMLElement} [options.context] - The context to scope the search to. Can be a selector or an element. Defaults to `document`.
+ * @returns {HTMLElement|null} The found element or null if not found.
  */
 function getById(id, { context } = {}) {
     if (!id && id !== 0) return null;
@@ -44,16 +370,7 @@ function getById(id, { context } = {}) {
  * const name = ref ? ref.identifier : '';
  */
 const getConnectionRef = (value) => {
-    if (Array.isArray(value)) {
-        const first = value[0];
-        return first && first.id ? { id: first.id, identifier: first.identifier || '' } : null;
-    }
-
-    if (value && value.id) {
-        return { id: value.id, identifier: value.identifier || '' };
-    }
-
-    return null;
+    return knackValueResolver.toConnectionRef(value);
 };
 
 //jQuery extensions - BEGIN
@@ -827,6 +1144,7 @@ function resolveElements(input) {
  * - Uses jQuery only for:
  *   - Chosen change events
  *   - jQuery UI datepicker calendar selections (onSelect)
+ *   - jQuery timepicker selections (onSelect)
  *
  * @param {HTMLElement|NodeList|Array<HTMLElement>|string} target - Element, collection, or selector
  * @param {Function} callback - Function(event, element) to call on event
@@ -865,6 +1183,11 @@ function addInputEventListener(target, callback, options = {}) {
     const isDatepickerInput = (el) => {
         // jQuery UI datepicker adds 'hasDatepicker' class to the input it is attached to
         return !!(el && el.classList && el.classList.contains('hasDatepicker'));
+    };
+
+    const isTimepickerInput = (el) => {
+        // jQuery timepicker commonly marks attached input with ui-timepicker-input
+        return !!(el && el.classList && el.classList.contains('ui-timepicker-input'));
     };
 
     const getInputLikeElements = (root) => {
@@ -953,6 +1276,65 @@ function addInputEventListener(target, callback, options = {}) {
         }
     };
 
+    const wireTimepickerOnSelect = (inputEl) => {
+        if (!hasJq()) return;
+        const j = jq();
+
+        if (typeof j.fn.timepicker !== 'function') return;
+        if (!isTimepickerInput(inputEl)) return;
+
+        try {
+            const inputJq = j(inputEl);
+            let existingOnSelect = null;
+
+            try {
+                existingOnSelect = inputJq.timepicker('option', 'onSelect');
+            } catch (_) {
+                existingOnSelect = null;
+            }
+
+            inputJq.timepicker('option', 'onSelect', function (timeText, inst) {
+                if (typeof existingOnSelect === 'function') {
+                    try { existingOnSelect.call(this, timeText, inst); } catch (_) {}
+                }
+
+                if (typeof timeText === 'string') {
+                    inputEl.value = timeText;
+                }
+
+                const syntheticEvent = {
+                    type: 'timepicker',
+                    timeText: timeText,
+                    target: inputEl
+                };
+
+                window.setTimeout(function () {
+                    try { callback(syntheticEvent, inputEl); } catch (_) {}
+                }, 0);
+            });
+        } catch (_) {
+            // Non-critical enhancement: ignore
+        }
+    };
+
+    const wireTimepickerEvents = (inputEl) => {
+        if (!hasJq()) return;
+        if (!inputEl || inputEl.tagName !== 'INPUT') return;
+
+        try {
+            const j = jq();
+            const inputJq = j(inputEl);
+
+            inputJq
+                .off('changeTime.ktl_timepicker selectTime.ktl_timepicker')
+                .on('changeTime.ktl_timepicker selectTime.ktl_timepicker', function (e) {
+                    try { callback(e, inputEl); } catch (_) {}
+                });
+        } catch (_) {
+            // Non-critical enhancement: ignore
+        }
+    };
+
     const attachToRoot = (rootEl) => {
         if (!(rootEl instanceof Element)) return;
 
@@ -990,6 +1372,8 @@ function addInputEventListener(target, callback, options = {}) {
 
         fields.forEach((fieldEl) => {
             wireDatepickerOnSelect(fieldEl);
+            wireTimepickerOnSelect(fieldEl);
+            wireTimepickerEvents(fieldEl);
 
             if (isChosenSelect(fieldEl)) {
                 if (addChosenJqDirect(fieldEl)) {
@@ -1609,11 +1993,11 @@ function getAllTableRows(viewId, callback, includeHeader = false, includeGroup =
  */
 function getSceneFromViewId(viewId) {
     if (!viewId) return null;
-    const vid = normaliseView(viewId);
+    const vid = knackNavigator.normalizeViewId(viewId);
 
     const directScene = Knack?.views?.[vid]?.model?.view?.scene;
     if (directScene?.key) {
-        const key = normaliseScene(directScene.key);
+        const key = knackNavigator.normalizeSceneId(directScene.key);
         const slug = directScene.slug ? String(directScene.slug) : null;
         return { key, slug };
     }
@@ -1623,7 +2007,7 @@ function getSceneFromViewId(viewId) {
         const views = scene?.views?.models || [];
         for (const v of views) {
             if (v?.attributes?.key === vid) {
-                const key = normaliseScene(scene?.attributes?.key) || null;
+                const key = knackNavigator.normalizeSceneId(scene?.attributes?.key) || null;
                 if (!key) return null;
                 const slug = scene?.attributes?.slug ? String(scene.attributes.slug) : null;
                 return { key, slug };
@@ -1641,6 +2025,8 @@ function getSceneFromViewId(viewId) {
  * - strips any remaining HTML tags
  * - lowercases
  * - removes ALL whitespace (spaces, tabs, newlines)
+ * @param {string} value - The text to normalize.
+ * @returns {string} The normalized text.
  */
 //ANCHOR - Helpers - Text Normalization
 function normaliseText(value) {
@@ -1696,8 +2082,8 @@ function normaliseText(value) {
  * });
  */
 function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} } = {}) {
-    const viewId = normaliseView(menuViewId);
-    const targetId = normaliseView(targetViewId);
+    const viewId = knackNavigator.normalizeViewId(menuViewId);
+    const targetId = knackNavigator.normalizeViewId(targetViewId);
     if (!viewId || !targetId) return;
 
     const config = {
@@ -1865,7 +2251,7 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
         if (!text || !ruleMap.has(text)) return;
 
         const rule = ruleMap.get(text);
-        const fieldId = rule?.fieldId ? normaliseField(rule.fieldId) : '';
+        const fieldId = rule?.fieldId ? knackNavigator.normalizeFieldId(rule.fieldId) : '';
         const operator = String(rule?.operator || '').trim();
         const value = rule?.value;
         const page = Number.isFinite(Number(rule?.page)) ? Number(rule.page) : 1;
@@ -2618,6 +3004,166 @@ function parseDateObject(input) {
     }
 
     return null;
+}
+
+/**
+ * Read date/time values from a Knack datetime wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @returns {{date: string, time: string}}
+ */
+function getDateTimeParts(fieldWrap) {
+    if (!fieldWrap) return { date: '', time: '' };
+    const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
+    const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+    return {
+        date: dateInput ? dateInput.value : '',
+        time: timeInput ? timeInput.value : '',
+    };
+}
+
+/**
+ * Write date/time values to a Knack datetime wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @param {{date?: string, time?: string}} [parts]
+ * @param {{emitEvents?: boolean}} [options]
+ * @returns {void}
+ */
+function setDateTimeParts(fieldWrap, parts = {}, options = {}) {
+    if (!fieldWrap) return;
+    const emitEvents = options.emitEvents !== false;
+    const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
+    const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+
+    if (dateInput) {
+        dateInput.value = parts.date || '';
+        if (emitEvents) {
+            dateInput.dispatchEvent(new Event('input', { bubbles: true }));
+            dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+
+    if (timeInput) {
+        timeInput.value = parts.time || '';
+        if (emitEvents) {
+            timeInput.dispatchEvent(new Event('input', { bubbles: true }));
+            timeInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+}
+
+/**
+ * Read from/to values from a Knack calendar from/to control wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @returns {{from: {date: string, time: string}, to: {date: string, time: string}}}
+ */
+function getCalendarFromToParts(fieldWrap) {
+    if (!fieldWrap) {
+        return {
+            from: { date: '', time: '' },
+            to: { date: '', time: '' },
+        };
+    }
+
+    const fromDateInput = fieldWrap.querySelector('.kn-datetime input[name="date"]');
+    const fromTimeInput = fieldWrap.querySelector('.kn-datetime input[name="time"]');
+    const toDateInput = fieldWrap.querySelector('.kn-datetime input[name="to_date"], .kn-datetime input[id$="-to"]:not([id*="-time-"])');
+    const toTimeInput = fieldWrap.querySelector('.kn-datetime input[name="to_time"], .kn-datetime input[id$="-time-to"]');
+
+    return {
+        from: {
+            date: fromDateInput ? fromDateInput.value : '',
+            time: fromTimeInput ? fromTimeInput.value : '',
+        },
+        to: {
+            date: toDateInput ? toDateInput.value : '',
+            time: toTimeInput ? toTimeInput.value : '',
+        },
+    };
+}
+
+/**
+ * Write from/to values to a Knack calendar from/to control wrapper.
+ * @param {HTMLElement|null} fieldWrap - #kn-input-field_123
+ * @param {{from?: {date?: string, time?: string}, to?: {date?: string, time?: string}}} [parts]
+ * @param {{emitEvents?: boolean}} [options]
+ * @returns {void}
+ */
+function setCalendarFromToParts(fieldWrap, parts = {}, options = {}) {
+    if (!fieldWrap) return;
+    const emitEvents = options.emitEvents !== false;
+
+    const fromDateInput = fieldWrap.querySelector('.kn-datetime input[name="date"]');
+    const fromTimeInput = fieldWrap.querySelector('.kn-datetime input[name="time"]');
+    const toDateInput = fieldWrap.querySelector('.kn-datetime input[name="to_date"], .kn-datetime input[id$="-to"]:not([id*="-time-"])');
+    const toTimeInput = fieldWrap.querySelector('.kn-datetime input[name="to_time"], .kn-datetime input[id$="-time-to"]');
+
+    const setAndTrigger = (input, value) => {
+        if (!input) return;
+        input.value = value || '';
+        if (emitEvents) {
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    };
+
+    setAndTrigger(fromDateInput, parts.from?.date);
+    setAndTrigger(fromTimeInput, parts.from?.time);
+    setAndTrigger(toDateInput, parts.to?.date);
+    setAndTrigger(toTimeInput, parts.to?.time);
+}
+
+/**
+ * Parse UK date/time parts into a Date.
+ * Accepts date as dd/mm/yyyy and time as either HH:mm or h:mmam/pm.
+ * @param {{date?: string, time?: string}} parts
+ * @returns {Date|null}
+ */
+function parseDateTimeParts(parts) {
+    const dateText = String(parts?.date || '').trim();
+    const timeText = String(parts?.time || '').trim();
+    const dateMatch = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!dateMatch) return null;
+
+    const day = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]);
+    const year = Number(dateMatch[3]);
+
+    let hours = 0;
+    let minutes = 0;
+    if (timeText) {
+        const ampmMatch = timeText.match(/^(\d{1,2}):(\d{2})\s*([ap]m)$/i);
+        const twentyFourMatch = timeText.match(/^(\d{1,2}):(\d{2})$/);
+        if (ampmMatch) {
+            hours = Number(ampmMatch[1]) % 12;
+            minutes = Number(ampmMatch[2]);
+            if (ampmMatch[3].toLowerCase() === 'pm') hours += 12;
+        } else if (twentyFourMatch) {
+            hours = Number(twentyFourMatch[1]);
+            minutes = Number(twentyFourMatch[2]);
+        } else {
+            return null;
+        }
+    }
+
+    return new Date(year, month - 1, day, hours, minutes, 0, 0);
+}
+
+/**
+ * Format a Date into UK date/time parts.
+ * @param {Date} dateObj
+ * @returns {{date: string, time: string}}
+ */
+function formatDateTimeParts(dateObj) {
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const year = dateObj.getFullYear();
+    const hours = String(dateObj.getHours()).padStart(2, '0');
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+
+    return {
+        date: `${day}/${month}/${year}`,
+        time: `${hours}:${minutes}`,
+    };
 }
 
 /** Offset a date and return a UK date string (dd/mm/yyyy).
@@ -5590,15 +6136,7 @@ class KnackAPI {
      * @private
      */
     _extractResponseValueFromRecord(recordObj, fieldKey) {
-        if (!recordObj || typeof recordObj !== 'object') return undefined;
-        if (Object.prototype.hasOwnProperty.call(recordObj, fieldKey)) {
-            return recordObj[fieldKey];
-        }
-        const rawKey = `${fieldKey}_raw`;
-        if (Object.prototype.hasOwnProperty.call(recordObj, rawKey)) {
-            return recordObj[rawKey];
-        }
-        return undefined;
+        return knackValueResolver.extractResponseFieldValue(recordObj, fieldKey);
     }
 
     /**
