@@ -3083,7 +3083,7 @@ function getCalendarFromToParts(fieldWrap) {
 
 /**
  * Write from/to values to a Knack calendar from/to control wrapper.
- * @param {HTMLElement|null} fieldWrap - .kn-input-field_123
+ * @param {HTMLElement|null} fieldWrap - #kn-input-field_123
  * @param {{from?: {date?: string, time?: string}, to?: {date?: string, time?: string}}} [parts]
  * @param {{emitEvents?: boolean}} [options]
  * @returns {void}
