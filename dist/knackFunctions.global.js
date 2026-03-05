@@ -5000,7 +5000,7 @@ class KnackAPI {
         this._isDraining = false;
         this._drainScheduled = false;
         this._drainScheduler = typeof queueMicrotask === 'function'
-            ? queueMicrotask
+            ? (fn) => queueMicrotask(fn)
             : (fn) => setTimeout(fn, 0);
         this._initLogSettings();
     }
@@ -5283,17 +5283,33 @@ class KnackAPI {
      * @param {string} sceneId - The scene ID/key
      * @param {string} viewId - The view ID/key
      * @param {Object} recordData - The record data to create
-     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after the creation
-     * @param {number} [timeout] - Optional timeout override
+     * @param {Object} [options]
+     * @param {string|Array<string>} [options.refreshViews] - The view ID/key(s) to refresh after creation
+     * @param {number} [options.timeout] - Optional timeout override
+     * @param {boolean} [options.autoUploadAssets=false] - Upload File/Blob values and replace with Knack asset IDs before create.
+     * @param {string[]} [options.assetFieldIds] - Optional allow-list of asset field keys.
+     * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field upload type override.
+    * @example
+    * const fileInput = document.querySelector('#upload');
+    * const file = fileInput?.files?.[0];
+    * await api.createRecord('scene_1', 'view_2', {
+    *   field_123: file,
+    *   field_456: 'Notes'
+    * }, {
+    *   autoUploadAssets: true,
+    *   assetFieldIds: ['field_123']
+    * });
      * @returns {Promise<Object>} - The created record
      * @public
      */
-    async createRecord(sceneId, viewId, recordData, refreshViews, timeout) {
-        return this._scheduleWrite(async () => {
-            const url = this._formatApiUrl(sceneId, viewId);
-            this._log('Creating record', { url, data: recordData });
+    async createRecord(sceneId, viewId, recordData, options = {}) {
+        const opts = options || {};
+        const url = this._formatApiUrl(sceneId, viewId);
+        this._log('Creating record', { url, data: recordData });
+        const preparedRecordData = await this._prepareRecordData(recordData, opts);
 
-            const { signal, clear } = this._createAbortController(timeout);
+        return this._scheduleWrite(async () => {
+            const { signal, clear } = this._createAbortController(opts.timeout);
 
             try {
                 const result = await this._executeRequest(
@@ -5301,11 +5317,12 @@ class KnackAPI {
                     {
                         method: 'POST',
                         headers: this._buildHeaders(),
-                        body: JSON.stringify(recordData)
+                        body: JSON.stringify(preparedRecordData)
                     },
                     signal
                 );
-                if (refreshViews) await this.refreshView(refreshViews);
+                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+                if (effectiveRefresh) await this.refreshView(effectiveRefresh);
                 return result;
             } finally {
                 clear();
@@ -5318,26 +5335,193 @@ class KnackAPI {
      * @param {string} sceneId - The scene ID/key
      * @param {string} viewId - The view ID/key
      * @param {Array<Object>} recordsData - Array of record data objects to create
-     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after creation
-     * @param {number} [timeout] - Optional timeout override
-     * @returns {Promise<Array<Object>>} - Array of result objects from each create
+     * @param {Object} [options]
+     * @param {string|Array<string>} [options.refreshViews] - The view ID/key(s) to refresh after creation
+     * @param {number} [options.timeout] - Optional timeout override
+     * @param {Function} [options.onProgress] - Receives {created, failed, total, index, record|error}
+     * @param {number} [options.staggerMs=0] - Delay in ms between requests
+     * @param {boolean} [options.continueOnError=false] - Continue processing remaining records when one fails
+    * @param {boolean} [options.autoUploadAssets=false] - Upload File/Blob values and replace with Knack asset IDs before create.
+    * @param {string[]} [options.assetFieldIds] - Optional allow-list of asset field keys.
+    * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field upload type override.
+     * @returns {Promise<{ total: number, created: number, failed: number, records: Array<Object> }>}
      * @public
      */
-    async createRecords(sceneId, viewId, recordsData, refreshViews, timeout) {
+    async createRecords(sceneId, viewId, recordsData, options = {}) {
         if (!Array.isArray(recordsData)) {
             throw new Error('recordsData must be an array');
         }
 
-        const results = await Promise.all(
-            recordsData.map((recordData) => {
-                return this.createRecord(sceneId, viewId, recordData, null, timeout)
-                    .then(data => ({ success: true, data, recordData, recordId: this._extractRecordId(data) }))
-                    .catch(error => ({ success: false, error, recordData, recordId: null }));
-            })
-        );
+        const opts = options || {};
+        const payloads = recordsData.filter(Boolean);
+        const total = payloads.length;
+        if (!total) return { total: 0, created: 0, failed: 0, records: [] };
 
-        if (refreshViews) await this.refreshView(refreshViews);
-        return results;
+        const requestOptions = { ...opts, refreshViews: null };
+        const staggerMs = Number.isFinite(opts.staggerMs) ? Math.max(0, Number(opts.staggerMs)) : 0;
+        let created = 0;
+        let failed = 0;
+        let firstError = null;
+        const createdRecords = new Array(total);
+        const hasOnProgress = typeof opts.onProgress === 'function';
+
+        const taskPromises = payloads.map((payload, index) => (async () => {
+            if (staggerMs > 0 && index > 0) {
+                await new Promise(resolve => setTimeout(resolve, staggerMs * index));
+            }
+
+            try {
+                const record = await this.createRecord(sceneId, viewId, payload, requestOptions);
+                created += 1;
+                createdRecords[index] = record;
+                if (hasOnProgress) {
+                    opts.onProgress({ created, failed, total, index, record });
+                }
+                return record;
+            } catch (error) {
+                failed += 1;
+                if (!firstError) firstError = error;
+                if (hasOnProgress) {
+                    opts.onProgress({ created, failed, total, index, error });
+                }
+                if (!opts.continueOnError) {
+                    throw error;
+                }
+                return null;
+            }
+        })());
+
+        if (opts.continueOnError) {
+            await Promise.all(taskPromises);
+        } else {
+            try {
+                await Promise.all(taskPromises);
+            } catch (e) {
+                // firstError has been captured inside each task; handled below
+            }
+        }
+
+        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+        if (effectiveRefresh) await this.refreshView(effectiveRefresh);
+
+        if (firstError && !opts.continueOnError) {
+            throw firstError;
+        }
+
+        return { total, created, failed, records: createdRecords.filter(Boolean) };
+    }
+
+    /**
+     * Uploads a File/Blob as a Knack asset and returns the uploaded asset payload.
+     * @param {File|Blob} file
+     * @param {Object} [options]
+     * @param {'file'|'image'} [options.assetType] - Optional override. Auto-detected from mime type when omitted.
+     * @param {number} [options.timeout] - Optional timeout override.
+     * @returns {Promise<Object>} Uploaded asset payload (must include id).
+     * @public
+     */
+    async uploadAsset(file, options = {}) {
+        if (!(file instanceof Blob)) {
+            throw new Error('KnackAPI uploadAsset requires a File/Blob.');
+        }
+
+        const opts = options || {};
+        const appId = Knack?.application_id;
+        if (!appId) {
+            throw new Error('KnackAPI uploadAsset missing Knack application id.');
+        }
+
+        const inferredType = (file?.type || '').startsWith('image/') ? 'image' : 'file';
+        const assetType = opts.assetType === 'image' || opts.assetType === 'file' ? opts.assetType : inferredType;
+        const base = String(Knack?.api_dev || '').replace(/\/$/, '');
+        const url = `${base}/applications/${appId}/assets/${assetType}/upload`;
+        const uploadFileName = typeof file?.name === 'string' && file.name.length ? file.name : 'upload.bin';
+
+        const formData = new FormData();
+        formData.append('files', file, uploadFileName);
+
+        return this._scheduleWrite(async () => {
+            const { signal, clear } = this._createAbortController(opts.timeout);
+
+            try {
+                const result = await this._executeRequest(
+                    url,
+                    {
+                        method: 'POST',
+                        headers: this._buildUploadHeaders(),
+                        body: formData
+                    },
+                    signal
+                );
+
+                const asset = Array.isArray(result) ? result[0] : result;
+                if (!asset || !asset.id) {
+                    throw new Error('KnackAPI uploadAsset succeeded but no asset id was returned.');
+                }
+
+                return asset;
+            } finally {
+                clear();
+            }
+        });
+    }
+
+    /**
+     * Replaces File/Blob field values with uploaded Knack asset IDs when autoUploadAssets is enabled.
+     * @param {Object} recordData
+     * @param {Object} [options]
+     * @returns {Promise<Object>}
+     * @private
+     */
+    async _prepareRecordData(recordData, options = {}) {
+        const data = recordData && typeof recordData === 'object' ? { ...recordData } : recordData;
+        if (!options?.autoUploadAssets || !data || typeof data !== 'object') {
+            return data;
+        }
+
+        const allowList = Array.isArray(options.assetFieldIds)
+            ? new Set(options.assetFieldIds)
+            : null;
+        const typesByField = options.assetTypesByField || {};
+
+        for (const [fieldKey, value] of Object.entries(data)) {
+            if (!(value instanceof Blob)) continue;
+            if (allowList && !allowList.has(fieldKey)) continue;
+            if (!allowList && !this._isAssetField(fieldKey)) continue;
+
+            const assetType = typesByField[fieldKey];
+            const asset = await this.uploadAsset(value, {
+                timeout: options.timeout,
+                assetType
+            });
+            data[fieldKey] = asset.id;
+        }
+
+        return data;
+    }
+
+    /**
+     * Determines whether a field key maps to a Knack file/image field.
+     * @param {string} fieldKey
+     * @returns {boolean}
+     * @private
+     */
+    _isAssetField(fieldKey = '') {
+        if (!fieldKey || typeof fieldKey !== 'string') return false;
+
+        const normalizedKey = typeof knackNavigator?.normalizeFieldId === 'function'
+            ? knackNavigator.normalizeFieldId(fieldKey)
+            : fieldKey;
+        const fromNavigator = typeof knackNavigator?.getFieldType === 'function'
+            ? knackNavigator.getFieldType(normalizedKey)
+            : null;
+        if (fromNavigator === 'file' || fromNavigator === 'image') {
+            return true;
+        }
+
+        const fieldModel = Knack?.objects?.getField?.(normalizedKey);
+        const fieldType = fieldModel?.attributes?.type || null;
+        return fieldType === 'file' || fieldType === 'image';
     }
 
     /**
@@ -5346,17 +5530,32 @@ class KnackAPI {
      * @param {string} viewId - The view ID/key
      * @param {string} recordId - The record ID to update
      * @param {Object} recordData - The updated record data
-     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after the update
-     * @param {number} [timeout] - Optional timeout override
+     * @param {Object} [options]
+     * @param {string|Array<string>} [options.refreshViews] - The view ID/key(s) to refresh after update
+     * @param {number} [options.timeout] - Optional timeout override
+     * @param {boolean} [options.autoUploadAssets=false] - Upload File/Blob values and replace with Knack asset IDs before update.
+     * @param {string[]} [options.assetFieldIds] - Optional allow-list of asset field keys.
+     * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field upload type override.
+    * @example
+    * const replacementFile = document.querySelector('#replace')?.files?.[0];
+    * await api.updateRecord('scene_1', 'view_2', 'rec_abc', {
+    *   field_123: replacementFile
+    * }, {
+    *   autoUploadAssets: true,
+    *   assetTypesByField: { field_123: 'file' }
+    * });
      * @returns {Promise<Object>} - The updated record
      * @public
      */
-    async updateRecord(sceneId, viewId, recordId, recordData, refreshViews, timeout) {
+    async updateRecord(sceneId, viewId, recordId, recordData, options = {}) {
+        const opts = options || {};
+        const preparedRecordData = await this._prepareRecordData(recordData, opts);
+
         return this._scheduleWrite(async () => {
             const url = this._formatApiUrl(sceneId, viewId, recordId);
             this._log('Updating record', { url, data: recordData });
 
-            const { signal, clear } = this._createAbortController(timeout);
+            const { signal, clear } = this._createAbortController(opts.timeout);
 
             try {
                 const result = await this._executeRequest(
@@ -5364,7 +5563,7 @@ class KnackAPI {
                     {
                         method: 'PUT',
                         headers: this._buildHeaders(),
-                        body: JSON.stringify(recordData)
+                        body: JSON.stringify(preparedRecordData)
                     },
                     signal
                 );
@@ -5402,7 +5601,8 @@ class KnackAPI {
                 }
                 // --- end verification ---
 
-                if (refreshViews) await this.refreshView(refreshViews);
+                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+                if (effectiveRefresh) await this.refreshView(effectiveRefresh);
                 return result;
             } finally {
                 clear();
@@ -5414,27 +5614,94 @@ class KnackAPI {
      * Updates multiple records with concurrency control.
      * @param {string} sceneId - The scene ID/key
      * @param {string} viewId - The view ID/key
-     * @param {Array<Object>} updates - Array of objects containing recordId and recordData
-     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after updates
-     * @param {number} [timeout] - Optional timeout override
-     * @returns {Promise<Array<Object>>} - Array of result objects from each update
+     * @param {Array<string>|Array<Object>} recordIds - Array of record IDs, or array of per-record objects
+     * @param {Object|Array|string} recordData - Shared record data, or options when using per-record objects
+     * @param {Object} [options]
+     * @param {string|Array<string>} [options.refreshViews] - The view ID/key(s) to refresh after updates
+     * @param {number} [options.timeout] - Optional timeout override
+     * @param {Function} [options.onProgress] - Receives {updated, failed, total, recordId, error?}
+     * @param {number} [options.staggerMs=0] - Delay in ms between requests
+     * @param {boolean} [options.continueOnError=false] - Continue processing remaining records when one fails
+    * @param {boolean} [options.autoUploadAssets=false] - Upload File/Blob values and replace with Knack asset IDs before update.
+    * @param {string[]} [options.assetFieldIds] - Optional allow-list of asset field keys.
+    * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field upload type override.
+     * @returns {Promise<{ total: number, updated: number, failed: number }>}
      * @public
      */
-    async updateRecords(sceneId, viewId, updates, refreshViews, timeout) {
-        if (!Array.isArray(updates)) {
-            throw new Error('updates must be an array');
+    async updateRecords(sceneId, viewId, recordIds, recordData, options = {}) {
+        if (!Array.isArray(recordIds)) {
+            throw new Error('recordIds must be an array');
         }
 
-        const results = await Promise.all(
-            updates.map(({ recordId, recordData }) => {
-                return this.updateRecord(sceneId, viewId, recordId, recordData, null, timeout)
-                    .then(data => ({ success: true, data, recordId, recordData }))
-                    .catch(error => ({ success: false, error, recordId, recordData }));
-            })
-        );
+        const isPerRecord = recordIds.length > 0 && recordIds.every(record => {
+            if (record === null || typeof record !== 'object') return false;
+            const hasIdShape = 'id' in record && 'data' in record;
+            const hasLegacyShape = 'recordId' in record && 'recordData' in record;
+            return hasIdShape || hasLegacyShape;
+        });
 
-        if (refreshViews) await this.refreshView(refreshViews);
-        return results;
+        const hasMixedPerRecordShape = recordIds.some(record => record !== null && typeof record === 'object') && !isPerRecord;
+        if (hasMixedPerRecordShape) {
+            throw new Error('recordIds contains mixed shapes. Use all IDs with shared data, or all objects with {id, data}.');
+        }
+
+        const opts = isPerRecord
+            ? ((recordData && typeof recordData === 'object' && !Array.isArray(recordData)) ? recordData : {})
+            : (options || {});
+
+        const records = isPerRecord
+            ? recordIds
+                .filter(record => record)
+                .map(record => ('id' in record ? { id: record.id, data: record.data } : { id: record.recordId, data: record.recordData }))
+                .filter(record => record.id)
+            : recordIds.filter(Boolean).map(id => ({ id, data: recordData }));
+
+        const total = records.length;
+        if (!total) return { total: 0, updated: 0, failed: 0 };
+
+        const requestOptions = { ...opts, refreshViews: null };
+        const staggerMs = Number.isFinite(opts.staggerMs) ? Math.max(0, Number(opts.staggerMs)) : 0;
+        let updated = 0;
+        let failed = 0;
+        let firstError = null;
+
+        const promises = [];
+        for (let index = 0; index < total; index++) {
+            const { id: recordId, data } = records[index];
+
+            const promise = (async () => {
+                try {
+                    await this.updateRecord(sceneId, viewId, recordId, data, requestOptions);
+                    updated += 1;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ updated, failed, total, recordId });
+                    }
+                } catch (error) {
+                    failed += 1;
+                    if (!firstError) firstError = error;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ updated, failed, total, recordId, error });
+                    }
+                }
+            })();
+
+            promises.push(promise);
+
+            if (staggerMs > 0 && index < total - 1) {
+                await new Promise(resolve => setTimeout(resolve, staggerMs));
+            }
+        }
+
+        await Promise.all(promises);
+
+        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+        if (effectiveRefresh) await this.refreshView(effectiveRefresh);
+
+        if (firstError && !opts.continueOnError) {
+            throw firstError;
+        }
+
+        return { total, updated, failed };
     }
 
 
@@ -5444,18 +5711,21 @@ class KnackAPI {
      * @param {string} viewId - The view ID/key
      * @param {Array<string>} recordIds - Array of record IDs to update
      * @param {Object} recordData - The data to update each record with
-     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after the update
-     * @param {number} [delay=300] - Delay in milliseconds between requests
-     * @param {number} [timeout] - Optional timeout
+     * @param {Object} [options]
+     * @param {string|Array<string>} [options.refreshViews] - The view ID/key(s) to refresh after update
+     * @param {number} [options.delay=300] - Delay in milliseconds between requests
+     * @param {number} [options.timeout] - Optional timeout
      * @returns {Promise<Array<Object>>} - Array of responses from each update
      * @public
      */
-    async updateRecordsWithDelay(sceneId, viewId, recordIds, recordData, refreshViews, delay = 300, timeout) {
+    async updateRecordsWithDelay(sceneId, viewId, recordIds, recordData, options = {}) {
+        const opts = options || {};
+        const delay = Number.isFinite(opts.delay) ? Math.max(0, Number(opts.delay)) : 300;
         const results = [];
 
         for (let i = 0; i < recordIds.length; i++) {
             try {
-                const result = await this.updateRecord(sceneId, viewId, recordIds[i], recordData, [], timeout);
+                const result = await this.updateRecord(sceneId, viewId, recordIds[i], recordData, { timeout: opts.timeout });
                 results.push(result);
 
                 // Don't add delay after the last request
@@ -5467,7 +5737,8 @@ class KnackAPI {
             }
         }
 
-        if (refreshViews) await this.refreshView(refreshViews);
+        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+        if (effectiveRefresh) await this.refreshView(effectiveRefresh);
 
         return results;
     }
@@ -5477,17 +5748,19 @@ class KnackAPI {
      * @param {string} sceneId - The scene ID/key
      * @param {string} viewId - The view ID/key
      * @param {string} recordId - The record ID to delete
-     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after the deletion
-     * @param {number} [timeout] - Optional timeout override
+     * @param {Object} [options]
+     * @param {string|Array<string>} [options.refreshViews] - The view ID/key(s) to refresh after deletion
+     * @param {number} [options.timeout] - Optional timeout override
      * @returns {Promise<Object>} - Response data
      * @public
      */
-    async deleteRecord(sceneId, viewId, recordId, refreshViews, timeout) {
+    async deleteRecord(sceneId, viewId, recordId, options = {}) {
         return this._scheduleWrite(async () => {
+            const opts = options || {};
             const url = this._formatApiUrl(sceneId, viewId, recordId);
             this._log('Deleting record', url);
 
-            const { signal, clear } = this._createAbortController(timeout);
+            const { signal, clear } = this._createAbortController(opts.timeout);
 
             try {
                 const result = await this._executeRequest(
@@ -5498,7 +5771,8 @@ class KnackAPI {
                     },
                     signal
                 );
-                if (refreshViews) await this.refreshView(refreshViews);
+                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+                if (effectiveRefresh) await this.refreshView(effectiveRefresh);
                 return result;
             } finally {
                 clear();
@@ -5511,26 +5785,104 @@ class KnackAPI {
      * @param {string} sceneId - The scene ID/key
      * @param {string} viewId - The view ID/key
      * @param {Array<string>} recordIds - Array of record IDs to delete
-     * @param {string|Array<string>} [refreshViews] - The view ID/key(s) to refresh after deletions
-     * @param {number} [timeout] - Optional timeout override
-     * @returns {Promise<Array<Object>>} - Array of result objects from each delete
+     * @param {Object} [options]
+     * @param {string|Array<string>} [options.refreshViews] - The view ID/key(s) to refresh after deletions
+     * @param {number} [options.timeout] - Optional timeout override
+     * @param {Function} [options.onProgress] - Receives {deleted, failed, total, recordId, error?}
+     * @param {number} [options.staggerMs=0] - Delay in ms between requests
+     * @param {boolean} [options.continueOnError=false] - Continue processing remaining records when one fails
+     * @returns {Promise<{ total: number, deleted: number, failed: number }>}
      * @public
      */
-    async deleteRecords(sceneId, viewId, recordIds, refreshViews, timeout) {
+    async deleteRecords(sceneId, viewId, recordIds, options = {}) {
         if (!Array.isArray(recordIds)) {
             throw new Error('recordIds must be an array');
         }
 
-        const results = await Promise.all(
-            recordIds.map((recordId) => {
-                return this.deleteRecord(sceneId, viewId, recordId, null, timeout)
-                    .then(data => ({ success: true, data, recordId }))
-                    .catch(error => ({ success: false, error, recordId }));
-            })
-        );
+        const opts = options || {};
+        const ids = recordIds.filter(Boolean);
+        const total = ids.length;
+        if (!total) return { total: 0, deleted: 0, failed: 0 };
 
-        if (refreshViews) await this.refreshView(refreshViews);
-        return results;
+        const requestOptions = { ...opts, refreshViews: null };
+        const staggerMs = Number.isFinite(opts.staggerMs) ? Math.max(0, Number(opts.staggerMs)) : 0;
+        let deleted = 0;
+        let failed = 0;
+        let firstError = null;
+
+        if (!opts.continueOnError) {
+            for (let index = 0; index < total; index++) {
+                const recordId = ids[index];
+                try {
+                    await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
+                    deleted += 1;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ deleted, failed, total, recordId });
+                    }
+                } catch (error) {
+                    failed += 1;
+                    if (!firstError) firstError = error;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ deleted, failed, total, recordId, error });
+                    }
+                    break;
+                }
+
+                if (staggerMs > 0 && index < total - 1) {
+                    await new Promise(resolve => setTimeout(resolve, staggerMs));
+                }
+            }
+        } else {
+            const promises = ids.map((recordId, index) => (async () => {
+                if (staggerMs > 0 && index > 0) {
+                    await new Promise(resolve => setTimeout(resolve, staggerMs * index));
+                }
+
+                try {
+                    await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
+                    deleted += 1;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ deleted, failed, total, recordId });
+                    }
+                } catch (error) {
+                    failed += 1;
+                    if (!firstError) firstError = error;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ deleted, failed, total, recordId, error });
+                    }
+                }
+            })());
+
+            await Promise.all(promises);
+        }
+
+        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+        if (effectiveRefresh) await this.refreshView(effectiveRefresh);
+
+        if (firstError && !opts.continueOnError) {
+            throw firstError;
+        }
+
+        return { total, deleted, failed };
+    }
+
+    /**
+     * Normalizes refreshViews input into a string, array of strings, or null.
+     * @param {string|string[]|*} refreshViews
+     * @returns {string|string[]|null}
+     * @private
+     */
+    _normalizeRefreshViews(refreshViews) {
+        if (typeof refreshViews === 'string') {
+            return refreshViews;
+        }
+
+        if (Array.isArray(refreshViews)) {
+            const normalized = refreshViews.filter(viewId => typeof viewId === 'string' && viewId.length);
+            return normalized.length ? normalized : null;
+        }
+
+        return null;
     }
 
     /**
@@ -5856,6 +6208,29 @@ class KnackAPI {
     _buildHeaders(withAuth = true) {
         const headers = {
             'Content-Type': 'application/json',
+            'X-Knack-Application-ID': Knack.application_id,
+            'X-Knack-REST-API-Key': 'knack'
+        };
+
+        if (withAuth) {
+            const token = this._getAuthToken();
+            if (token) {
+                headers['Authorization'] = token;
+            }
+        }
+
+        return headers;
+    }
+
+    /**
+     * Builds headers for multipart upload requests.
+     * Content-Type is intentionally omitted so the browser can set the proper boundary.
+     * @param {boolean} withAuth - Whether to include authorization header
+     * @returns {Object} Headers object
+     * @private
+     */
+    _buildUploadHeaders(withAuth = true) {
+        const headers = {
             'X-Knack-Application-ID': Knack.application_id,
             'X-Knack-REST-API-Key': 'knack'
         };

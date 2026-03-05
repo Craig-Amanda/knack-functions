@@ -5303,12 +5303,12 @@ class KnackAPI {
      * @public
      */
     async createRecord(sceneId, viewId, recordData, options = {}) {
-        return this._scheduleWrite(async () => {
-            const opts = options || {};
-            const url = this._formatApiUrl(sceneId, viewId);
-            this._log('Creating record', { url, data: recordData });
-            const preparedRecordData = await this._prepareRecordData(recordData, opts);
+        const opts = options || {};
+        const url = this._formatApiUrl(sceneId, viewId);
+        this._log('Creating record', { url, data: recordData });
+        const preparedRecordData = await this._prepareRecordData(recordData, opts);
 
+        return this._scheduleWrite(async () => {
             const { signal, clear } = this._createAbortController(opts.timeout);
 
             try {
@@ -5362,29 +5362,42 @@ class KnackAPI {
         let created = 0;
         let failed = 0;
         let firstError = null;
-        const createdRecords = [];
+        const createdRecords = new Array(total);
+        const hasOnProgress = typeof opts.onProgress === 'function';
 
-        for (let index = 0; index < total; index++) {
+        const taskPromises = payloads.map((payload, index) => (async () => {
+            if (staggerMs > 0 && index > 0) {
+                await new Promise(resolve => setTimeout(resolve, staggerMs * index));
+            }
+
             try {
-                const record = await this.createRecord(sceneId, viewId, payloads[index], requestOptions);
+                const record = await this.createRecord(sceneId, viewId, payload, requestOptions);
                 created += 1;
                 createdRecords[index] = record;
-                if (typeof opts.onProgress === 'function') {
+                if (hasOnProgress) {
                     opts.onProgress({ created, failed, total, index, record });
                 }
+                return record;
             } catch (error) {
                 failed += 1;
                 if (!firstError) firstError = error;
-                if (typeof opts.onProgress === 'function') {
+                if (hasOnProgress) {
                     opts.onProgress({ created, failed, total, index, error });
                 }
                 if (!opts.continueOnError) {
-                    break;
+                    throw error;
                 }
+                return null;
             }
+        })());
 
-            if (staggerMs > 0 && index < total - 1) {
-                await new Promise(resolve => setTimeout(resolve, staggerMs));
+        if (opts.continueOnError) {
+            await Promise.all(taskPromises);
+        } else {
+            try {
+                await Promise.all(taskPromises);
+            } catch (e) {
+                // firstError has been captured inside each task; handled below
             }
         }
 
@@ -5535,11 +5548,12 @@ class KnackAPI {
      * @public
      */
     async updateRecord(sceneId, viewId, recordId, recordData, options = {}) {
+        const opts = options || {};
+        const preparedRecordData = await this._prepareRecordData(recordData, opts);
+
         return this._scheduleWrite(async () => {
-            const opts = options || {};
             const url = this._formatApiUrl(sceneId, viewId, recordId);
             this._log('Updating record', { url, data: recordData });
-            const preparedRecordData = await this._prepareRecordData(recordData, opts);
 
             const { signal, clear } = this._createAbortController(opts.timeout);
 
@@ -5651,29 +5665,34 @@ class KnackAPI {
         let failed = 0;
         let firstError = null;
 
+        const promises = [];
         for (let index = 0; index < total; index++) {
             const { id: recordId, data } = records[index];
-            try {
-                await this.updateRecord(sceneId, viewId, recordId, data, requestOptions);
-                updated += 1;
-                if (typeof opts.onProgress === 'function') {
-                    opts.onProgress({ updated, failed, total, recordId });
-                }
-            } catch (error) {
-                failed += 1;
-                if (!firstError) firstError = error;
-                if (typeof opts.onProgress === 'function') {
-                    opts.onProgress({ updated, failed, total, recordId, error });
-                }
-                if (!opts.continueOnError) {
-                    break;
-                }
-            }
 
-            if (staggerMs > 0 && index < total - 1) {
-                await new Promise(resolve => setTimeout(resolve, staggerMs));
-            }
+            const promise = (async () => {
+                if (staggerMs > 0 && index > 0) {
+                    await new Promise(resolve => setTimeout(resolve, staggerMs * index));
+                }
+
+                try {
+                    await this.updateRecord(sceneId, viewId, recordId, data, requestOptions);
+                    updated += 1;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ updated, failed, total, recordId });
+                    }
+                } catch (error) {
+                    failed += 1;
+                    if (!firstError) firstError = error;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ updated, failed, total, recordId, error });
+                    }
+                }
+            })();
+
+            promises.push(promise);
         }
+
+        await Promise.all(promises);
 
         const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
         if (effectiveRefresh) await this.refreshView(effectiveRefresh);
@@ -5791,28 +5810,50 @@ class KnackAPI {
         let failed = 0;
         let firstError = null;
 
-        for (let index = 0; index < total; index++) {
-            const recordId = ids[index];
-            try {
-                await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
-                deleted += 1;
-                if (typeof opts.onProgress === 'function') {
-                    opts.onProgress({ deleted, failed, total, recordId });
-                }
-            } catch (error) {
-                failed += 1;
-                if (!firstError) firstError = error;
-                if (typeof opts.onProgress === 'function') {
-                    opts.onProgress({ deleted, failed, total, recordId, error });
-                }
-                if (!opts.continueOnError) {
+        if (!opts.continueOnError) {
+            for (let index = 0; index < total; index++) {
+                const recordId = ids[index];
+                try {
+                    await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
+                    deleted += 1;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ deleted, failed, total, recordId });
+                    }
+                } catch (error) {
+                    failed += 1;
+                    if (!firstError) firstError = error;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ deleted, failed, total, recordId, error });
+                    }
                     break;
                 }
-            }
 
-            if (staggerMs > 0 && index < total - 1) {
-                await new Promise(resolve => setTimeout(resolve, staggerMs));
+                if (staggerMs > 0 && index < total - 1) {
+                    await new Promise(resolve => setTimeout(resolve, staggerMs));
+                }
             }
+        } else {
+            const promises = ids.map((recordId, index) => (async () => {
+                if (staggerMs > 0 && index > 0) {
+                    await new Promise(resolve => setTimeout(resolve, staggerMs * index));
+                }
+
+                try {
+                    await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
+                    deleted += 1;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ deleted, failed, total, recordId });
+                    }
+                } catch (error) {
+                    failed += 1;
+                    if (!firstError) firstError = error;
+                    if (typeof opts.onProgress === 'function') {
+                        opts.onProgress({ deleted, failed, total, recordId, error });
+                    }
+                }
+            })());
+
+            await Promise.all(promises);
         }
 
         const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
