@@ -5670,6 +5670,10 @@ class KnackAPI {
             const { id: recordId, data } = records[index];
 
             const promise = (async () => {
+                if (staggerMs > 0 && index > 0) {
+                    await new Promise(resolve => setTimeout(resolve, staggerMs * index));
+                }
+
                 try {
                     await this.updateRecord(sceneId, viewId, recordId, data, requestOptions);
                     updated += 1;
@@ -5686,10 +5690,6 @@ class KnackAPI {
             })();
 
             promises.push(promise);
-
-            if (staggerMs > 0 && index < total - 1) {
-                await new Promise(resolve => setTimeout(resolve, staggerMs));
-            }
         }
 
         await Promise.all(promises);
