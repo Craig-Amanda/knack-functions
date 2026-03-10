@@ -438,7 +438,7 @@ class KnackValueResolver {
      * @returns {boolean} Whether the request should preserve object-like structure.
      */
     isStructuredFieldType(fieldType) {
-        return ['date_time', 'name', 'address', 'phone', 'email', 'file', 'image'].includes(String(fieldType || '').trim().toLowerCase());
+        return ['date_time', 'name', 'address', 'phone', 'email', 'file', 'image', 'signature'].includes(String(fieldType || '').trim().toLowerCase());
     }
 
     /**
@@ -447,9 +447,7 @@ class KnackValueResolver {
      * @returns {string} Human-readable shape description.
      */
     getDisplayShapeForType(fieldType) {
-        if (fieldType === 'connection') return 'string-html';
-        if (fieldType === 'email' || fieldType === 'phone') return 'string-html';
-        return 'string';
+        return ['connection', 'email', 'phone'].includes(fieldType) ? 'string-html' : 'string';
     }
 
     /**
@@ -468,6 +466,7 @@ class KnackValueResolver {
         if (fieldType === 'email') return 'object{email,label}|string';
         if (fieldType === 'address') return 'object|string';
         if (fieldType === 'phone') return 'object{number,formatted,...}|string';
+        if (fieldType === 'signature') return 'object|string';
         if (fieldType === 'file' || fieldType === 'image') return 'object|string';
         return 'string|number|boolean';
     }
@@ -488,6 +487,7 @@ class KnackValueResolver {
         if (fieldType === 'email') return 'object{email,label}|string';
         if (fieldType === 'address') return 'object|string';
         if (fieldType === 'phone') return 'object{number,formatted,...}|string';
+        if (fieldType === 'signature') return 'object|string';
         if (fieldType === 'file' || fieldType === 'image') return 'object|string';
         return 'string';
     }
@@ -523,7 +523,6 @@ class KnackValueResolver {
      */
     toStructuredValue(primaryValue, fallbackValue) {
         if (primaryValue && typeof primaryValue === 'object') return primaryValue;
-        if (Array.isArray(primaryValue) && primaryValue.length) return primaryValue;
         if (typeof primaryValue === 'string') {
             const trimmed = primaryValue.trim();
             if (trimmed) return trimmed;
