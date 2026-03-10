@@ -168,6 +168,124 @@ class KnackValueResolver {
         return this.navigator?.getFieldType ? this.navigator.getFieldType(key) : '';
     }
 
+    /**
+     * Returns the expected read/write shape for a field based on Knack metadata.
+     * Write payloads always use the non-raw field key.
+     * @param {string|number} fieldKey - Field key with or without `field_` prefix.
+     * @returns {Object|null} Shape metadata for the field, or null when the field key is invalid.
+     * @example
+     * const shape = knackValueResolver.getFieldShape('field_6374');
+     * console.log(shape.write.key); // field_6374
+     */
+    getFieldShape(fieldKey) {
+        const key = this.normalizeFieldKey(fieldKey);
+        if (!key) return null;
+
+        const fieldType = this.getFieldType(key) || 'unknown';
+        return {
+            fieldKey: key,
+            rawKey: `${key}_raw`,
+            fieldType,
+            readOnly: this.isReadOnlyFieldType(fieldType),
+            read: {
+                displayKey: key,
+                displayShape: this.getDisplayShapeForType(fieldType),
+                rawKey: `${key}_raw`,
+                rawShape: this.getRawShapeForType(fieldType)
+            },
+            write: {
+                key,
+                usesRawKey: false,
+                supported: !this.isReadOnlyFieldType(fieldType),
+                valueShape: this.getWriteShapeForType(fieldType)
+            }
+        };
+    }
+
+    /**
+     * Describes the actual read/write values present on a record for a field.
+     * This is useful when copying Knack data into a POST/PUT payload without guessing at field shapes.
+     * @param {Object} record - Knack record returned by the API.
+     * @param {string|number} fieldKey - Field key with or without `field_` prefix.
+     * @param {Object} [options] - Optional settings.
+     * @param {boolean} [options.preferRaw=true] - Whether typed resolution should prefer `_raw` values.
+     * @returns {Object|null} Field shape and current values, or null when the field key is invalid.
+     * @example
+     * const fieldInfo = knackValueResolver.describeFieldValue(record, 'field_7587');
+     * console.log(fieldInfo.write.value); // structured value safe to use under field_7587
+     */
+    describeFieldValue(record, fieldKey, { preferRaw = true } = {}) {
+        const definition = this.getFieldShape(fieldKey);
+        if (!definition) return null;
+
+        const rawValue = record?.[definition.rawKey];
+        const displayValue = record?.[definition.fieldKey];
+        const typedValue = this.toTypedValue({
+            rawValue,
+            displayValue,
+            fieldType: definition.fieldType,
+            preferRaw
+        });
+        const requestValue = this.toRequestValue({
+            rawValue,
+            displayValue,
+            fieldType: definition.fieldType
+        });
+
+        return {
+            ...definition,
+            read: {
+                ...definition.read,
+                displayValue,
+                displayValueRuntimeShape: this.describeValueShape(displayValue),
+                rawValue,
+                rawValueRuntimeShape: this.describeValueShape(rawValue),
+                typedValue,
+                typedValueRuntimeShape: this.describeValueShape(typedValue)
+            },
+            write: {
+                ...definition.write,
+                value: requestValue,
+                runtimeShape: this.describeValueShape(requestValue)
+            }
+        };
+    }
+
+    /**
+     * Builds a POST/PUT payload using only non-raw field keys and type-aware values.
+     * Source values can come from a full Knack record or a partial object containing field keys.
+     * @param {Object} source - Record or payload-like object.
+     * @param {Array<string|number>} [fieldKeys=[]] - Specific field keys to include. When omitted, all non-raw field keys in source are considered.
+     * @returns {Object} Type-aware payload ready for Knack POST/PUT calls.
+     * @example
+     * const payload = knackValueResolver.buildRequestPayload(record, ['field_6374', 'field_7587']);
+     * // payload uses field_6374 / field_7587 keys, never *_raw keys
+     */
+    buildRequestPayload(source, fieldKeys = []) {
+        if (!source || typeof source !== 'object') return {};
+
+        const keys = Array.isArray(fieldKeys) && fieldKeys.length
+            ? fieldKeys
+            : Object.keys(source).filter((key) => /^field_\d+$/.test(String(key)));
+
+        return keys.reduce((payload, fieldKey) => {
+            const normalizedKey = this.normalizeFieldKey(fieldKey);
+            if (!normalizedKey) return payload;
+
+            const requestValue = this.toRequestValue({
+                rawValue: source?.[`${normalizedKey}_raw`],
+                displayValue: source?.[normalizedKey],
+                fieldType: this.getFieldType(normalizedKey)
+            });
+
+            if (requestValue !== undefined) {
+                payload[normalizedKey] = requestValue;
+            }
+
+            return payload;
+        }, {});
+    }
+
     resolve(record, fieldKey, { mode = 'typed', preferRaw = true, fallback = undefined } = {}) {
         const key = this.normalizeFieldKey(fieldKey);
         if (!record || !key) return fallback;
@@ -182,6 +300,10 @@ class KnackValueResolver {
         if (mode === 'api') {
             const apiValue = this.toApiValue({ rawValue, displayValue, fieldType });
             return apiValue === undefined ? fallback : apiValue;
+        }
+        if (mode === 'request') {
+            const requestValue = this.toRequestValue({ rawValue, displayValue, fieldType });
+            return requestValue === undefined ? fallback : requestValue;
         }
 
         const typedValue = this.toTypedValue({ rawValue, displayValue, fieldType, preferRaw });
@@ -231,6 +353,57 @@ class KnackValueResolver {
         return undefined;
     }
 
+    /**
+     * Normalizes a field value into the non-raw value shape expected for Knack POST/PUT payloads.
+     * @param {Object} input - Source values and field metadata.
+     * @param {*} input.rawValue - `_raw` field value from a Knack record.
+     * @param {*} input.displayValue - Non-raw/display field value from a Knack record.
+     * @param {string} input.fieldType - Knack field type.
+     * @returns {*} A type-aware request value, or undefined when the field should not be written.
+     */
+    toRequestValue({ rawValue, displayValue, fieldType }) {
+        const sourceValue = rawValue !== undefined ? rawValue : displayValue;
+        if (sourceValue === undefined || sourceValue === null || sourceValue === '') {
+            return undefined;
+        }
+
+        if (this.isReadOnlyFieldType(fieldType)) {
+            return undefined;
+        }
+
+        if (fieldType === 'connection') {
+            const ids = this.toConnectionIds(sourceValue);
+            if (!ids.length) return undefined;
+            return Array.isArray(sourceValue) ? ids : (ids[0] ?? undefined);
+        }
+
+        if (fieldType === 'multiple_choice') {
+            const values = this.toStringArray(sourceValue);
+            if (!values.length) return undefined;
+            return Array.isArray(sourceValue) ? values : (values[0] ?? undefined);
+        }
+
+        if (fieldType === 'boolean') {
+            return this.toBooleanValue(sourceValue);
+        }
+
+        if (fieldType === 'number' || fieldType === 'currency') {
+            return this.toNumberValue(sourceValue);
+        }
+
+        if (this.isStructuredFieldType(fieldType)) {
+            const structuredValue = this.toStructuredValue(sourceValue, displayValue);
+            return structuredValue === undefined ? undefined : structuredValue;
+        }
+
+        if (typeof sourceValue === 'string') {
+            const trimmed = sourceValue.trim();
+            return trimmed ? trimmed : undefined;
+        }
+
+        return sourceValue;
+    }
+
     toConnectionIds(value) {
         if (!value) return [];
         if (Array.isArray(value)) {
@@ -248,6 +421,149 @@ class KnackValueResolver {
         }
         const primitiveId = String(value || '').trim();
         return primitiveId ? [primitiveId] : [];
+    }
+
+    /**
+     * Returns true when the field type is calculated or otherwise not suitable for direct writes.
+     * @param {string} fieldType - Knack field type.
+     * @returns {boolean} Whether the field should be omitted from POST/PUT payloads.
+     */
+    isReadOnlyFieldType(fieldType) {
+        return ['auto_increment', 'equation', 'concatenation'].includes(String(fieldType || '').trim().toLowerCase());
+    }
+
+    /**
+     * Returns true when the field uses a structured object value in `_raw` form.
+     * @param {string} fieldType - Knack field type.
+     * @returns {boolean} Whether the request should preserve object-like structure.
+     */
+    isStructuredFieldType(fieldType) {
+        return ['date_time', 'name', 'address', 'phone', 'email', 'file', 'image', 'signature'].includes(String(fieldType || '').trim().toLowerCase());
+    }
+
+    /**
+     * Returns the expected display shape for a field type.
+     * @param {string} fieldType - Knack field type.
+     * @returns {string} Human-readable shape description.
+     */
+    getDisplayShapeForType(fieldType) {
+        return ['connection', 'email', 'phone'].includes(fieldType) ? 'string-html' : 'string';
+    }
+
+    /**
+     * Returns the expected `_raw` shape for a field type.
+     * @param {string} fieldType - Knack field type.
+     * @returns {string} Human-readable shape description.
+     */
+    getRawShapeForType(fieldType) {
+        if (fieldType === 'connection') return 'array<object{id,identifier}>';
+        if (fieldType === 'multiple_choice') return 'string|array<string>';
+        if (fieldType === 'boolean') return 'boolean';
+        if (fieldType === 'number') return 'number';
+        if (fieldType === 'currency') return 'number|string';
+        if (fieldType === 'date_time') return 'object{date,timestamp,iso_timestamp,...}';
+        if (fieldType === 'name') return 'object{first,middle,last,title,full}';
+        if (fieldType === 'email') return 'object{email,label}|string';
+        if (fieldType === 'address') return 'object|string';
+        if (fieldType === 'phone') return 'object{number,formatted,...}|string';
+        if (fieldType === 'signature') return 'object|string';
+        if (fieldType === 'file' || fieldType === 'image') return 'object|string';
+        return 'string|number|boolean';
+    }
+
+    /**
+     * Returns the expected request payload shape for a field type.
+     * @param {string} fieldType - Knack field type.
+     * @returns {string} Human-readable shape description.
+     */
+    getWriteShapeForType(fieldType) {
+        if (this.isReadOnlyFieldType(fieldType)) return 'unsupported';
+        if (fieldType === 'connection') return 'recordId|array<recordId>';
+        if (fieldType === 'multiple_choice') return 'string|array<string>';
+        if (fieldType === 'boolean') return 'boolean';
+        if (fieldType === 'number' || fieldType === 'currency') return 'number';
+        if (fieldType === 'date_time') return 'object|string';
+        if (fieldType === 'name') return 'object{first,middle,last,title}|string';
+        if (fieldType === 'email') return 'object{email,label}|string';
+        if (fieldType === 'address') return 'object|string';
+        if (fieldType === 'phone') return 'object{number,formatted,...}|string';
+        if (fieldType === 'signature') return 'object|string';
+        if (fieldType === 'file' || fieldType === 'image') return 'object|string';
+        return 'string';
+    }
+
+    /**
+     * Returns a simple runtime shape label for a value.
+     * @param {*} value - Value to inspect.
+     * @returns {string} Runtime shape label.
+     */
+    describeValueShape(value) {
+        if (value === undefined) return 'undefined';
+        if (value === null) return 'null';
+        if (Array.isArray(value)) {
+            if (!value.length) return 'array<empty>';
+            const firstShape = this.describeValueShape(value[0]);
+            return `array<${firstShape}>`;
+        }
+        if (typeof value === 'string') return value === '' ? 'empty-string' : 'string';
+        if (typeof value === 'number') return Number.isFinite(value) ? 'number' : 'number-non-finite';
+        if (typeof value === 'boolean') return 'boolean';
+        if (typeof value === 'object') {
+            const keys = Object.keys(value);
+            return keys.length ? `object{${keys.slice(0, 5).join(',')}}` : 'object{}';
+        }
+        return typeof value;
+    }
+
+    /**
+     * Preserves structured raw objects when present, otherwise falls back to a trimmed display string.
+     * @param {*} primaryValue - Usually the `_raw` value.
+     * @param {*} fallbackValue - Usually the non-raw/display value.
+     * @returns {*} Structured or primitive value suitable for request payloads.
+     */
+    toStructuredValue(primaryValue, fallbackValue) {
+        if (primaryValue && typeof primaryValue === 'object') return primaryValue;
+        if (typeof primaryValue === 'string') {
+            const trimmed = primaryValue.trim();
+            if (trimmed) return trimmed;
+        }
+        if (fallbackValue && typeof fallbackValue === 'object') return fallbackValue;
+        if (typeof fallbackValue === 'string') {
+            const trimmed = fallbackValue.trim();
+            return trimmed ? trimmed : undefined;
+        }
+        return fallbackValue === '' ? undefined : fallbackValue;
+    }
+
+    /**
+     * Converts Knack display/raw boolean values into a boolean.
+     * @param {*} value - Raw or display value.
+     * @returns {boolean|undefined} Parsed boolean when recognized.
+     */
+    toBooleanValue(value) {
+        if (typeof value === 'boolean') return value;
+        const normalized = String(value || '').trim().toLowerCase();
+        if (!normalized) return undefined;
+        if (['true', 'yes', '1'].includes(normalized)) return true;
+        if (['false', 'no', '0'].includes(normalized)) return false;
+        return undefined;
+    }
+
+    /**
+     * Converts numeric-like Knack values into finite numbers where possible.
+     * @param {*} value - Raw or display value.
+     * @returns {number|undefined} Parsed number when recognized.
+     */
+    toNumberValue(value) {
+        if (typeof value === 'number') {
+            return Number.isFinite(value) ? value : undefined;
+        }
+
+        const normalized = String(value || '').replace(/,/g, '').replace(/[^0-9.+-]/g, '').trim();
+        if (!normalized) return undefined;
+
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : undefined;
     }
 
     /**
@@ -4964,7 +5280,7 @@ function filterSelectByText(viewId, fieldTofilter, textToMatch){
  */
 class KnackAPI {
     static get DEFAULT_WRITE_CONCURRENCY() {
-        return 3;
+        return 6;
     }
 
     /**
@@ -4975,34 +5291,49 @@ class KnackAPI {
      * @param {boolean} [options.debug=false] - Whether to log debug information to console
      * @param {boolean} [options.developerOnly=true] - Whether to restrict logs to developers only
      * @param {Array<string>} [options.developerRoles=['Developer']] - User roles considered as developers
-     * @param {number} [options.writeConcurrency=3] - Max concurrent create/update/delete requests (use Infinity for no limit)
+    * @param {number} [options.writeConcurrency=6] - Max concurrent create/update/delete requests (use Infinity for no limit)
      * @param {number} [options.retry429MaxAttempts=4] - Max attempts for 429 responses (initial + retries)
      * @param {number} [options.retry429BaseDelayMs=500] - Base delay in ms for exponential 429 backoff
      * @param {number} [options.retry429MaxDelayMs=10000] - Max delay in ms for 429 backoff
      */
     constructor(options = {}) {
         this.options = {
-            showSpinner: options.showSpinner !== undefined ? options.showSpinner : false,
-            timeout: options.timeout || 60000,
-            debug: options.debug || false,
+            showSpinner: options.showSpinner === true,
+            timeout: Number.isFinite(options.timeout) ? options.timeout : 60000,
+            debug: options.debug === true,
             developerOnly: options.developerOnly !== undefined ? options.developerOnly : true,
             developerRoles: options.developerRoles || ['Developer'],
+            maxRetries: Number.isFinite(options.maxRetries)
+                ? options.maxRetries
+                : (Number.isInteger(options.retry429MaxAttempts) && options.retry429MaxAttempts > 0
+                    ? Math.max(0, options.retry429MaxAttempts - 1)
+                    : 2),
+            retryDelayBase: Number.isFinite(options.retryDelayBase)
+                ? options.retryDelayBase
+                : (Number.isFinite(options.retry429BaseDelayMs) && options.retry429BaseDelayMs >= 0
+                    ? options.retry429BaseDelayMs
+                    : 300),
+            retryDelayMax: Number.isFinite(options.retryDelayMax)
+                ? options.retryDelayMax
+                : (Number.isFinite(options.retry429MaxDelayMs) && options.retry429MaxDelayMs >= 0
+                    ? options.retry429MaxDelayMs
+                    : 20000),
+            retryDelayMin429: Number.isFinite(options.retryDelayMin429) ? options.retryDelayMin429 : 1000,
+            retryOnStatus: Array.isArray(options.retryOnStatus)
+                ? options.retryOnStatus
+                : [429, 500, 502, 503, 504],
             writeConcurrency: options.writeConcurrency,
-            retry429MaxAttempts: Number.isInteger(options.retry429MaxAttempts) && options.retry429MaxAttempts > 0 ? options.retry429MaxAttempts : 4,
-            retry429BaseDelayMs: Number.isFinite(options.retry429BaseDelayMs) && options.retry429BaseDelayMs >= 0 ? options.retry429BaseDelayMs : 500,
-            retry429MaxDelayMs: Number.isFinite(options.retry429MaxDelayMs) && options.retry429MaxDelayMs >= 0 ? options.retry429MaxDelayMs : 10000,
+            writeRatePerSecond: Number.isFinite(options.writeRatePerSecond) ? options.writeRatePerSecond : 9,
+            writeMinConcurrency: Number.isFinite(options.writeMinConcurrency) ? options.writeMinConcurrency : 1,
+            writeMaxConcurrency: Number.isFinite(options.writeMaxConcurrency) ? options.writeMaxConcurrency : options.writeConcurrency,
+            writeRampDelayMs: Number.isFinite(options.writeRampDelayMs) ? options.writeRampDelayMs : 2000,
         };
         this.options.writeConcurrency = this._resolveWriteConcurrency(this.options.writeConcurrency);
 
         this._activeRequests = 0;
-        this._activeWrites = 0;
-        this._writeQueue = [];
-        this._isDraining = false;
-        this._drainScheduled = false;
-        this._drainScheduler = typeof queueMicrotask === 'function'
-            ? (fn) => queueMicrotask(fn)
-            : (fn) => setTimeout(fn, 0);
+        this._inflightGets = new Map();
         this._initLogSettings();
+        this._initWriteQueue();
     }
 
     /**
@@ -5019,57 +5350,14 @@ class KnackAPI {
      * @public
      */
     async getRecords(sceneId, viewId, options = {}) {
-        const {
-            filters,
-            sorters,
-            page,
-            rows,
-            rawResponse = false,
-            timeout
-        } = options;
-
-        let params = {};
-
-        // Add filters if provided
-        if (filters) {
-            params = { ...params, ...this.buildFilters(filters) };
-            this._log('Filters', params);
-        }
-
-        // Add sorters if provided
-        if (sorters) {
-            params = { ...params, ...this.buildSorters(sorters) };
-            this._log('Sorters', params);
-        }
-
-        // Add pagination if provided
-        if (page) {
-            params.page = page;
-        }
-
-        if (rows) {
-            params.rows_per_page = rows;
-        }
+        const opts = options || {};
+        const params = this._buildQueryParams(opts);
 
         const url = this._formatApiUrl(sceneId, viewId) + this._formatParams(params);
         this._log('Getting records', url);
 
-        const { signal, clear } = this._createAbortController(timeout);
-
-        try {
-            const responseData = await this._executeRequest(
-                url,
-                {
-                    method: 'GET',
-                    headers: this._buildHeaders()
-                },
-                signal
-            );
-
-            return rawResponse ? responseData : responseData.records;
-        } finally {
-            clear();
-        }
+        const responseData = await this._request(url, { method: 'GET' }, opts.timeout);
+        return opts.rawResponse ? responseData : responseData?.records;
     }
 
     /**
@@ -5085,52 +5373,64 @@ class KnackAPI {
      * @public
      */
     async getAllRecords(sceneId, viewId, options = {}) {
-        const {
-            filters,
-            sorters,
-            rows = 1000,
-            onProgress
-        } = options;
+        const opts = options || {};
+        const rows = Number.isFinite(opts.rows) ? opts.rows : 1000;
+        const pageConcurrency = Number.isFinite(opts.pageConcurrency) && opts.pageConcurrency > 0
+            ? Math.floor(opts.pageConcurrency)
+            : 5;
+        const pageOpts = { filters: opts.filters, sorters: opts.sorters, rows, rawResponse: true, timeout: opts.timeout };
+        const failOnPageError = Boolean(opts.failOnPageError);
 
-        // Fetch first page to get pagination info
-        const firstPage = await this.getRecords(sceneId, viewId, {
-            filters,
-            sorters,
-            page: 1,
-            rows,
-            rawResponse: true
-        });
+        const firstPage = await this.getRecords(sceneId, viewId, { ...pageOpts, page: 1 });
+        const totalPages = Number(firstPage?.total_pages || 0);
+        const totalRecords = Number(firstPage?.total_records || 0);
+        const allRecords = Array.isArray(firstPage?.records) ? [...firstPage.records] : [];
 
-        const { total_pages, total_records, records: initialRecords } = firstPage;
+        this._log('Fetching all records', { totalPages, totalRecords });
 
-        this._log('Fetching all records', { total_pages, total_records });
-
-        if (total_records === 0) {
-            return [];
+        if (totalRecords === 0 || totalPages <= 1) {
+            return allRecords;
         }
 
-        const allRecords = [...initialRecords];
+        for (let batchStart = 2; batchStart <= totalPages; batchStart += pageConcurrency) {
+            const batchEnd = Math.min(totalPages, batchStart + pageConcurrency - 1);
+            const pageNumbers = [];
+            for (let page = batchStart; page <= batchEnd; page++) pageNumbers.push(page);
 
-        for (let page = 2; page <= total_pages; page++) {
-            const nextPage = await this.getRecords(sceneId, viewId, {
-                filters,
-                sorters,
-                page,
-                rows,
-                rawResponse: true
-            });
+            const batchResults = await Promise.allSettled(
+                pageNumbers.map(page => this.getRecords(sceneId, viewId, { ...pageOpts, page }))
+            );
 
-            allRecords.push(...nextPage.records);
+            for (let index = 0; index < batchResults.length; index++) {
+                const result = batchResults[index];
+                const page = pageNumbers[index];
 
-            if (onProgress) {
-                const progress = {
+                if (result.status === 'fulfilled') {
+                    const nextPage = result.value;
+                    if (Array.isArray(nextPage?.records)) allRecords.push(...nextPage.records);
+                    continue;
+                }
+
+                this._log('Page fetch failed', {
+                    sceneId,
+                    viewId,
                     page,
-                    total_pages,
-                    records_loaded: allRecords.length,
-                    total_records,
-                    percentage: Math.round((page / total_pages) * 100)
-                };
-                onProgress(progress);
+                    error: result.reason?.message || result.reason
+                }, 'warn');
+
+                if (failOnPageError) {
+                    throw result.reason;
+                }
+            }
+
+            if (typeof opts.onProgress === 'function') {
+                opts.onProgress({
+                    page: batchEnd,
+                    totalPages,
+                    recordsLoaded: allRecords.length,
+                    totalRecords,
+                    percentage: Math.round((batchEnd / totalPages) * 100)
+                });
             }
         }
 
@@ -5154,35 +5454,8 @@ class KnackAPI {
      * @public
      */
     async getRecordChildren(sceneId, viewId, recordId, connectionFieldKey, options = {}) {
-        const {
-            filters,
-            sorters,
-            page,
-            rows,
-            rawResponse = false,
-            timeout
-        } = options;
-
-        let params = {};
-
-        // Add filters if provided
-        if (filters) {
-            params = { ...params, ...this.buildFilters(filters) };
-        }
-
-        // Add sorters if provided
-        if (sorters) {
-            params = { ...params, ...this.buildSorters(sorters) };
-        }
-
-        // Add pagination if provided
-        if (page) {
-            params.page = page;
-        }
-
-        if (rows) {
-            params.rows_per_page = rows;
-        }
+        const opts = options || {};
+        const params = this._buildQueryParams(opts);
 
         // Format URL for child records
         // For view-based API, we use the pattern:
@@ -5195,22 +5468,8 @@ class KnackAPI {
         const formattedUrl = url + this._formatParams(params);
         this._log('Getting child records', formattedUrl);
 
-        const { signal, clear } = this._createAbortController(timeout);
-
-        try {
-            const responseData = await this._executeRequest(
-                formattedUrl,
-                {
-                    method: 'GET',
-                    headers: this._buildHeaders()
-                },
-                signal
-            );
-
-            return rawResponse ? responseData : responseData.records;
-        } finally {
-            clear();
-        }
+        const responseData = await this._request(formattedUrl, { method: 'GET' }, opts.timeout);
+        return opts.rawResponse ? responseData : responseData?.records;
     }
 
     /**
@@ -5226,52 +5485,66 @@ class KnackAPI {
      * @public
      */
     async getAllRecordChildren(sceneId, viewId, recordId, connectionFieldKey, options = {}) {
-        const {
-            filters,
-            sorters,
-            rows = 1000,
-            onProgress
-        } = options;
+        const opts = options || {};
+        const rows = Number.isFinite(opts.rows) ? opts.rows : 1000;
+        const pageConcurrency = Number.isFinite(opts.pageConcurrency) && opts.pageConcurrency > 0
+            ? Math.floor(opts.pageConcurrency)
+            : 5;
+        const pageOpts = { filters: opts.filters, sorters: opts.sorters, rows, rawResponse: true, timeout: opts.timeout };
+        const failOnPageError = Boolean(opts.failOnPageError);
 
-        // Get initial page to determine pagination
-        const firstPage = await this.getRecordChildren(sceneId, viewId, recordId, connectionFieldKey, {
-            filters,
-            sorters,
-            page: 1,
-            rows,
-            rawResponse: true
-        });
+        const firstPage = await this.getRecordChildren(sceneId, viewId, recordId, connectionFieldKey, { ...pageOpts, page: 1 });
+        const totalPages = Number(firstPage?.total_pages || 0);
+        const totalRecords = Number(firstPage?.total_records || 0);
+        const allRecords = Array.isArray(firstPage?.records) ? [...firstPage.records] : [];
 
-        const { total_pages, total_records, records: initialRecords } = firstPage;
+        this._log('Fetching all child records', { totalPages, totalRecords });
 
-        this._log('Fetching all child records', { total_pages, total_records });
-
-        if (total_records === 0) {
-            return [];
+        if (totalRecords === 0 || totalPages <= 1) {
+            return allRecords;
         }
 
-        const allRecords = [...initialRecords];
+        for (let batchStart = 2; batchStart <= totalPages; batchStart += pageConcurrency) {
+            const batchEnd = Math.min(totalPages, batchStart + pageConcurrency - 1);
+            const pageNumbers = [];
+            for (let page = batchStart; page <= batchEnd; page++) pageNumbers.push(page);
 
-        for (let page = 2; page <= total_pages; page++) {
-            const nextPage = await this.getRecordChildren(sceneId, viewId, recordId, connectionFieldKey, {
-                filters,
-                sorters,
-                page,
-                rows,
-                rawResponse: true
-            });
+            const batchResults = await Promise.allSettled(
+                pageNumbers.map(page => this.getRecordChildren(sceneId, viewId, recordId, connectionFieldKey, { ...pageOpts, page }))
+            );
 
-            allRecords.push(...nextPage.records);
+            for (let index = 0; index < batchResults.length; index++) {
+                const result = batchResults[index];
+                const page = pageNumbers[index];
 
-            if (onProgress) {
-                const progress = {
+                if (result.status === 'fulfilled') {
+                    const nextPage = result.value;
+                    if (Array.isArray(nextPage?.records)) allRecords.push(...nextPage.records);
+                    continue;
+                }
+
+                this._log('Child page fetch failed', {
+                    sceneId,
+                    viewId,
+                    recordId,
+                    connectionFieldKey,
                     page,
-                    total_pages,
-                    records_loaded: allRecords.length,
-                    total_records,
-                    percentage: Math.round((page / total_pages) * 100)
-                };
-                onProgress(progress);
+                    error: result.reason?.message || result.reason
+                }, 'warn');
+
+                if (failOnPageError) {
+                    throw result.reason;
+                }
+            }
+
+            if (typeof opts.onProgress === 'function') {
+                opts.onProgress({
+                    page: batchEnd,
+                    totalPages,
+                    recordsLoaded: allRecords.length,
+                    totalRecords,
+                    percentage: Math.round((batchEnd / totalPages) * 100)
+                });
             }
         }
 
@@ -5303,30 +5576,27 @@ class KnackAPI {
      * @public
      */
     async createRecord(sceneId, viewId, recordData, options = {}) {
+        this._assertWriteOptions(options, 'createRecord');
         const opts = options || {};
         const url = this._formatApiUrl(sceneId, viewId);
         this._log('Creating record', { url, data: recordData });
         const preparedRecordData = await this._prepareRecordData(recordData, opts);
+        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
 
-        return this._scheduleWrite(async () => {
-            const { signal, clear } = this._createAbortController(opts.timeout);
+        return this._enqueueWrite(async () => {
+            const result = await this._request(
+                url,
+                {
+                    method: 'POST',
+                    body: this._prepareBody(preparedRecordData),
+                    rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
+                    onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
+                },
+                opts.timeout
+            );
 
-            try {
-                const result = await this._executeRequest(
-                    url,
-                    {
-                        method: 'POST',
-                        headers: this._buildHeaders(),
-                        body: JSON.stringify(preparedRecordData)
-                    },
-                    signal
-                );
-                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
-                if (effectiveRefresh) await this.refreshView(effectiveRefresh);
-                return result;
-            } finally {
-                clear();
-            }
+            await this._refreshAfterWrite(effectiveRefresh);
+            return result;
         });
     }
 
@@ -5348,67 +5618,68 @@ class KnackAPI {
      * @public
      */
     async createRecords(sceneId, viewId, recordsData, options = {}) {
+        this._assertWriteOptions(options, 'createRecords');
         if (!Array.isArray(recordsData)) {
             throw new Error('recordsData must be an array');
         }
 
-        const opts = options || {};
         const payloads = recordsData.filter(Boolean);
         const total = payloads.length;
         if (!total) return { total: 0, created: 0, failed: 0, records: [] };
 
-        const requestOptions = { ...opts, refreshViews: null };
-        const staggerMs = Number.isFinite(opts.staggerMs) ? Math.max(0, Number(opts.staggerMs)) : 0;
         let created = 0;
         let failed = 0;
+        let rateLimit429Count = 0;
         let firstError = null;
-        const createdRecords = new Array(total);
-        const hasOnProgress = typeof opts.onProgress === 'function';
+        const failedIndices = [];
+        const createdRecords = [];
+        const effectiveRefresh = this._normalizeRefreshViews(options?.refreshViews);
+        const batchOptions = { ...(options || {}) };
+        delete batchOptions.refreshViews;
+        const { opts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
+            rateLimit429Count += 1;
+        });
 
-        const taskPromises = payloads.map((payload, index) => (async () => {
-            if (staggerMs > 0 && index > 0) {
-                await new Promise(resolve => setTimeout(resolve, staggerMs * index));
+        try {
+            const batchResult = await this._runBatchWorkers({
+                total,
+                workerCount,
+                staggerMs,
+                continueOnError: opts.continueOnError,
+                execute: async (index) => {
+                    try {
+                        const record = await this.createRecord(sceneId, viewId, payloads[index], requestOptions);
+                        created += 1;
+                        createdRecords[index] = record;
+                        if (typeof opts.onProgress === 'function') {
+                            opts.onProgress({ created, failed, total, index, record });
+                        }
+                    } catch (error) {
+                        failed += 1;
+                        failedIndices.push(index);
+                        if (typeof opts.onProgress === 'function') {
+                            opts.onProgress({ created, failed, total, index, error });
+                        }
+                        if (!opts.continueOnError) {
+                            throw error;
+                        }
+                    }
+                }
+            });
+            firstError = batchResult.firstError;
+
+            await this._refreshAfterWrite(effectiveRefresh);
+            this._logBatchFailures('KNF_1028', 'create', `${sceneId}/${viewId}`, failedIndices.length, total, `at indices: ${failedIndices.join(', ')}`);
+
+            if (firstError && !opts.continueOnError) {
+                throw firstError;
             }
 
-            try {
-                const record = await this.createRecord(sceneId, viewId, payload, requestOptions);
-                created += 1;
-                createdRecords[index] = record;
-                if (hasOnProgress) {
-                    opts.onProgress({ created, failed, total, index, record });
-                }
-                return record;
-            } catch (error) {
-                failed += 1;
-                if (!firstError) firstError = error;
-                if (hasOnProgress) {
-                    opts.onProgress({ created, failed, total, index, error });
-                }
-                if (!opts.continueOnError) {
-                    throw error;
-                }
-                return null;
-            }
-        })());
-
-        if (opts.continueOnError) {
-            await Promise.all(taskPromises);
-        } else {
-            try {
-                await Promise.all(taskPromises);
-            } catch (e) {
-                // firstError has been captured inside each task; handled below
-            }
+            return { total, created, failed, records: createdRecords.filter(Boolean) };
+        } finally {
+            const processed = created + failed;
+            this._logBatchSummary('create', `${sceneId}/${viewId}`, processed, total, rateLimit429Count);
         }
-
-        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
-        if (effectiveRefresh) await this.refreshView(effectiveRefresh);
-
-        if (firstError && !opts.continueOnError) {
-            throw firstError;
-        }
-
-        return { total, created, failed, records: createdRecords.filter(Boolean) };
     }
 
     /**
@@ -5440,29 +5711,25 @@ class KnackAPI {
         const formData = new FormData();
         formData.append('files', file, uploadFileName);
 
-        return this._scheduleWrite(async () => {
-            const { signal, clear } = this._createAbortController(opts.timeout);
+        return this._enqueueWrite(async () => {
+            const result = await this._request(
+                url,
+                {
+                    method: 'POST',
+                    headers: this._buildUploadHeaders(),
+                    body: formData,
+                    rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
+                    onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
+                },
+                opts.timeout
+            );
 
-            try {
-                const result = await this._executeRequest(
-                    url,
-                    {
-                        method: 'POST',
-                        headers: this._buildUploadHeaders(),
-                        body: formData
-                    },
-                    signal
-                );
-
-                const asset = Array.isArray(result) ? result[0] : result;
-                if (!asset || !asset.id) {
-                    throw new Error('KnackAPI uploadAsset succeeded but no asset id was returned.');
-                }
-
-                return asset;
-            } finally {
-                clear();
+            const asset = Array.isArray(result) ? result[0] : result;
+            if (!asset || !asset.id) {
+                throw new Error('KnackAPI uploadAsset succeeded but no asset id was returned.');
             }
+
+            return asset;
         });
     }
 
@@ -5548,65 +5815,59 @@ class KnackAPI {
      * @public
      */
     async updateRecord(sceneId, viewId, recordId, recordData, options = {}) {
+        this._assertWriteOptions(options, 'updateRecord');
         const opts = options || {};
         const preparedRecordData = await this._prepareRecordData(recordData, opts);
+        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
 
-        return this._scheduleWrite(async () => {
+        return this._enqueueWrite(async () => {
             const url = this._formatApiUrl(sceneId, viewId, recordId);
             this._log('Updating record', { url, data: recordData });
 
-            const { signal, clear } = this._createAbortController(opts.timeout);
+            const result = await this._request(
+                url,
+                {
+                    method: 'PUT',
+                    body: this._prepareBody(preparedRecordData),
+                    rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
+                    onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
+                },
+                opts.timeout
+            );
 
             try {
-                const result = await this._executeRequest(
-                    url,
-                    {
-                        method: 'PUT',
-                        headers: this._buildHeaders(),
-                        body: JSON.stringify(preparedRecordData)
-                    },
-                    signal
-                );
+                const recordObj = result?.record ?? result;
+                const requestedKeys = Object.keys(recordData || {});
+                const failed = [];
+                for (const key of requestedKeys) {
+                    const sentVal = recordData[key];
+                    const gotVal = this._extractResponseValueFromRecord(recordObj, key);
 
-                // --- basic verification & logging (non-breaking) ---
-                try {
-                    const recordObj = result?.record ?? result; // handle both shapes defensively
-                    const requestedKeys = Object.keys(recordData || {});
-                    const failed = [];
-                    for (const key of requestedKeys) {
-                        const sentVal = recordData[key];
-                        const gotVal = this._extractResponseValueFromRecord(recordObj, key);
-
-                        if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
-                            failed.push({
-                                field: key,
-                                sent: sentVal,
-                                received: gotVal
-                            });
-                        }
+                    if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
+                        failed.push({
+                            field: key,
+                            sent: sentVal,
+                            received: gotVal
+                        });
                     }
-
-                    if (failed.length > 0) {
-                        const failedFields = failed.map(f => f.field).join(', ');
-                        this._log('Field update verification: failures detected', {
-                            sceneId,
-                            viewId,
-                            recordId,
-                            failedFields,
-                            failedCount: failed.length
-                        }, 'warn');
-                    }
-                } catch (verifyErr) {
-                    this._log('Field update verification error', verifyErr, 'error');
                 }
-                // --- end verification ---
 
-                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
-                if (effectiveRefresh) await this.refreshView(effectiveRefresh);
-                return result;
-            } finally {
-                clear();
+                if (failed.length > 0) {
+                    const failedFields = failed.map(f => f.field).join(', ');
+                    this._log('Field update verification: failures detected', {
+                        sceneId,
+                        viewId,
+                        recordId,
+                        failedFields,
+                        failedCount: failed.length
+                    }, 'warn');
+                }
+            } catch (verifyErr) {
+                this._log('Field update verification error', verifyErr, 'error');
             }
+
+            await this._refreshAfterWrite(effectiveRefresh);
+            return result;
         });
     }
 
@@ -5629,6 +5890,7 @@ class KnackAPI {
      * @public
      */
     async updateRecords(sceneId, viewId, recordIds, recordData, options = {}) {
+        this._assertWriteOptions(options, 'updateRecords');
         if (!Array.isArray(recordIds)) {
             throw new Error('recordIds must be an array');
         }
@@ -5659,49 +5921,58 @@ class KnackAPI {
         const total = records.length;
         if (!total) return { total: 0, updated: 0, failed: 0 };
 
-        const requestOptions = { ...opts, refreshViews: null };
-        const staggerMs = Number.isFinite(opts.staggerMs) ? Math.max(0, Number(opts.staggerMs)) : 0;
+        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+        const batchOptions = { ...opts };
+        delete batchOptions.refreshViews;
         let updated = 0;
         let failed = 0;
+        let rateLimit429Count = 0;
         let firstError = null;
+        const failedRecordIds = [];
+        const { opts: batchOpts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
+            rateLimit429Count += 1;
+        });
 
-        const promises = [];
-        for (let index = 0; index < total; index++) {
-            const { id: recordId, data } = records[index];
-
-            const promise = (async () => {
-                if (staggerMs > 0 && index > 0) {
-                    await new Promise(resolve => setTimeout(resolve, staggerMs * index));
-                }
-
-                try {
-                    await this.updateRecord(sceneId, viewId, recordId, data, requestOptions);
-                    updated += 1;
-                    if (typeof opts.onProgress === 'function') {
-                        opts.onProgress({ updated, failed, total, recordId });
+        try {
+            const batchResult = await this._runBatchWorkers({
+                total,
+                workerCount,
+                staggerMs,
+                continueOnError: batchOpts.continueOnError,
+                execute: async (index) => {
+                    const { id: recordId, data } = records[index];
+                    try {
+                        await this.updateRecord(sceneId, viewId, recordId, data, requestOptions);
+                        updated += 1;
+                        if (typeof batchOpts.onProgress === 'function') {
+                            batchOpts.onProgress({ updated, failed, total, recordId });
+                        }
+                    } catch (error) {
+                        failed += 1;
+                        failedRecordIds.push(recordId);
+                        if (typeof batchOpts.onProgress === 'function') {
+                            batchOpts.onProgress({ updated, failed, total, recordId, error });
+                        }
+                        if (!batchOpts.continueOnError) {
+                            throw error;
+                        }
                     }
-                } catch (error) {
-                    failed += 1;
-                    if (!firstError) firstError = error;
-                    if (typeof opts.onProgress === 'function') {
-                        opts.onProgress({ updated, failed, total, recordId, error });
-                    }
                 }
-            })();
+            });
+            firstError = batchResult.firstError;
 
-            promises.push(promise);
+            await this._refreshAfterWrite(effectiveRefresh);
+            this._logBatchFailures('KNF_1029', 'update', `${sceneId}/${viewId}`, failedRecordIds.length, total, `: ${failedRecordIds.join(', ')}`);
+
+            if (firstError && !batchOpts.continueOnError) {
+                throw firstError;
+            }
+
+            return { total, updated, failed };
+        } finally {
+            const processed = updated + failed;
+            this._logBatchSummary('update', `${sceneId}/${viewId}`, processed, total, rateLimit429Count);
         }
-
-        await Promise.all(promises);
-
-        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
-        if (effectiveRefresh) await this.refreshView(effectiveRefresh);
-
-        if (firstError && !opts.continueOnError) {
-            throw firstError;
-        }
-
-        return { total, updated, failed };
     }
 
 
@@ -5755,28 +6026,23 @@ class KnackAPI {
      * @public
      */
     async deleteRecord(sceneId, viewId, recordId, options = {}) {
-        return this._scheduleWrite(async () => {
-            const opts = options || {};
+        this._assertWriteOptions(options, 'deleteRecord');
+        const opts = options || {};
+        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+        return this._enqueueWrite(async () => {
             const url = this._formatApiUrl(sceneId, viewId, recordId);
             this._log('Deleting record', url);
-
-            const { signal, clear } = this._createAbortController(opts.timeout);
-
-            try {
-                const result = await this._executeRequest(
-                    url,
-                    {
-                        method: 'DELETE',
-                        headers: this._buildHeaders()
-                    },
-                    signal
-                );
-                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
-                if (effectiveRefresh) await this.refreshView(effectiveRefresh);
-                return result;
-            } finally {
-                clear();
-            }
+            const result = await this._request(
+                url,
+                {
+                    method: 'DELETE',
+                    rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
+                    onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
+                },
+                opts.timeout
+            );
+            await this._refreshAfterWrite(effectiveRefresh);
+            return result;
         });
     }
 
@@ -5795,6 +6061,7 @@ class KnackAPI {
      * @public
      */
     async deleteRecords(sceneId, viewId, recordIds, options = {}) {
+        this._assertWriteOptions(options, 'deleteRecords');
         if (!Array.isArray(recordIds)) {
             throw new Error('recordIds must be an array');
         }
@@ -5804,66 +6071,58 @@ class KnackAPI {
         const total = ids.length;
         if (!total) return { total: 0, deleted: 0, failed: 0 };
 
-        const requestOptions = { ...opts, refreshViews: null };
-        const staggerMs = Number.isFinite(opts.staggerMs) ? Math.max(0, Number(opts.staggerMs)) : 0;
         let deleted = 0;
         let failed = 0;
+        let rateLimit429Count = 0;
         let firstError = null;
+        const failedRecordIds = [];
+        const effectiveRefresh = this._normalizeRefreshViews(options?.refreshViews);
+        const batchOptions = { ...(options || {}) };
+        delete batchOptions.refreshViews;
+        const { opts: batchOpts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
+            rateLimit429Count += 1;
+        });
 
-        if (!opts.continueOnError) {
-            for (let index = 0; index < total; index++) {
-                const recordId = ids[index];
-                try {
-                    await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
-                    deleted += 1;
-                    if (typeof opts.onProgress === 'function') {
-                        opts.onProgress({ deleted, failed, total, recordId });
+        try {
+            const batchResult = await this._runBatchWorkers({
+                total,
+                workerCount,
+                staggerMs,
+                continueOnError: batchOpts.continueOnError,
+                execute: async (index) => {
+                    const recordId = ids[index];
+                    try {
+                        await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
+                        deleted += 1;
+                        if (typeof batchOpts.onProgress === 'function') {
+                            batchOpts.onProgress({ deleted, failed, total, recordId });
+                        }
+                    } catch (error) {
+                        failed += 1;
+                        failedRecordIds.push(recordId);
+                        if (typeof batchOpts.onProgress === 'function') {
+                            batchOpts.onProgress({ deleted, failed, total, recordId, error });
+                        }
+                        if (!batchOpts.continueOnError) {
+                            throw error;
+                        }
                     }
-                } catch (error) {
-                    failed += 1;
-                    if (!firstError) firstError = error;
-                    if (typeof opts.onProgress === 'function') {
-                        opts.onProgress({ deleted, failed, total, recordId, error });
-                    }
-                    break;
                 }
+            });
+            firstError = batchResult.firstError;
 
-                if (staggerMs > 0 && index < total - 1) {
-                    await new Promise(resolve => setTimeout(resolve, staggerMs));
-                }
+            await this._refreshAfterWrite(effectiveRefresh);
+            this._logBatchFailures('KNF_1030', 'delete', `${sceneId}/${viewId}`, failedRecordIds.length, total, `: ${failedRecordIds.join(', ')}`);
+
+            if (firstError && !batchOpts.continueOnError) {
+                throw firstError;
             }
-        } else {
-            const promises = ids.map((recordId, index) => (async () => {
-                if (staggerMs > 0 && index > 0) {
-                    await new Promise(resolve => setTimeout(resolve, staggerMs * index));
-                }
 
-                try {
-                    await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
-                    deleted += 1;
-                    if (typeof opts.onProgress === 'function') {
-                        opts.onProgress({ deleted, failed, total, recordId });
-                    }
-                } catch (error) {
-                    failed += 1;
-                    if (!firstError) firstError = error;
-                    if (typeof opts.onProgress === 'function') {
-                        opts.onProgress({ deleted, failed, total, recordId, error });
-                    }
-                }
-            })());
-
-            await Promise.all(promises);
+            return { total, deleted, failed };
+        } finally {
+            const processed = deleted + failed;
+            this._logBatchSummary('delete', `${sceneId}/${viewId}`, processed, total, rateLimit429Count);
         }
-
-        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
-        if (effectiveRefresh) await this.refreshView(effectiveRefresh);
-
-        if (firstError && !opts.continueOnError) {
-            throw firstError;
-        }
-
-        return { total, deleted, failed };
     }
 
     /**
@@ -5920,11 +6179,7 @@ class KnackAPI {
         this._log('Fetching record by ID', apiUrl);
 
         try {
-            return await this._executeRequest(apiUrl, {
-                method: 'GET',
-                headers: this._buildHeaders()
-            });
-
+            return await this._request(apiUrl, { method: 'GET' });
         } catch (error) {
             console.error('Error fetching record by ID:', error);
             throw error;
@@ -5968,6 +6223,7 @@ class KnackAPI {
     setWriteConcurrency(writeConcurrency) {
         this.options.writeConcurrency = this._resolveWriteConcurrency(writeConcurrency);
         this._log('Write concurrency set to', this.options.writeConcurrency);
+        this._initWriteQueue();
         this._drainWriteQueue();
     }
 
@@ -6066,7 +6322,7 @@ class KnackAPI {
      * @private
      */
     _formatApiUrl(sceneId, viewId, recordId = null) {
-        let url = `${Knack.api_dev}/pages/${sceneId}/views/${viewId}`;
+        let url = `${this._getApiBaseUrl()}/pages/${sceneId}/views/${viewId}`;
 
         if (recordId) {
             url += `/records/${recordId}`;
@@ -6094,7 +6350,7 @@ class KnackAPI {
     }
 
     /**
-     * Executes an API request with proper error handling
+     * Executes an API request with proper error handling.
      * @param {string} url - The API URL
      * @param {Object} options - Fetch options
      * @param {AbortSignal} signal - AbortController signal
@@ -6102,101 +6358,33 @@ class KnackAPI {
      * @private
      */
     async _executeRequest(url, options, signal) {
-        this._checkKnack();
-        this._toggleSpinner(true);
-
-        try {
-            const maxAttempts = Math.max(1, this.options.retry429MaxAttempts || 2);
-
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-                const response = await fetch(url, { ...options, signal });
-
-                if (response.status === 429 && attempt < maxAttempts) {
-                    const delayMs = this._get429RetryDelayMs(response, attempt);
-                    this._log('429 received, retrying request', { url, attempt, maxAttempts, delayMs }, 'warn');
-                    await this._sleep(delayMs, signal);
-                    continue;
-                }
-
-                const data = await this._handleResponse(response);
-                this._log('API response', data);
-                return data;
-            }
-
-            throw new Error('Request failed after retry attempts');
-        } catch (error) {
-            if (error.name === 'AbortError') {
-                throw new Error('Request timeout');
-            }
-            throw error;
-        } finally {
-            this._toggleSpinner(false);
-        }
+        return this._request(url, options, signal ? undefined : this.options.timeout);
     }
 
     /**
-     * Returns the retry delay for HTTP 429 responses.
-     * @param {Response} response - Fetch response
-     * @param {number} attempt - Current attempt number (1-based)
-     * @returns {number} - Delay in milliseconds
+     * Build query params from common options.
+     * @param {Object} options
+     * @returns {Object}
      * @private
      */
-    _get429RetryDelayMs(response, attempt) {
-        const retryAfter = response.headers.get('Retry-After');
-
-        if (retryAfter) {
-            const retryAfterSeconds = Number(retryAfter);
-            if (Number.isFinite(retryAfterSeconds)) {
-                return Math.max(0, retryAfterSeconds * 1000);
-            }
-
-            const retryAfterDate = Date.parse(retryAfter);
-            if (!Number.isNaN(retryAfterDate)) {
-                return Math.max(0, retryAfterDate - Date.now());
-            }
-        }
-
-        const baseDelay = Math.max(50, this.options.retry429BaseDelayMs || 500);
-        const maxDelay = Math.max(baseDelay, this.options.retry429MaxDelayMs || 10000);
-        const exponentialDelay = Math.min(maxDelay, baseDelay * Math.pow(2, Math.max(0, attempt - 1)));
-        const jitter = Math.floor(Math.random() * Math.min(250, Math.floor(baseDelay / 2)));
-
-        return exponentialDelay + jitter;
+    _buildQueryParams(options = {}) {
+        let params = {};
+        if (options.filters) params = { ...params, ...this.buildFilters(options.filters) };
+        if (options.sorters) params = { ...params, ...this.buildSorters(options.sorters) };
+        if (Number.isFinite(options.page)) params.page = options.page;
+        if (Number.isFinite(options.rows)) params.rows_per_page = options.rows;
+        return params;
     }
 
     /**
-     * Delay helper for retries.
-     * @param {number} ms - Delay in milliseconds
-     * @param {AbortSignal} [signal] - Optional abort signal
-     * @returns {Promise<void>}
+     * Refresh views after write operations.
+     * @param {string|string[]} refreshViews
+     * @returns {Promise<void|void[]>}
      * @private
      */
-    _sleep(ms, signal) {
-        return new Promise((resolve, reject) => {
-            const delayMs = Math.max(0, ms || 0);
-
-            if (signal?.aborted) {
-                reject(new DOMException('Aborted', 'AbortError'));
-                return;
-            }
-
-            const timeoutId = setTimeout(() => {
-                if (signal) {
-                    signal.removeEventListener('abort', onAbort);
-                }
-                resolve();
-            }, delayMs);
-
-            const onAbort = () => {
-                clearTimeout(timeoutId);
-                signal.removeEventListener('abort', onAbort);
-                reject(new DOMException('Aborted', 'AbortError'));
-            };
-
-            if (signal) {
-                signal.addEventListener('abort', onAbort, { once: true });
-            }
-        });
+    async _refreshAfterWrite(refreshViews) {
+        if (!refreshViews) return;
+        await this.refreshView(refreshViews);
     }
 
     /**
@@ -6585,20 +6773,242 @@ class KnackAPI {
     }
 
     /**
-     * Schedule a write operation respecting configured concurrency.
-     * @param {Function} task - Async function performing the write operation
+     * Initialize write queue for concurrency control.
+     * @private
+     */
+    _initWriteQueue() {
+        const configuredConcurrency = this.options.writeConcurrency;
+        const isInfinite = configuredConcurrency === Infinity;
+        const configuredMax = Number.isFinite(this.options.writeMaxConcurrency)
+            ? this.options.writeMaxConcurrency
+            : (isInfinite ? Infinity : configuredConcurrency);
+        const max = isInfinite ? Infinity : Math.max(1, Math.floor(configuredMax || configuredConcurrency || 1));
+        const min = Math.max(1, Math.floor(this.options.writeMinConcurrency || 1));
+        const startRaw = isInfinite ? Infinity : Math.floor(configuredConcurrency || max);
+        const start = isInfinite ? Infinity : Math.min(max, Math.max(min, startRaw));
+
+        this._writeQueue = {
+            max,
+            min,
+            current: start,
+            maxPerSecond: Math.max(1, Math.floor(this.options.writeRatePerSecond || 1)),
+            active: 0,
+            pausedUntil: 0,
+            last429At: 0,
+            rampDelayMs: Math.max(0, Math.floor(this.options.writeRampDelayMs || 0)),
+            dispatchTimestamps: [],
+            drainTimerId: null,
+            nextDrainAt: 0,
+            queue: []
+        };
+    }
+
+    /**
+     * Remove dispatch timestamps outside the rolling 1-second window.
+     * @param {number} now
+     * @private
+     */
+    _pruneWriteDispatchTimestamps(now = Date.now()) {
+        const q = this._writeQueue;
+        if (!q) return;
+        const cutoff = now - 1000;
+        while (q.dispatchTimestamps.length && q.dispatchTimestamps[0] <= cutoff) {
+            q.dispatchTimestamps.shift();
+        }
+    }
+
+    /**
+     * Schedule a queue drain while avoiding timer storms.
+     * @private
+     */
+    _scheduleWriteDrain(delayMs) {
+        const q = this._writeQueue;
+        if (!q) return;
+
+        const wait = Math.max(1, Math.floor(delayMs || 1));
+        const target = Date.now() + wait;
+
+        if (q.drainTimerId && q.nextDrainAt && q.nextDrainAt <= target) return;
+
+        if (q.drainTimerId) {
+            clearTimeout(q.drainTimerId);
+        }
+
+        q.nextDrainAt = target;
+        q.drainTimerId = setTimeout(() => {
+            q.drainTimerId = null;
+            q.nextDrainAt = 0;
+            this._drainWriteQueue();
+        }, wait);
+    }
+
+    /**
+     * Build common batch execution settings for bulk write methods.
+     * @param {number} total
+     * @param {Object} [options]
+     * @param {Function} [on429]
+     * @returns {{opts:Object,staggerMs:number,workerCount:number,requestOptions:Object}}
+     * @private
+     */
+    _buildBatchContext(total, options = {}, on429 = () => { }) {
+        this._assertWriteOptions(options, 'batch operation');
+        const opts = options || {};
+        const continueOnError = opts.continueOnError !== false;
+        const staggerMs = Math.max(0, Number(opts.staggerMs) || 0);
+        const queue = this._writeQueue || {};
+        const queueCurrent = queue.current === Infinity
+            ? total
+            : Math.floor(queue.current || this.options.writeConcurrency || 1);
+        const workerCount = Math.max(1, Math.min(total, queueCurrent));
+        const requestOptions = {
+            ...opts,
+            continueOnError,
+            _on429: () => {
+                typeof on429 === 'function' && on429();
+            }
+        };
+
+        return { opts: { ...opts, continueOnError }, staggerMs, workerCount, requestOptions };
+    }
+
+    /**
+     * Log standardized summary for bulk API operations.
+     * @param {'create'|'update'|'delete'} operation
+     * @param {string} target
+     * @param {number} processed
+     * @param {number} total
+     * @param {number} rateLimit429Count
+     * @private
+     */
+    _logBatchSummary(operation, target, processed, total, rateLimit429Count) {
+        this._log(`Concurrent ${operation} summary`, { target, processed, total, rateLimit429Count }, 'info');
+    }
+
+    /**
+     * Log standardized failure details for bulk API operations.
+     * @param {string} code
+     * @param {'create'|'update'|'delete'} operation
+     * @param {string} target
+     * @param {number} failedCount
+     * @param {number} total
+     * @param {string} detailsSuffix
+     * @private
+     */
+    _logBatchFailures(code, operation, target, failedCount, total, detailsSuffix = '') {
+        if (failedCount <= 0) return;
+        this._log(`${code} - API ${operation} failed for ${target}. Failed records (${failedCount}/${total})${detailsSuffix}`, null, 'warn');
+    }
+
+    /**
+     * Run indexed tasks using bounded worker concurrency.
+     * @param {Object} config
+     * @param {number} config.total
+     * @param {number} config.workerCount
+     * @param {number} [config.staggerMs=0]
+     * @param {boolean} [config.continueOnError=true]
+     * @param {(index:number)=>Promise<void>} config.execute
+     * @returns {Promise<{firstError: Error|null}>}
+     * @private
+     */
+    async _runBatchWorkers(config = {}) {
+        const total = Number.isFinite(config.total) ? config.total : 0;
+        const workerCount = Number.isFinite(config.workerCount) ? Math.max(1, Math.floor(config.workerCount)) : 1;
+        const staggerMs = Number.isFinite(config.staggerMs) ? Math.max(0, Math.floor(config.staggerMs)) : 0;
+        const continueOnError = config.continueOnError !== false;
+        const execute = typeof config.execute === 'function' ? config.execute : null;
+
+        if (!execute) {
+            throw new TypeError('KnackAPI error: _runBatchWorkers requires an execute callback');
+        }
+
+        if (total <= 0) {
+            return { firstError: null };
+        }
+
+        const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        let nextIndex = 0;
+        let stopScheduling = false;
+        let firstError = null;
+
+        const runWorker = async () => {
+            while (true) {
+                if (stopScheduling && !continueOnError) return;
+
+                if (staggerMs > 0) {
+                    await delay(staggerMs);
+                }
+
+                if (stopScheduling && !continueOnError) return;
+
+                const index = nextIndex;
+                nextIndex += 1;
+                if (index >= total) return;
+
+                try {
+                    await execute(index);
+                } catch (error) {
+                    if (!firstError) firstError = error;
+                    if (!continueOnError) {
+                        stopScheduling = true;
+                    }
+                }
+            }
+        };
+
+        await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+        return { firstError };
+    }
+
+    /**
+     * Check whether a value is a plain object.
+     * @param {*} value
+     * @returns {boolean}
+     * @private
+     */
+    _isPlainObject(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const proto = Object.getPrototypeOf(value);
+        return proto === Object.prototype || proto === null;
+    }
+
+    /**
+     * Assert that method options are a plain object when provided.
+     * @param {*} options
+     * @param {string} methodName
+     * @private
+     */
+    _assertWriteOptions(options, methodName) {
+        if (options === undefined) return;
+        if (!this._isPlainObject(options)) {
+            throw new Error(`KnackAPI error: ${methodName} options must be a plain object.`);
+        }
+    }
+
+    /**
+     * Enqueue a write operation respecting configured concurrency.
+     * @param {Function} task
+     * @returns {Promise<*>}
+     * @private
+     */
+    _enqueueWrite(task) {
+        if (this.options.writeConcurrency === Infinity) {
+            return Promise.resolve().then(task);
+        }
+
+        return new Promise((resolve, reject) => {
+            this._writeQueue.queue.push({ task, resolve, reject });
+            this._drainWriteQueue();
+        });
+    }
+
+    /**
+     * Backward-compatible alias for older internals.
+     * @param {Function} task
      * @returns {Promise<*>}
      * @private
      */
     _scheduleWrite(task) {
-        if (this.options.writeConcurrency === Infinity) {
-            return task();
-        }
-
-        return new Promise((resolve, reject) => {
-            this._writeQueue.push({ task, resolve, reject });
-            this._drainWriteQueue();
-        });
+        return this._enqueueWrite(task);
     }
 
     /**
@@ -6606,47 +7016,322 @@ class KnackAPI {
      * @private
      */
     _drainWriteQueue() {
-        if (this._isDraining) {
-            this._scheduleDrain();
+        const q = this._writeQueue;
+        if (!q) return;
+
+        const now = Date.now();
+        if (q.pausedUntil > now) {
+            const delay = Math.max(0, q.pausedUntil - now);
+            this._scheduleWriteDrain(delay + 1);
             return;
         }
 
-        this._isDraining = true;
-        try {
-            while (this._activeWrites < this.options.writeConcurrency && this._writeQueue.length > 0) {
-                const { task, resolve, reject } = this._writeQueue.shift();
-                this._activeWrites += 1;
+        this._pruneWriteDispatchTimestamps(now);
 
-                task()
-                    .then(resolve)
-                    .catch(reject)
-                    .finally(() => {
-                        this._activeWrites = Math.max(0, this._activeWrites - 1);
-                        this._scheduleDrain();
-                    });
+        while (q.active < q.current && q.queue.length > 0) {
+            const dispatchNow = Date.now();
+            this._pruneWriteDispatchTimestamps(dispatchNow);
+
+            if (q.dispatchTimestamps.length >= q.maxPerSecond) {
+                const oldest = q.dispatchTimestamps[0];
+                const waitMs = Math.max(1, 1000 - (dispatchNow - oldest) + 1);
+                this._scheduleWriteDrain(waitMs);
+                return;
             }
-        } finally {
-            this._isDraining = false;
-            if (this._writeQueue.length > 0 && this._activeWrites >= this.options.writeConcurrency) {
-                this._scheduleDrain();
-            }
+
+            const job = q.queue.shift();
+            q.active += 1;
+            q.dispatchTimestamps.push(dispatchNow);
+
+            Promise.resolve()
+                .then(job.task)
+                .then((result) => {
+                    q.active -= 1;
+                    this._maybeRampWriteConcurrency();
+                    job.resolve(result);
+                    this._drainWriteQueue();
+                })
+                .catch((error) => {
+                    q.active -= 1;
+                    job.reject(error);
+                    this._drainWriteQueue();
+                });
         }
     }
 
     /**
-     * Schedules a queue drain without stacking multiple callbacks.
+     * Pause and lower concurrency after a rate limit response.
+     * @param {number} delayMs
      * @private
      */
-    _scheduleDrain() {
-        if (this._drainScheduled) {
-            return;
+    _notifyWriteRateLimit(delayMs) {
+        const q = this._writeQueue;
+        if (!q || this.options.writeConcurrency === Infinity) return;
+
+        const now = Date.now();
+        const pauseFor = Math.max(0, Math.floor(delayMs || 0));
+        const pauseUntil = now + pauseFor;
+
+        q.pausedUntil = Math.max(q.pausedUntil, pauseUntil);
+        q.last429At = now;
+        q.current = q.min;
+
+        if (q.queue.length > 0) {
+            this._scheduleWriteDrain(pauseFor + 1);
+        }
+    }
+
+    /**
+     * Gradually ramp concurrency after the pause window.
+     * @private
+     */
+    _maybeRampWriteConcurrency() {
+        const q = this._writeQueue;
+        if (!q || q.current === Infinity || q.max === Infinity || q.current >= q.max) return;
+        const now = Date.now();
+        if (q.last429At && (now - q.last429At) < q.rampDelayMs) return;
+        q.current = Math.min(q.max, q.current + 1);
+    }
+
+    /**
+     * Perform an HTTP request with retries, backoff, and timeout.
+     * Identical concurrent GET requests are deduplicated.
+     * @param {string} url
+     * @param {Object} options
+     * @param {number} [timeoutOverride]
+     * @returns {Promise<Object>}
+     * @private
+     */
+    async _request(url, options = {}, timeoutOverride) {
+        const method = ((options || {}).method || 'GET').toUpperCase();
+
+        if (method === 'GET') {
+            const timeoutKey = Number.isFinite(timeoutOverride) ? timeoutOverride : 'default';
+            const key = `${url}::${timeoutKey}`;
+            if (this._inflightGets.has(key)) {
+                return this._inflightGets.get(key);
+            }
+
+            const promise = this._requestInner(url, options, timeoutOverride).finally(() => {
+                this._inflightGets.delete(key);
+            });
+            this._inflightGets.set(key, promise);
+            return promise;
         }
 
-        this._drainScheduled = true;
-        this._drainScheduler(() => {
-            this._drainScheduled = false;
-            this._drainWriteQueue();
-        });
+        return this._requestInner(url, options, timeoutOverride);
+    }
+
+    /**
+     * Inner fetch-with-retry implementation.
+     * @param {string} url
+     * @param {Object} options
+     * @param {number} [timeoutOverride]
+     * @returns {Promise<Object>}
+     * @private
+     */
+    async _requestInner(url, options = {}, timeoutOverride) {
+        this._checkKnack();
+
+        const maxRetries = this.options.maxRetries;
+        const maxAttempts = 1 + maxRetries;
+        const retryOnStatus = this.options.retryOnStatus;
+        const baseDelay = this.options.retryDelayBase;
+        const maxDelay = this.options.retryDelayMax;
+        const min429Delay = this.options.retryDelayMin429;
+        const timeoutMs = Number.isFinite(timeoutOverride) ? timeoutOverride : this.options.timeout;
+
+        let attempt = 0;
+        const { rateLimitHandler, onRateLimit429, headers, ...requestOptions } = options || {};
+
+        this._toggleSpinner(true);
+
+        try {
+            while (attempt < maxAttempts) {
+                attempt += 1;
+                const method = (requestOptions.method || 'GET').toUpperCase();
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+                try {
+                    const fetchOptions = {
+                        method,
+                        headers: headers || (requestOptions.body instanceof FormData ? this._buildUploadHeaders() : this._buildHeaders()),
+                        signal: controller.signal
+                    };
+
+                    if (requestOptions.body !== undefined && requestOptions.body !== null && !['GET', 'HEAD'].includes(method)) {
+                        fetchOptions.body = requestOptions.body;
+                    }
+
+                    const response = await fetch(url, fetchOptions);
+                    const responseText = await response.text();
+
+                    if (response.ok) {
+                        const result = responseText ? (() => {
+                            try {
+                                return JSON.parse(responseText);
+                            } catch (error) {
+                                return responseText;
+                            }
+                        })() : {};
+
+                        this._log('API response', result);
+                        return result;
+                    }
+
+                    const status = response?.status;
+
+                    if (status === 429 && typeof onRateLimit429 === 'function') {
+                        onRateLimit429();
+                    }
+
+                    const isRetryable = retryOnStatus.includes(status);
+                    if (!isRetryable || attempt >= maxAttempts) {
+                        throw this._buildRequestError({
+                            status,
+                            statusText: response?.statusText,
+                            responseText,
+                            headers: response?.headers
+                        });
+                    }
+
+                    const retryIndex = attempt - 1;
+                    const backoffDelay = this._computeBackoffMs(baseDelay, maxDelay, retryIndex);
+                    const retryAfterDelay = this._getRetryAfterDelayMs(response);
+                    const delay = status === 429
+                        ? Math.max(backoffDelay, Number(min429Delay) || 0, retryAfterDelay)
+                        : backoffDelay;
+
+                    if (status === 429 && typeof rateLimitHandler === 'function') {
+                        rateLimitHandler(delay);
+                    }
+
+                    this._log('Retrying request', { status, attempt, delay }, 'warn');
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                } catch (error) {
+                    const isTimeout = error?.name === 'AbortError';
+                    if (isTimeout) {
+                        throw this._buildRequestError({
+                            status: 0,
+                            statusText: 'Request timeout',
+                            responseText: ''
+                        });
+                    }
+
+                    if (error instanceof Error && error.status !== undefined) {
+                        throw error;
+                    }
+
+                    const status = error?.status;
+                    const isRetryable = retryOnStatus.includes(status);
+                    if (!isRetryable || attempt >= maxAttempts) {
+                        throw this._buildRequestError(error);
+                    }
+
+                    const retryIndex = attempt - 1;
+                    const delay = this._computeBackoffMs(baseDelay, maxDelay, retryIndex);
+                    this._log('Retrying request', { status, attempt, delay }, 'warn');
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+            }
+        } finally {
+            this._toggleSpinner(false);
+        }
+
+        throw new Error('Max retries exceeded');
+    }
+
+    /**
+     * Build a structured error from an HTTP/fetch error-like object.
+     * @param {Object} errorLike
+     * @returns {Error}
+     * @private
+     */
+    _buildRequestError(errorLike) {
+        const status = errorLike?.status || 0;
+        const responseText = typeof errorLike?.responseText === 'string'
+            ? errorLike.responseText
+            : (typeof errorLike?.body === 'string' ? errorLike.body : '');
+        let message = errorLike?.statusText || 'Unknown error';
+
+        try {
+            const json = responseText ? JSON.parse(responseText) : null;
+            message = json?.message || json?.error || message;
+        } catch (error) {
+            // ignore parse errors
+        }
+
+        const requestError = new Error(`API error ${status}: ${message}`);
+        requestError.status = status;
+        requestError.body = responseText || null;
+        return requestError;
+    }
+
+    /**
+     * Compute a jittered exponential backoff delay.
+     * @param {number} baseDelay
+     * @param {number} maxDelay
+     * @param {number} retryIndex
+     * @returns {number}
+     * @private
+     */
+    _computeBackoffMs(baseDelay, maxDelay, retryIndex) {
+        const exp = Math.pow(2, Math.max(0, retryIndex));
+        const cap = Math.min(baseDelay * exp, maxDelay);
+        const min = Math.floor(cap / 2);
+        return min + Math.floor(Math.random() * (cap - min + 1));
+    }
+
+    /**
+     * Parse Retry-After header (seconds or date) into milliseconds.
+     * @param {Object} responseLike
+     * @returns {number}
+     * @private
+     */
+    _getRetryAfterDelayMs(responseLike) {
+        if (!responseLike) return 0;
+
+        let retryAfter = null;
+        if (typeof responseLike.headers?.get === 'function') {
+            retryAfter = responseLike.headers.get('Retry-After');
+        }
+
+        if (!retryAfter) return 0;
+
+        const seconds = Number(retryAfter);
+        if (Number.isFinite(seconds) && seconds >= 0) {
+            return Math.floor(seconds * 1000);
+        }
+
+        const retryAt = Date.parse(retryAfter);
+        if (!Number.isNaN(retryAt)) {
+            return Math.max(0, retryAt - Date.now());
+        }
+
+        return 0;
+    }
+
+    /**
+     * Resolve API base URL.
+     * @returns {string}
+     * @private
+     */
+    _getApiBaseUrl() {
+        return Knack?.api_dev || 'https://api.knack.com/v1';
+    }
+
+    /**
+     * Prepare a JSON body for requests.
+     * @param {Object} data
+     * @returns {string|null}
+     * @private
+     */
+    _prepareBody(data) {
+        if (!data) return null;
+        return JSON.stringify(data);
     }
 }
 
