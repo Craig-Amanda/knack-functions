@@ -19,16 +19,23 @@ class KnackNavigator {
         this._fieldTypeCache = new Map();
     }
 
+    normalizePrefixedId(value, prefix) {
+        const normalizedValue = String(value ?? '').trim().toLowerCase();
+        if (!normalizedValue) return '';
+
+        if (new RegExp(`^${prefix}\\d+$`, 'i').test(normalizedValue)) {
+            return normalizedValue;
+        }
+
+        return /^\d+$/.test(normalizedValue) ? `${prefix}${normalizedValue}` : '';
+    }
+
     normalizeViewId(viewId) {
-        return viewId || viewId === 0
-            ? (String(viewId).startsWith('view_') ? String(viewId) : `view_${viewId}`)
-            : '';
+        return this.normalizePrefixedId(viewId, 'view_');
     }
 
     normalizeFieldId(fieldId) {
-        return fieldId || fieldId === 0
-            ? (String(fieldId).startsWith('field_') ? String(fieldId) : `field_${fieldId}`)
-            : '';
+        return this.normalizePrefixedId(fieldId, 'field_');
     }
 
     normalizeFieldMap(fieldMap = {}) {
@@ -53,9 +60,7 @@ class KnackNavigator {
     }
 
     normalizeSceneId(sceneId) {
-        return sceneId || sceneId === 0
-            ? (String(sceneId).startsWith('scene_') ? String(sceneId) : `scene_${sceneId}`)
-            : '';
+        return this.normalizePrefixedId(sceneId, 'scene_');
     }
 
     getViewObject(viewId) {
@@ -149,7 +154,11 @@ class KnackValueResolver {
     }
 
     normalizeFieldKey(fieldKey) {
-        const value = String(fieldKey || '').trim();
+        if (this.navigator?.normalizeFieldId) {
+            return this.navigator.normalizeFieldId(fieldKey);
+        }
+
+        const value = String(fieldKey ?? '').trim().toLowerCase();
         if (!value) return '';
         if (/^field_\d+$/.test(value)) return value;
         if (/^\d+$/.test(value)) return `field_${value}`;
@@ -248,6 +257,71 @@ class KnackValueResolver {
                 value: requestValue,
                 runtimeShape: this.describeValueShape(requestValue)
             }
+        };
+    }
+
+    /**
+     * Returns a consistent display/raw pair for a field without callers needing to guess at raw shapes.
+     * Useful for UI code that needs a human-readable label plus a stable raw value.
+     * @param {Object} record - Knack record returned by the API.
+     * @param {string|number} fieldKey - Field key with or without `field_` prefix.
+     * @param {Object} [options] - Optional settings.
+     * @param {boolean} [options.preferRaw=true] - Whether typed resolution should prefer `_raw` values.
+     * @returns {{display: string, raw: string}} Display/raw metadata for the field.
+     */
+    getFieldValueMeta(record, fieldKey, { preferRaw = true } = {}) {
+        const fieldInfo = this.describeFieldValue(record, fieldKey, { preferRaw });
+        if (!fieldInfo) {
+            return {
+                display: '',
+                raw: '',
+            };
+        }
+
+        const rawValue = fieldInfo.read.rawValue;
+        const displayValue = fieldInfo.read.displayValue;
+
+        if (Array.isArray(rawValue)) {
+            const refs = rawValue
+                .map((value) => this.toConnectionRef(value))
+                .filter(Boolean);
+
+            if (refs.length) {
+                return {
+                    display: this.toJoinedString(refs.map((ref) => ref.identifier || ref.id)),
+                    raw: this.toJoinedString(refs.map((ref) => ref.id), ','),
+                };
+            }
+
+            const joinedValue = this.toJoinedString(rawValue);
+            return {
+                display: joinedValue,
+                raw: joinedValue,
+            };
+        }
+
+        const connectionRef = this.toConnectionRef(rawValue);
+        if (connectionRef) {
+            return {
+                display: connectionRef.identifier || connectionRef.id,
+                raw: connectionRef.id,
+            };
+        }
+
+        if (rawValue && typeof rawValue === 'object') {
+            const normalizedDisplay = this.toJoinedString(rawValue);
+            const normalizedRaw = this.toStringSafe(rawValue.id ?? rawValue.value ?? normalizedDisplay);
+
+            return {
+                display: normalizedDisplay || normalizedRaw,
+                raw: normalizedRaw || normalizedDisplay,
+            };
+        }
+
+        const normalizedDisplay = this.toStringSafe(displayValue);
+        return {
+            display: normalizedDisplay,
+            raw: rawValue !== undefined && rawValue !== null ? this.toStringSafe(rawValue) : normalizedDisplay,
         };
     }
 
@@ -625,21 +699,73 @@ class KnackValueResolver {
         if (!value) return [];
         if (Array.isArray(value)) {
             return value
-                .map((item) => {
-                    if (item == null) return '';
-                    if (typeof item === 'string') return item.trim();
-                    if (typeof item === 'object') {
-                        return String(item.identifier || item.name || item.title || item.label || item.value || item.id || '').trim();
-                    }
-                    return String(item).trim();
-                })
+                .map((item) => this.toDisplayString(item))
                 .filter(Boolean);
         }
         if (typeof value === 'string' && value.includes(',')) {
             return value.split(',').map((entry) => entry.trim()).filter(Boolean);
         }
-        const single = this.toStringSafe(value);
+        const single = this.toDisplayString(value);
         return single ? [single] : [];
+    }
+
+    toDisplayString(value, seen = new Set()) {
+        if (value === undefined || value === null) return '';
+        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+            return this.toStringSafe(value);
+        }
+
+        if (Array.isArray(value)) {
+            return value
+                .map((item) => this.toDisplayString(item, seen))
+                .filter(Boolean)
+                .join(', ');
+        }
+
+        if (typeof value !== 'object') {
+            return this.toStringSafe(value);
+        }
+
+        if (seen.has(value)) return '';
+        seen.add(value);
+
+        const directKeys = [
+            'identifier', 'display', 'label', 'title', 'name', 'full', 'formatted',
+            'date_formatted', 'datetime_formatted', 'time_formatted', 'email',
+            'address', 'number', 'phone', 'filename', 'file_name', 'value', 'id'
+        ];
+        for (const key of directKeys) {
+            const directValue = this.toStringSafe(value?.[key]);
+            if (directValue) return directValue;
+        }
+
+        const nameParts = ['title', 'first', 'middle', 'last']
+            .map((key) => this.toStringSafe(value?.[key]))
+            .filter(Boolean);
+        if (nameParts.length) return nameParts.join(' ');
+
+        const dateValue = this.toStringSafe(value?.date || value?.iso_date || value?.date_time);
+        const timeValue = this.toStringSafe(value?.time);
+        const hourValue = this.toStringSafe(value?.hours);
+        const minuteValue = this.toStringSafe(value?.minutes);
+        const amPmValue = this.toStringSafe(value?.am_pm);
+        const timeParts = [timeValue || [hourValue, minuteValue].filter(Boolean).join(':'), amPmValue]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+        if (dateValue && timeParts) return `${dateValue} ${timeParts}`.trim();
+        if (dateValue) return dateValue;
+        if (timeParts) return timeParts;
+
+        const addressParts = ['street', 'street2', 'city', 'state', 'zip', 'country']
+            .map((key) => this.toStringSafe(value?.[key]))
+            .filter(Boolean);
+        if (addressParts.length) return addressParts.join(', ');
+
+        const fallback = Object.values(value)
+            .map((entry) => this.toDisplayString(entry, seen))
+            .filter(Boolean);
+        return fallback.length ? fallback.join(', ') : '';
     }
 
     toStringSafe(value) {
@@ -650,9 +776,3287 @@ class KnackValueResolver {
             return '';
         }
     }
+
+    toJoinedString(value, separator = ', ') {
+        return this.toStringArray(value).join(separator);
+    }
+
+    extractFieldLabel(recordObj, fieldKey) {
+        const normalizedKey = this.normalizeFieldKey(fieldKey);
+        if (!normalizedKey) return '';
+
+        const rawLabel = this.toJoinedString(recordObj?.[`${normalizedKey}_raw`]);
+        if (rawLabel) return rawLabel;
+
+        return this.toDisplayString(
+            this.extractResponseFieldValue(recordObj, normalizedKey)
+        );
+    }
+
+    getRecordLabel(recordObj, fieldKeys) {
+        const keys = Array.isArray(fieldKeys) ? fieldKeys : [fieldKeys];
+
+        if (recordObj && typeof recordObj === 'object' && keys.length) {
+            const seen = new Set();
+            const parts = [];
+
+            for (const value of keys) {
+                const fieldId = this.normalizeFieldKey(value);
+                if (!fieldId || seen.has(fieldId)) continue;
+                seen.add(fieldId);
+
+                const label = this.extractFieldLabel(recordObj, fieldId);
+                if (label) parts.push(label);
+            }
+
+            if (parts.length) return parts.join(' - ');
+        }
+
+        return this.toStringSafe(recordObj?.id);
+    }
 }
 
 const knackValueResolver = new KnackValueResolver(knackNavigator);
+
+const BULK_ACTION_VALIDATION_ERROR_PATTERN = /required|invalid|validation|duplicate|conflict|not found|forbidden|unauthori[zs]ed/;
+
+function bulkActionUniqueStrings(values) {
+    return Array.from(
+        new Set(
+            (Array.isArray(values) ? values : [])
+                .map((value) => knackValueResolver.toStringSafe(value))
+                .filter(Boolean)
+        )
+    );
+}
+
+function bulkActionResolveRegistryCallback(name, registry, globalScope) {
+    const key = knackValueResolver.toStringSafe(name);
+    if (!key) return null;
+
+    const registryFn = registry && typeof registry === 'object' ? registry[key] : null;
+    if (typeof registryFn === 'function') return registryFn;
+
+    const globalFn = globalScope && typeof globalScope === 'object' ? globalScope[key] : null;
+    return typeof globalFn === 'function' ? globalFn : null;
+}
+
+function classifyBulkActionFailure(error) {
+    const status = Number(
+        error?.status
+        ?? error?.httpStatus
+        ?? error?.response?.status
+        ?? error?.body?.status
+        ?? 0
+    );
+
+    const message = knackValueResolver.toStringSafe(
+        error?.body?.message
+        || error?.bodyText
+        || error?.message
+        || error?.statusText
+    );
+
+    const normalized = message.toLowerCase();
+    const isValidationError =
+        [400, 401, 403, 404, 409, 422].includes(status)
+        || BULK_ACTION_VALIDATION_ERROR_PATTERN.test(normalized);
+
+    return isValidationError
+        ? { type: 'validation', message: message || 'Validation issue. Check required or invalid fields.' }
+        : { type: 'network', message: message || 'Network or unexpected error.' };
+}
+
+function createBulkActionStorageAdapter(storage) {
+    return {
+        get(key) {
+            if (!storage || typeof storage.getItem !== 'function') return null;
+            try {
+                return storage.getItem(key);
+            } catch (_) {
+                return null;
+            }
+        },
+        set(key, value) {
+            if (!storage || typeof storage.setItem !== 'function') return false;
+            try {
+                storage.setItem(key, value);
+                return true;
+            } catch (_) {
+                return false;
+            }
+        },
+        remove(key) {
+            if (!storage || typeof storage.removeItem !== 'function') return false;
+            try {
+                storage.removeItem(key);
+                return true;
+            } catch (_) {
+                return false;
+            }
+        }
+    };
+}
+
+function resolveDefaultBulkActionAppId(globalScope) {
+    return knackValueResolver.toStringSafe(
+        globalScope?.Knack?.application_id
+        || globalScope?.application_id
+    );
+}
+
+function resolveBulkActionFieldId(value, viewId = '') {
+    const normalizedFieldId = knackNavigator.normalizeFieldId(value);
+    if (normalizedFieldId) return normalizedFieldId;
+
+    const normalizedViewId = knackNavigator.normalizeViewId(viewId);
+    if (!normalizedViewId) return '';
+
+    return knackNavigator.getFieldIdFromLabel(normalizedViewId, value);
+}
+
+function parseBulkActionDefinition(params, operation, options = {}) {
+    const { resolveFieldId = (value) => knackNavigator.normalizeFieldId(value) } = options;
+    const op = String(operation || '').toLowerCase() === 'update' ? 'update' : 'create';
+    const third = params?.[2];
+    const fourth = params?.[3];
+
+    if (op === 'create') {
+        return {
+            recordFieldId: resolveFieldId(third),
+            dataCallbackName: knackValueResolver.toStringSafe(fourth)
+        };
+    }
+
+    const thirdAsField = resolveFieldId(third);
+    if (third != null && !thirdAsField) {
+        return {
+            recordFieldId: '',
+            dataCallbackName: knackValueResolver.toStringSafe(third)
+        };
+    }
+
+    return {
+        recordFieldId: thirdAsField,
+        dataCallbackName: knackValueResolver.toStringSafe(fourth)
+    };
+}
+
+const BULK_ACTION_RESERVED_LABELS = new Set(['record', 'recordid', 'id', 'target', 'picker']);
+
+function normalizeBulkActionKeywordGroupsInput(keywordSource, keywordName = '_bulk_actions') {
+    const normalizedKeywordName = knackValueResolver.toStringSafe(keywordName || '_bulk_actions');
+
+    function flatten(source) {
+        if (!source) return [];
+
+        if (Array.isArray(source)) {
+            if (source.every((item) => Array.isArray(item))) {
+                return source;
+            }
+
+            return source.flatMap((item) => flatten(item));
+        }
+
+        if (typeof source !== 'object') return [];
+
+        if (Array.isArray(source.params)) {
+            return flatten(source.params);
+        }
+
+        if (normalizedKeywordName && source[normalizedKeywordName] != null) {
+            return flatten(source[normalizedKeywordName]);
+        }
+
+        return [];
+    }
+
+    return flatten(keywordSource);
+}
+
+function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
+    const {
+        resolveView = (viewId) => knackNavigator.getViewObject(viewId),
+        gridActionRegistry = null,
+        dataCallbackRegistry = null,
+        globalScope = typeof globalThis !== 'undefined' ? globalThis : null,
+        keywordName = '_bulk_actions',
+        sourceViewId = ''
+    } = options;
+
+    const groups = normalizeBulkActionKeywordGroupsInput(keywordGroups, keywordName);
+    const actions = [];
+    const warnings = [];
+    let labelFieldIds = [];
+    let defaultRecordFieldId = '';
+
+    groups.forEach((params) => {
+        if (!Array.isArray(params) || params.length < 2) return;
+        const first = knackValueResolver.toStringSafe(params[0]).toLowerCase();
+
+        if (first === 'label') {
+            const collected = new Set();
+            params.slice(1).forEach((value) => {
+                const raw = knackValueResolver.toStringSafe(value);
+                if (!raw) return;
+
+                const matches = raw.match(/field_\d+/gi);
+                if (matches && matches.length) {
+                    matches.forEach((match) => {
+                        const normalized = knackNavigator.normalizeFieldId(match);
+                        if (normalized) collected.add(normalized);
+                    });
+                    return;
+                }
+
+                const normalized = resolveBulkActionFieldId(raw, sourceViewId);
+                if (normalized) collected.add(normalized);
+            });
+
+            labelFieldIds = Array.from(collected);
+            if (!labelFieldIds.length) {
+                warnings.push({ type: 'config', message: 'Invalid label field configuration.', params });
+            }
+            return;
+        }
+
+        if (BULK_ACTION_RESERVED_LABELS.has(first)) {
+            const fieldId = knackNavigator.normalizeFieldId(params[1]);
+            if (!fieldId) {
+                warnings.push({ type: 'config', message: 'Invalid record picker field configuration.', params });
+                return;
+            }
+            defaultRecordFieldId = fieldId;
+        }
+    });
+
+    groups.forEach((params) => {
+        if (!Array.isArray(params) || params.length < 2) return;
+
+        const label = knackValueResolver.toStringSafe(params[0]);
+        const target = knackValueResolver.toStringSafe(params[1]);
+        const labelLower = label.toLowerCase();
+        if (!label || !target || labelLower === 'label' || BULK_ACTION_RESERVED_LABELS.has(labelLower)) {
+            return;
+        }
+
+        if (/^action\s*:/i.test(target)) {
+            const actionName = knackValueResolver.toStringSafe(target.split(':').slice(1).join(':'));
+            const handlerBatch = bulkActionResolveRegistryCallback(actionName, gridActionRegistry, globalScope);
+            if (!handlerBatch) {
+                warnings.push({ type: 'action', message: `Missing grid action: ${actionName || '(blank)'}`, params });
+                return;
+            }
+
+            actions.push({
+                key: `action:${actionName}`,
+                label,
+                targetType: 'grid',
+                target,
+                actionName,
+                handlerBatch
+            });
+            return;
+        }
+
+        const formViewId = knackNavigator.normalizeViewId(target);
+        if (!formViewId) {
+            warnings.push({ type: 'action', message: `Invalid action target: ${target}`, params });
+            return;
+        }
+
+        const view = resolveView(formViewId) || {};
+        const operation = String(view.action || '').toLowerCase();
+        if (operation !== 'create' && operation !== 'update') {
+            warnings.push({ type: 'action', message: `Referenced view must be a create/update form: ${formViewId}`, params });
+            return;
+        }
+
+        const parsed = parseBulkActionDefinition(params, operation, {
+            resolveFieldId: (value) => resolveBulkActionFieldId(value, formViewId)
+        });
+        if (operation === 'create' && !parsed.recordFieldId && !defaultRecordFieldId) {
+            warnings.push({ type: 'action', message: `Create action requires a record picker field: ${formViewId}`, params });
+            return;
+        }
+
+        const resolvedDataCallback = parsed.dataCallbackName
+            ? bulkActionResolveRegistryCallback(parsed.dataCallbackName, dataCallbackRegistry, globalScope)
+            : null;
+        if (parsed.dataCallbackName) {
+            if (!resolvedDataCallback) {
+                warnings.push({ type: 'action', message: `Missing data callback: ${parsed.dataCallbackName}`, params });
+                return;
+            }
+        }
+
+        actions.push({
+            key: `${operation}:${formViewId}`,
+            label,
+            targetType: 'form',
+            target: formViewId,
+            operation,
+            recordFieldId: parsed.recordFieldId || defaultRecordFieldId,
+            dataCallback: resolvedDataCallback
+        });
+    });
+
+    return {
+        labelFieldIds,
+        defaultRecordFieldId,
+        actions,
+        warnings
+    };
+}
+
+function bulkActionNormalizeBasketItems(items = []) {
+    return (Array.isArray(items) ? items : [])
+        .filter((item) => knackValueResolver.toStringSafe(item?.recordId))
+        .map((item) => ({ ...item, recordId: knackValueResolver.toStringSafe(item.recordId) }));
+}
+
+function createBulkActionBasketStore(options = {}) {
+    const {
+        namespace = 'KNACK_BULK',
+        appId = resolveDefaultBulkActionAppId(typeof globalThis !== 'undefined' ? globalThis : null) || 'app',
+        viewId = 'unknown',
+        ttlMs = 15 * 60 * 1000,
+        now = () => Date.now(),
+        isOpen = () => false,
+        storage = typeof sessionStorage !== 'undefined' ? sessionStorage : null
+    } = options;
+
+    const adapter = createBulkActionStorageAdapter(storage);
+    const memory = {
+        items: null,
+        storedAt: 0,
+        activeActionKey: ''
+    };
+
+    function buildStorageKey(...parts) {
+        return [namespace, appId, viewId, ...parts].filter(Boolean).join('_');
+    }
+
+    const basketKey = buildStorageKey('basket');
+    const activeActionKeyName = buildStorageKey('activeAction');
+
+    function loadEnvelope() {
+        const raw = adapter.get(basketKey);
+        if (!raw) return null;
+
+        try {
+            const parsed = JSON.parse(raw);
+            const items = Array.isArray(parsed?.items) ? parsed.items : null;
+            if (!items) return null;
+            return {
+                items,
+                storedAt: Number(parsed?.storedAt || 0)
+            };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function saveEnvelope(items) {
+        const normalizedItems = Array.isArray(items) ? items : [];
+        const storedAt = Number(now());
+        memory.items = normalizedItems;
+        memory.storedAt = storedAt;
+        adapter.set(basketKey, JSON.stringify({ storedAt, items: normalizedItems }));
+        return normalizedItems;
+    }
+
+    function expireIfNeeded() {
+        if (ttlMs <= 0 || isOpen()) return false;
+        const envelope = loadEnvelope();
+        const storedAt = Number(memory.storedAt || envelope?.storedAt || 0);
+        if (!storedAt) return false;
+        if (Number(now()) - storedAt <= ttlMs) return false;
+        clear();
+        return true;
+    }
+
+    function getItems() {
+        if (expireIfNeeded()) return [];
+        if (Array.isArray(memory.items)) return memory.items.slice();
+
+        const envelope = loadEnvelope();
+        if (!envelope) return [];
+        memory.items = envelope.items.slice();
+        memory.storedAt = Number(envelope.storedAt || 0);
+        return memory.items.slice();
+    }
+
+    function setItems(items) {
+        return saveEnvelope(bulkActionNormalizeBasketItems(items)).slice();
+    }
+
+    function addItems(items) {
+        const current = getItems();
+        const byId = new Map(current.map((item) => [item.recordId, item]));
+
+        (Array.isArray(items) ? items : []).forEach((item) => {
+            const recordId = knackValueResolver.toStringSafe(item?.recordId);
+            if (!recordId) return;
+            byId.set(recordId, { ...(byId.get(recordId) || {}), ...item, recordId });
+        });
+
+        return setItems(Array.from(byId.values()));
+    }
+
+    function removeItems(recordIds) {
+        const removeSet = new Set(bulkActionUniqueStrings(recordIds));
+        if (!removeSet.size) return getItems();
+        return setItems(getItems().filter((item) => !removeSet.has(item.recordId)));
+    }
+
+    function clear() {
+        memory.items = [];
+        memory.storedAt = 0;
+        memory.activeActionKey = '';
+        adapter.remove(basketKey);
+        adapter.remove(activeActionKeyName);
+        return [];
+    }
+
+    function getActiveActionKey() {
+        if (memory.activeActionKey) return memory.activeActionKey;
+        const raw = adapter.get(activeActionKeyName);
+        memory.activeActionKey = knackValueResolver.toStringSafe(raw);
+        return memory.activeActionKey;
+    }
+
+    function setActiveActionKey(actionKey) {
+        memory.activeActionKey = knackValueResolver.toStringSafe(actionKey);
+        if (!memory.activeActionKey) {
+            adapter.remove(activeActionKeyName);
+            return '';
+        }
+        adapter.set(activeActionKeyName, memory.activeActionKey);
+        return memory.activeActionKey;
+    }
+
+    return {
+        keys: {
+            basket: basketKey,
+            activeAction: activeActionKeyName
+        },
+        expireIfNeeded,
+        getItems,
+        setItems,
+        addItems,
+        removeItems,
+        clear,
+        getActiveActionKey,
+        setActiveActionKey
+    };
+}
+
+function createBulkActionRunner(options = {}) {
+    const {
+        actions = [],
+        classifyError = classifyBulkActionFailure,
+        onStateChange = () => {},
+        concurrency = 'parallel'
+    } = options;
+
+    function cloneForHandler(value) {
+        if (typeof structuredClone === 'function') {
+            try {
+                return structuredClone(value);
+            } catch (_) {}
+        }
+
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch (_) {
+            if (Array.isArray(value)) return value.slice();
+            if (value && typeof value === 'object') return { ...value };
+            return value;
+        }
+    }
+
+    function resolveAction(actionKey) {
+        const normalizedActionKey = knackValueResolver.toStringSafe(actionKey);
+        return (Array.isArray(actions) ? actions : []).find((action) => knackValueResolver.toStringSafe(action?.key) === normalizedActionKey) || null;
+    }
+
+    function createItemMutationHelpers(items = []) {
+        const nextItems = items.slice();
+        const itemIndexesByRecordId = new Map();
+        const clonedIndexes = new Set();
+
+        nextItems.forEach((item, index) => {
+            const recordId = knackValueResolver.toStringSafe(item?.recordId);
+            if (!recordId) return;
+
+            const indexes = itemIndexesByRecordId.get(recordId) || [];
+            indexes.push(index);
+            itemIndexesByRecordId.set(recordId, indexes);
+        });
+
+        const ensureMutableItem = (index) => {
+            if (index < 0) return null;
+            if (clonedIndexes.has(index)) return nextItems[index];
+
+            const current = nextItems[index];
+            nextItems[index] = current && typeof current === 'object' ? { ...current } : {};
+            clonedIndexes.add(index);
+            return nextItems[index];
+        };
+
+        const mutateRecordItems = (recordId, mutate) => {
+            const indexes = itemIndexesByRecordId.get(knackValueResolver.toStringSafe(recordId)) || [];
+            indexes.forEach((index) => {
+                const mutable = ensureMutableItem(index);
+                if (mutable) mutate(mutable);
+            });
+        };
+
+        return {
+            nextItems,
+            setFailure(recordId, error) {
+                const failure = classifyError(error);
+                mutateRecordItems(recordId, (item) => {
+                    item.failureType = failure.type;
+                    item.failureMessage = failure.message;
+                });
+            },
+            clearFailure(recordId) {
+                mutateRecordItems(recordId, (item) => {
+                    delete item.failureType;
+                    delete item.failureMessage;
+                });
+            }
+        };
+    }
+
+    async function run(actionKey, runOptions = {}) {
+        const {
+            items = [],
+            onlyFailed = false,
+            context = {}
+        } = runOptions;
+
+        const action = resolveAction(actionKey);
+        if (!action) {
+            throw new Error(`Unknown bulk action: ${actionKey}`);
+        }
+        if (typeof action.handlerBatch !== 'function' && typeof action.handler !== 'function') {
+            throw new Error(`Bulk action is missing a handler: ${actionKey}`);
+        }
+
+        const sourceItems = Array.isArray(items) ? items : [];
+        const targetItems = onlyFailed
+            ? sourceItems.filter((item) => item?.failureType || item?.failureMessage)
+            : sourceItems.slice();
+        const { nextItems, setFailure, clearFailure } = createItemMutationHelpers(sourceItems);
+
+        let state = bulkActionCreateRunState({
+            isRunning: true,
+            total: targetItems.length
+        });
+        const emitState = (overrides = {}) => {
+            state = {
+                ...state,
+                ...overrides
+            };
+            onStateChange({ ...state });
+            return state;
+        };
+        const emitProgress = (resultKey) => emitState({
+            processed: state.processed + 1,
+            [resultKey]: state[resultKey] + 1
+        });
+
+        emitState();
+
+        if (!targetItems.length) {
+            emitState({ isRunning: false, completionMessage: 'No items selected.' });
+            return { items: nextItems, state, successIds: [], failedIds: [] };
+        }
+
+        targetItems.forEach((item) => clearFailure(item?.recordId));
+
+        if (typeof action.handlerBatch === 'function') {
+            const recordIds = targetItems.map((item) => item?.recordId).filter(Boolean);
+            try {
+                await action.handlerBatch({
+                    items: cloneForHandler(targetItems),
+                    recordIds,
+                    action,
+                    context
+                });
+                emitState({
+                    isRunning: false,
+                    processed: targetItems.length,
+                    success: targetItems.length,
+                    completionMessage: `Completed ${targetItems.length} item(s).`
+                });
+                return { items: nextItems, state, successIds: recordIds, failedIds: [] };
+            } catch (error) {
+                recordIds.forEach((recordId) => setFailure(recordId, error));
+                emitState({
+                    isRunning: false,
+                    processed: targetItems.length,
+                    failed: targetItems.length,
+                    completionMessage: `Failed ${targetItems.length} item(s).`
+                });
+                return { items: nextItems, state, successIds: [], failedIds: recordIds };
+            }
+        }
+
+        const successIds = [];
+        const failedIds = [];
+        const runOne = async (item, index) => {
+            const recordId = knackValueResolver.toStringSafe(item?.recordId);
+            if (!recordId) return;
+
+            try {
+                await action.handler({
+                    item: cloneForHandler(item),
+                    recordId,
+                    index: index + 1,
+                    total: targetItems.length,
+                    action,
+                    context
+                });
+                clearFailure(recordId);
+                successIds.push(recordId);
+                emitProgress('success');
+            } catch (error) {
+                setFailure(recordId, error);
+                failedIds.push(recordId);
+                emitProgress('failed');
+            }
+        };
+
+        if (concurrency === 'serial') {
+            for (let index = 0; index < targetItems.length; index += 1) {
+                await runOne(targetItems[index], index);
+            }
+        } else {
+            await Promise.all(targetItems.map((item, index) => runOne(item, index)));
+        }
+
+        emitState({
+            isRunning: false,
+            completionMessage: failedIds.length
+                ? `Completed ${successIds.length} item(s); ${failedIds.length} failed.`
+                : `Completed ${successIds.length} item(s).`
+        });
+
+        return {
+            items: nextItems,
+            state,
+            successIds,
+            failedIds
+        };
+    }
+
+    return {
+        run,
+        resolveAction
+    };
+}
+
+const bulkActionControllerStore = new Map();
+const bulkActionWorkflowRegistry = new Set();
+const BULK_ACTION_FORM_FLOW_TTL_MS = 10 * 60 * 1000;
+let bulkActionControllerLifecycleBound = false;
+
+function bulkActionSyncControllerVisibility() {
+    bulkActionControllerStore.forEach((controller, viewId) => {
+        if (!controller || controller.viewId !== viewId) {
+            bulkActionControllerStore.delete(viewId);
+            return;
+        }
+
+        if (!controller.resolveViewElement()) {
+            controller.basketModal?.close?.();
+            controller.removeExistingUi?.();
+        }
+    });
+}
+
+function ensureBulkActionControllerLifecycleBinding() {
+    if (bulkActionControllerLifecycleBound || typeof window.jQuery !== 'function') return;
+
+    bulkActionControllerLifecycleBound = true;
+    window.jQuery(document).on('knack-view-render.any knack-scene-render', function () {
+        window.setTimeout(() => {
+            bulkActionSyncControllerVisibility();
+        }, 0);
+    });
+}
+
+function bulkActionResolveElement(value) {
+    if (!value) return null;
+    if (value instanceof Element) return value;
+    if (value?.jquery && value[0] instanceof Element) return value[0];
+    if (Array.isArray(value) && value[0] instanceof Element) return value[0];
+    return null;
+}
+
+function bulkActionFindViewRoot(viewId) {
+    const normalizedViewId = knackNavigator.normalizeViewId(viewId);
+    if (!normalizedViewId) return null;
+
+    return document.getElementById(normalizedViewId)
+        || document.querySelector(`#connection-form-view:has(input[value="${normalizedViewId}"])`);
+}
+
+function resolveBulkActionRecords(viewId, data) {
+    if (Array.isArray(data) && data.length) return data;
+
+    const directModels = Knack?.views?.[viewId]?.model?.results_model?.models;
+    if (Array.isArray(directModels) && directModels.length) {
+        return directModels
+            .map((model) => model?.attributes || null)
+            .filter(Boolean);
+    }
+
+    const byId = Knack?.views?.[viewId]?.model?.results_model?.data?._byId
+        || Knack?.views?.[viewId]?.model?.data?._byId
+        || {};
+
+    return Object.values(byId)
+        .map((record) => record?.attributes || record)
+        .filter(Boolean);
+}
+
+function bulkActionBuildFormFlowSessionKey(namespace, formViewId) {
+    return [
+        knackValueResolver.toStringSafe(namespace || 'KNACK_BULK'),
+        'FORM_FLOW',
+        knackNavigator.normalizeViewId(formViewId) || 'unknown'
+    ].filter(Boolean).join('_');
+}
+
+function bulkActionReadFormFlowState(sessionKey) {
+    const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
+    if (!normalizedKey || typeof sessionStorage === 'undefined') return null;
+
+    try {
+        const raw = sessionStorage.getItem(normalizedKey);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function bulkActionWriteFormFlowState(sessionKey, state) {
+    const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
+    if (!normalizedKey || typeof sessionStorage === 'undefined') return;
+
+    try {
+        sessionStorage.setItem(normalizedKey, JSON.stringify(state || {}));
+    } catch (_) {}
+}
+
+function bulkActionMergeFormFlowState(sessionKey, statePatch = {}, fallbackState = null) {
+    const baseState = fallbackState && typeof fallbackState === 'object'
+        ? fallbackState
+        : bulkActionReadFormFlowState(sessionKey);
+    if (!baseState) return null;
+
+    const nextState = {
+        ...baseState,
+        ...(statePatch && typeof statePatch === 'object' ? statePatch : {})
+    };
+
+    bulkActionWriteFormFlowState(sessionKey, nextState);
+    return nextState;
+}
+
+function bulkActionClearFormFlowState(sessionKey) {
+    const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
+    if (!normalizedKey || typeof sessionStorage === 'undefined') return;
+
+    try {
+        sessionStorage.removeItem(normalizedKey);
+    } catch (_) {}
+}
+
+function bulkActionResetPendingFormFlow(sessionKey) {
+    const bulkState = bulkActionReadFormFlowState(sessionKey);
+    if (!bulkState) return false;
+
+    const sourceViewId = knackNavigator.normalizeViewId(bulkState.sourceViewId);
+    const sourceController = sourceViewId ? bulkActionControllerStore.get(sourceViewId) || null : null;
+
+    bulkActionClearFormFlowState(sessionKey);
+
+    if (sourceController && typeof sourceController.resetFormActionState === 'function') {
+        sourceController.resetFormActionState();
+    }
+
+    return true;
+}
+
+function handleModalClosed({ activeViewId = '', closedViewId = '', callback = null, context = null } = {}) {
+    const normalizedActiveViewId = knackNavigator.normalizeViewId(activeViewId);
+    const normalizedClosedViewId = knackNavigator.normalizeViewId(closedViewId);
+    if (normalizedClosedViewId && normalizedActiveViewId && normalizedClosedViewId !== normalizedActiveViewId) {
+        return false;
+    }
+
+    if (typeof callback === 'function') {
+        callback({
+            activeViewId: normalizedActiveViewId,
+            closedViewId: normalizedClosedViewId,
+            context
+        });
+    }
+
+    return true;
+}
+
+function bulkActionParseHash() {
+    const hash = knackValueResolver.toStringSafe(window.location.hash);
+    const withoutHash = hash.startsWith('#') ? hash.slice(1) : hash;
+    const [pathPart, queryPart = ''] = withoutHash.split('?');
+
+    return {
+        raw: hash,
+        path: knackValueResolver.toStringSafe(pathPart),
+        query: knackValueResolver.toStringSafe(queryPart)
+    };
+}
+
+function bulkActionGetHashQueryParam(name) {
+    const key = knackValueResolver.toStringSafe(name);
+    if (!key) return '';
+
+    const { query } = bulkActionParseHash();
+    if (!query) return '';
+
+    const params = new URLSearchParams(query);
+    return knackValueResolver.toStringSafe(params.get(key));
+}
+
+function bulkActionMakeToken() {
+    try {
+        const bytes = new Uint8Array(12);
+        window.crypto.getRandomValues(bytes);
+        return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    } catch (_) {
+        return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+    }
+}
+
+function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
+    const slug = knackValueResolver.toStringSafe(sceneSlug).replace(/^#/, '');
+    if (!slug) return '';
+
+    const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
+    const recordPath = normalizedRecordId ? `/${normalizedRecordId}` : '';
+    const queryParams = new URLSearchParams();
+
+    Object.entries(params && typeof params === 'object' ? params : {}).forEach(([key, value]) => {
+        const paramKey = knackValueResolver.toStringSafe(key);
+        const paramValue = knackValueResolver.toStringSafe(value);
+        if (!paramKey || !paramValue) return;
+        queryParams.set(paramKey, paramValue);
+    });
+
+    const query = String(queryParams.toString() || '').trim();
+    return `#${slug}${recordPath}${query ? `?${query}` : ''}`;
+}
+
+function bulkActionNavigateToSceneSlug(sceneSlug, { recordId = '', params = {} } = {}) {
+    const targetHash = bulkActionBuildHash(sceneSlug, { recordId, params });
+    if (!targetHash) return;
+    if (window.location.hash === targetHash) return;
+    window.location.hash = targetHash;
+}
+
+function bulkActionSetChosenSelectValue({ viewId, fieldKey, value, label = '', updateEvent = 'liszt:updated' } = {}) {
+    const normalizedViewId = knackNavigator.normalizeViewId(viewId);
+    const normalizedFieldKey = knackNavigator.normalizeFieldId(fieldKey);
+    const normalizedValue = knackValueResolver.toStringSafe(value);
+    if (!normalizedViewId || !normalizedFieldKey || !normalizedValue || typeof window.jQuery !== 'function') return;
+
+    const optionLabel = knackValueResolver.toStringSafe(label) || normalizedValue;
+    const selectors = [
+        `#${normalizedViewId}-${normalizedFieldKey}`,
+        `#${normalizedViewId} #kn-input-${normalizedFieldKey} select`,
+        `#${normalizedViewId} #kn-input-${normalizedFieldKey} input[type="hidden"]`
+    ];
+
+    const findSelect = () => {
+        for (const selector of selectors) {
+            const found = window.jQuery(selector);
+            if (found && found.length) return found;
+        }
+        return null;
+    };
+
+    const maxAttempts = 6;
+    const baseDelayMs = 60;
+
+    function applyValue(attempt = 1) {
+        const select = findSelect();
+        if (!select || !select.length) return;
+
+        const previousValue = knackValueResolver.toStringSafe(select.val());
+        if (select.find(`option[value="${normalizedValue}"]`).length === 0) {
+            select.append(new Option(optionLabel, normalizedValue));
+        }
+
+        select.find(`option[value="${normalizedValue}"]`).prop('selected', true);
+        select.val(normalizedValue);
+        if (updateEvent) select.trigger(updateEvent);
+        select.trigger('liszt:updated');
+
+        const nextValue = knackValueResolver.toStringSafe(select.val());
+        if (previousValue !== nextValue) {
+            select.trigger('change');
+        }
+
+        if (nextValue === normalizedValue || attempt >= maxAttempts) return;
+        window.setTimeout(() => applyValue(attempt + 1), baseDelayMs * attempt);
+    }
+
+    window.setTimeout(() => applyValue(1), 0);
+}
+
+function bulkActionRenderFormNotice({ viewElement, bulkState, messages = {}, noticeClass = '' } = {}) {
+    if (!(viewElement instanceof Element) || !bulkState) return;
+
+    const form = viewElement.querySelector('form');
+    if (!form) return;
+
+    const recordIds = Array.isArray(bulkState.recordIds) ? bulkState.recordIds.filter(Boolean) : [];
+    const total = recordIds.length;
+    if (!total) return;
+
+    const mode = String(bulkState.formMode || 'create').toLowerCase() === 'update' ? 'update' : 'create';
+    const actionWord = mode === 'update' ? 'save' : 'submit';
+    const additionalCount = Math.max(0, total - 1);
+    const prefix = knackValueResolver.toStringSafe(messages.noticePrefix || 'Basket mode:') || 'Basket mode:';
+    const singleMessage = knackValueResolver.toStringSafe(messages.noticeSingle || 'This submission applies to the selected basket item only.') || 'This submission applies to the selected basket item only.';
+    const pluralMessage = typeof messages.noticePlural === 'function'
+        ? messages.noticePlural(additionalCount, actionWord)
+        : `When you ${actionWord} this form, the same values will be copied to the ${total} basket item${total === 1 ? '' : 's'}.`;
+
+    let notice = form.querySelector('[data-knack-bulk-form-notice="1"]');
+    if (!notice) {
+        notice = document.createElement('div');
+        notice.dataset.knackBulkFormNotice = '1';
+        notice.className = ['knackBulkActionFormNotice', knackValueResolver.toStringSafe(noticeClass)].filter(Boolean).join(' ');
+        form.insertAdjacentElement('afterbegin', notice);
+    }
+
+    notice.innerHTML = `<strong>${prefix}</strong> ${additionalCount > 0 ? pluralMessage : singleMessage}`;
+}
+
+const BULK_ACTION_FORM_FIELD_SELECTOR = '[id^="kn-input-field_"]';
+const BULK_ACTION_WRITABLE_CONTROL_SELECTOR = 'select:not([disabled]), textarea:not([disabled]), input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([disabled]), [contenteditable="true"]';
+const BULK_ACTION_TEXT_INPUT_SELECTOR = 'textarea:not([disabled]), input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([disabled])';
+const BULK_ACTION_RICH_TEXT_SELECTOR = '[contenteditable="true"], .redactor_editor';
+
+function bulkActionResolveViewContext(viewRef) {
+    const viewElement = bulkActionResolveElement(viewRef);
+    const viewId = knackNavigator.normalizeViewId(viewElement?.id || viewRef?.key || viewRef);
+    const viewObject = viewElement || !viewId ? null : knackNavigator.getViewObject(viewId);
+
+    return {
+        viewElement: viewElement || bulkActionFindViewRoot(viewId),
+        viewObject,
+        viewId
+    };
+}
+
+function bulkActionNormalizeFieldKeys(fieldKeys = []) {
+    return Array.from(new Set(
+        (Array.isArray(fieldKeys) ? fieldKeys : [])
+            .map((fieldKey) => knackNavigator.normalizeFieldId(fieldKey))
+            .filter(Boolean)
+    ));
+}
+
+function bulkActionIsPlainObject(value) {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function bulkActionObjectOrEmpty(value) {
+    return bulkActionIsPlainObject(value) ? value : {};
+}
+
+function bulkActionCaptureEmptyFieldPayload({ sessionKey, viewElement, activeFormViewId = '' } = {}) {
+    if (!(viewElement instanceof Element)) return;
+
+    const latestState = bulkActionReadFormFlowState(sessionKey);
+    if (!latestState) return;
+    if (String(latestState.formMode || 'create').toLowerCase() !== 'update') return;
+
+    const includeFieldKeys = bulkActionGetFormFieldKeys(viewElement);
+    const submittedFieldPayload = bulkActionBuildVisibleFormRequestPayload(viewElement, includeFieldKeys, { includeEmpty: true });
+    const emptyFieldPayload = bulkActionBuildVisibleEmptyFieldPayload(viewElement, includeFieldKeys);
+    bulkActionMergeFormFlowState(sessionKey, {
+        activeFormViewId: knackNavigator.normalizeViewId(activeFormViewId) || latestState.activeFormViewId || '',
+        submittedFieldPayload,
+        emptyFieldPayload,
+        emptyFieldPayloadCapturedAt: Date.now()
+    }, latestState);
+}
+
+function bulkActionCreateRunState(overrides = {}) {
+    return {
+        isRunning: false,
+        processed: 0,
+        total: 0,
+        success: 0,
+        failed: 0,
+        completionMessage: '',
+        ...bulkActionObjectOrEmpty(overrides)
+    };
+}
+
+function bulkActionSummarizeRunState(runState = {}) {
+    const total = Math.max(0, Number(runState?.total || 0));
+    const processed = Math.max(0, total > 0
+        ? Math.min(total, Number(runState?.processed || 0))
+        : Number(runState?.processed || 0));
+    const success = Math.max(0, Number(runState?.success || 0));
+    const failed = Math.max(0, Number(runState?.failed || 0));
+    const remaining = Math.max(0, total - processed);
+    const percent = total > 0 ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : 0;
+    const completionMessage = knackValueResolver.toStringSafe(runState?.completionMessage);
+    const isRunning = Boolean(runState?.isRunning);
+
+    if (isRunning) {
+        const title = processed === 0
+            ? (completionMessage || 'Preparing bulk action...')
+            : `${remaining} remaining`;
+        const detail = total > 0
+            ? `Processed ${processed} of ${total}`
+            : completionMessage;
+        const metaParts = [];
+        if (success > 0) metaParts.push(`${success} succeeded`);
+        if (failed > 0) metaParts.push(`${failed} failed`);
+        if (!metaParts.length && total > 0) metaParts.push(`${total} queued`);
+
+        return {
+            visible: Boolean(total || completionMessage),
+            title,
+            detail,
+            meta: metaParts.join(' • '),
+            percent,
+            stateClass: 'is-running'
+        };
+    }
+
+    if (completionMessage || total || success || failed) {
+        const title = failed > 0
+            ? `${failed} failed`
+            : (success > 0 || total > 0 ? 'Completed' : completionMessage || 'Ready');
+        const detail = completionMessage || (total > 0 ? `Processed ${processed} of ${total}` : '');
+        const metaParts = [];
+        if (success > 0) metaParts.push(`${success} succeeded`);
+        if (failed > 0) metaParts.push(`${failed} failed`);
+        if (!metaParts.length && total > 0) metaParts.push(`${processed} processed`);
+
+        return {
+            visible: Boolean(detail || metaParts.length),
+            title,
+            detail,
+            meta: metaParts.join(' • '),
+            percent: total > 0 ? 100 : percent,
+            stateClass: failed > 0 ? 'is-complete has-failures' : 'is-complete'
+        };
+    }
+
+    return {
+        visible: false,
+        title: '',
+        detail: '',
+        meta: '',
+        percent: 0,
+        stateClass: ''
+    };
+}
+
+function bulkActionHasBatchWriteApi(api = {}, mode = 'update') {
+    return mode === 'update'
+        ? typeof api?.updateRecords === 'function'
+        : typeof api?.createRecords === 'function';
+}
+
+function bulkActionResolveApiConcurrency(api = {}, total = 0) {
+    const normalizedTotal = Math.max(0, Number(total || 0));
+    const queue = api?._writeQueue || {};
+    const configured = queue.current === Infinity
+        ? Infinity
+        : Math.max(1, Math.floor(queue.current || api?.options?.writeConcurrency || 1));
+    const atOnce = configured === Infinity
+        ? normalizedTotal
+        : Math.max(1, Math.min(normalizedTotal, configured));
+
+    return {
+        configured,
+        atOnce,
+        queueActive: Math.max(0, Number(queue.active || 0)),
+        queuedWrites: Array.isArray(queue.queue) ? queue.queue.length : 0,
+        total: normalizedTotal
+    };
+}
+
+function bulkActionResolveReplicationApi(api = {}) {
+    const sharedApiClient = getKnackApiClient();
+    const providedApi = api && typeof api === 'object' ? api : {};
+    const batchSource = (typeof providedApi.updateRecords === 'function' || typeof providedApi.createRecords === 'function')
+        ? providedApi
+        : sharedApiClient;
+
+    const bindPreferred = (methodName, preferredSource, fallbackSource = null) => {
+        if (preferredSource && typeof preferredSource[methodName] === 'function') {
+            return preferredSource[methodName].bind(preferredSource);
+        }
+        if (fallbackSource && typeof fallbackSource[methodName] === 'function') {
+            return fallbackSource[methodName].bind(fallbackSource);
+        }
+        return undefined;
+    };
+
+    return {
+        createRecord: bindPreferred('createRecord', providedApi, sharedApiClient),
+        updateRecord: bindPreferred('updateRecord', providedApi, sharedApiClient),
+        refreshView: bindPreferred('refreshView', providedApi, sharedApiClient),
+        createRecords: bindPreferred('createRecords', batchSource, sharedApiClient),
+        updateRecords: bindPreferred('updateRecords', batchSource, sharedApiClient),
+        _writeQueue: batchSource?._writeQueue || sharedApiClient?._writeQueue,
+        options: batchSource?.options || sharedApiClient?.options || {},
+        _source: batchSource === providedApi ? 'provided-api' : 'shared-knack-api'
+    };
+}
+
+async function bulkActionPrepareReplicateOperations({ mode = 'create', remainingIds = [], basePayload = {}, action, sourceController = null, processedRecordId = '', sourceViewId = '', record = null, recordFieldId = '', options = {} } = {}) {
+    const preparedOperations = [];
+    const failedIds = [];
+
+    for (let index = 0; index < remainingIds.length; index += 1) {
+        const targetId = knackValueResolver.toStringSafe(remainingIds[index]);
+        if (!targetId) continue;
+
+        try {
+            const payload = { ...basePayload };
+            const sourceRecord = sourceController?.recordById?.get?.(targetId) || null;
+
+            if (typeof action?.dataCallback === 'function') {
+                const additions = await action.dataCallback({ ...payload }, {
+                    mode,
+                    sourceViewId,
+                    sourceRecord,
+                    processedId: processedRecordId,
+                    targetId,
+                    index: index + 1,
+                    total: remainingIds.length,
+                    record
+                });
+
+                if (bulkActionIsPlainObject(additions)) {
+                    Object.assign(payload, additions);
+                }
+            }
+
+            if (mode === 'update') {
+                preparedOperations.push({ id: targetId, data: payload });
+            } else {
+                preparedOperations.push({
+                    id: targetId,
+                    data: {
+                        ...payload,
+                        [recordFieldId]: targetId
+                    }
+                });
+            }
+        } catch (error) {
+            failedIds.push(targetId);
+            sourceController?.setBasketItemFailure(targetId, error);
+            bulkActionReportError(error, { sourceViewId, targetViewId: knackNavigator.normalizeViewId(action?.target), targetId, mode }, 'Bulk form replicate failed', options);
+        }
+    }
+
+    return { preparedOperations, failedIds };
+}
+
+async function bulkActionReplicateFallback({ mode = 'create', operations = [], api = {}, sceneId = '', apiViewId = '', sourceStore, sourceController = null, sourceViewId = '', options = {} } = {}) {
+    const failedIds = [];
+
+    for (let index = 0; index < operations.length; index += 1) {
+        const operation = operations[index];
+        const targetId = knackValueResolver.toStringSafe(operation?.id);
+        if (!targetId) continue;
+        let didFail = false;
+
+        try {
+            if (mode === 'update') {
+                await api.updateRecord(sceneId, apiViewId, targetId, operation.data);
+            } else {
+                await api.createRecord(sceneId, apiViewId, operation.data);
+            }
+
+            sourceStore?.removeItems?.([targetId]);
+        } catch (error) {
+            didFail = true;
+            failedIds.push(targetId);
+            sourceController?.setBasketItemFailure(targetId, error);
+            bulkActionReportError(error, { sourceViewId, targetViewId: apiViewId, targetId, mode }, 'Bulk form replicate failed', options);
+        } finally {
+            if (!sourceController) continue;
+
+            sourceController.runState = {
+                ...sourceController.runState,
+                processed: Math.min(Number(sourceController.runState.total || 0), Number(sourceController.runState.processed || 0) + 1),
+                success: Math.max(0, Number(sourceController.runState.success || 0) + (didFail ? 0 : 1)),
+                failed: Number(sourceController.runState.failed || 0) + (didFail ? 1 : 0)
+            };
+            sourceController.syncBasketUi();
+        }
+    }
+
+    return failedIds;
+}
+
+function bulkActionGetFormFieldKeys(viewRef) {
+    const { viewElement, viewObject } = bulkActionResolveViewContext(viewRef);
+
+    const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
+
+    if (fields.length) {
+        return bulkActionNormalizeFieldKeys(fields.map((field) => field?.key || ''));
+    }
+
+    if (!viewElement) return [];
+
+    return bulkActionNormalizeFieldKeys(
+        Array.from(viewElement.querySelectorAll(BULK_ACTION_FORM_FIELD_SELECTOR))
+            .map((element) => String(element.id || '').replace(/^kn-input-/, ''))
+    );
+}
+
+function bulkActionIsVisibleFormField(element) {
+    const resolvedElement = bulkActionResolveElement(element);
+    if (!(resolvedElement instanceof Element)) return false;
+    if (resolvedElement.hidden) return false;
+    if (resolvedElement.closest(`.${CLASS_HIDDEN}, .${CLASS_DISPLAY_NONE}, [hidden], [aria-hidden="true"]`)) return false;
+
+    const computedStyle = window.getComputedStyle ? window.getComputedStyle(resolvedElement) : null;
+    if (computedStyle && (computedStyle.display === 'none' || computedStyle.visibility === 'hidden')) {
+        return false;
+    }
+
+    return resolvedElement.getClientRects().length > 0;
+}
+
+function bulkActionHasWritableFormControl(fieldWrapper) {
+    if (!(fieldWrapper instanceof Element)) return false;
+
+    return Boolean(fieldWrapper.querySelector(BULK_ACTION_WRITABLE_CONTROL_SELECTOR));
+}
+
+function bulkActionIsFormFieldEmpty(fieldWrapper, fieldType = '') {
+    if (!(fieldWrapper instanceof Element)) return false;
+
+    let sawWritableControl = false;
+
+    const radioInputs = Array.from(fieldWrapper.querySelectorAll('input[type="radio"]:not([disabled])'));
+    if (radioInputs.length) {
+        sawWritableControl = true;
+        return !radioInputs.some((input) => input.checked);
+    }
+
+    const checkboxInputs = Array.from(fieldWrapper.querySelectorAll('input[type="checkbox"]:not([disabled])'));
+    if (checkboxInputs.length) {
+        sawWritableControl = true;
+        if (String(fieldType || '').trim().toLowerCase() === 'boolean' && checkboxInputs.length === 1) {
+            return !checkboxInputs[0].checked;
+        }
+        return !checkboxInputs.some((input) => input.checked);
+    }
+
+    const selectInputs = Array.from(fieldWrapper.querySelectorAll('select:not([disabled])'));
+    if (selectInputs.length) {
+        sawWritableControl = true;
+        const hasSelectedValue = selectInputs.some((select) => {
+            if (select.multiple) {
+                return Array.from(select.selectedOptions || []).some((option) => knackValueResolver.toStringSafe(option?.value).trim());
+            }
+            return knackValueResolver.toStringSafe(select.value).trim() !== '';
+        });
+        if (hasSelectedValue) return false;
+    }
+
+    const textInputs = Array.from(fieldWrapper.querySelectorAll(BULK_ACTION_TEXT_INPUT_SELECTOR));
+    if (textInputs.length) {
+        sawWritableControl = true;
+        if (textInputs.some((input) => knackValueResolver.toStringSafe(input.value).trim() !== '')) {
+            return false;
+        }
+    }
+
+    const richTextInput = fieldWrapper.querySelector(BULK_ACTION_RICH_TEXT_SELECTOR);
+    if (richTextInput instanceof Element) {
+        sawWritableControl = true;
+        if (knackValueResolver.toStringSafe(richTextInput.textContent).trim() !== '') {
+            return false;
+        }
+    }
+
+    return sawWritableControl;
+}
+
+function bulkActionGetEmptyRequestValue(fieldWrapper, fieldType = '') {
+    const normalizedFieldType = String(fieldType || '').trim().toLowerCase();
+
+    if (normalizedFieldType === 'boolean') return false;
+
+    if (normalizedFieldType === 'connection') {
+        const selectInput = fieldWrapper instanceof Element ? fieldWrapper.querySelector('select') : null;
+        return selectInput?.multiple ? [] : '';
+    }
+
+    if (normalizedFieldType === 'multiple_choice') {
+        const selectInput = fieldWrapper instanceof Element ? fieldWrapper.querySelector('select') : null;
+        const checkboxInputs = fieldWrapper instanceof Element
+            ? fieldWrapper.querySelectorAll('input[type="checkbox"]:not([disabled])')
+            : [];
+        return selectInput?.multiple || checkboxInputs.length > 1 ? [] : '';
+    }
+
+    return '';
+}
+
+function bulkActionBuildDateTimeRequestValue(fieldWrapper) {
+    const parts = getDateTimeParts(fieldWrapper);
+    const hasDate = knackValueResolver.toStringSafe(parts?.date);
+    const hasTime = knackValueResolver.toStringSafe(parts?.time);
+    if (!hasDate && !hasTime) return '';
+
+    const parsed = parseDateTimeParts(parts);
+    if (!parsed) {
+        return hasDate && hasTime ? `${hasDate} ${hasTime}`.trim() : (hasDate || hasTime);
+    }
+
+    const hours24 = parsed.getHours();
+    const minutes = String(parsed.getMinutes()).padStart(2, '0');
+    const amPm = hours24 >= 12 ? 'PM' : 'AM';
+    const hours12 = String((hours24 % 12) || 12).padStart(2, '0');
+
+    return {
+        date: parts.date,
+        date_formatted: parts.date,
+        hours: hours12,
+        minutes,
+        am_pm: amPm,
+        time: `${hours12}:${minutes} ${amPm}`
+    };
+}
+
+function bulkActionReadFormFieldRequestValue(fieldWrapper, fieldType = '') {
+    if (!(fieldWrapper instanceof Element)) return undefined;
+
+    const normalizedFieldType = String(fieldType || '').trim().toLowerCase();
+
+    if (normalizedFieldType === 'date_time') {
+        return bulkActionBuildDateTimeRequestValue(fieldWrapper);
+    }
+
+    const radioInputs = Array.from(fieldWrapper.querySelectorAll('input[type="radio"]:not([disabled])'));
+    if (radioInputs.length) {
+        const checked = radioInputs.find((input) => input.checked);
+        return checked ? checked.value : '';
+    }
+
+    const checkboxInputs = Array.from(fieldWrapper.querySelectorAll('input[type="checkbox"]:not([disabled])'));
+    if (checkboxInputs.length) {
+        if (normalizedFieldType === 'boolean' && checkboxInputs.length === 1) {
+            return checkboxInputs[0].checked;
+        }
+
+        const checkedValues = checkboxInputs.filter((input) => input.checked).map((input) => input.value).filter((value) => value !== '');
+        return checkboxInputs.length > 1 ? checkedValues : (checkedValues[0] || '');
+    }
+
+    const selectInput = fieldWrapper.querySelector('select:not([disabled])');
+    if (selectInput instanceof HTMLSelectElement) {
+        if (selectInput.multiple) {
+            return Array.from(selectInput.selectedOptions || []).map((option) => option.value).filter((value) => knackValueResolver.toStringSafe(value) !== '');
+        }
+        return selectInput.value;
+    }
+
+    const textInput = fieldWrapper.querySelector(BULK_ACTION_TEXT_INPUT_SELECTOR);
+    if (textInput instanceof HTMLInputElement || textInput instanceof HTMLTextAreaElement) {
+        return textInput.value;
+    }
+
+    const richTextInput = fieldWrapper.querySelector(BULK_ACTION_RICH_TEXT_SELECTOR);
+    if (richTextInput instanceof HTMLElement) {
+        return richTextInput.innerHTML || richTextInput.textContent || '';
+    }
+
+    return undefined;
+}
+
+function bulkActionBuildVisibleFormRequestPayload(viewRef, includeFieldKeys = [], { includeEmpty = false } = {}) {
+    const { viewElement } = bulkActionResolveViewContext(viewRef);
+    const normalizedFieldKeys = bulkActionNormalizeFieldKeys(includeFieldKeys);
+
+    if (!viewElement || !normalizedFieldKeys.length) return {};
+
+    return normalizedFieldKeys.reduce((payload, fieldKey) => {
+        const fieldWrapper = knackNavigator.getFieldWrapper(viewElement, fieldKey);
+        const fieldType = knackValueResolver.getFieldType(fieldKey);
+
+        if (!fieldWrapper || !bulkActionIsVisibleFormField(fieldWrapper) || !bulkActionHasWritableFormControl(fieldWrapper)) {
+            return payload;
+        }
+
+        const requestValue = bulkActionReadFormFieldRequestValue(fieldWrapper, fieldType);
+        if (requestValue === undefined) {
+            return payload;
+        }
+
+        const isEmptyString = typeof requestValue === 'string' && requestValue === '';
+        const isEmptyArray = Array.isArray(requestValue) && requestValue.length === 0;
+        if (!includeEmpty && (isEmptyString || isEmptyArray)) {
+            return payload;
+        }
+
+        payload[fieldKey] = requestValue;
+        return payload;
+    }, {});
+}
+
+function bulkActionBuildVisibleEmptyFieldPayload(viewRef, includeFieldKeys = []) {
+    const { viewElement } = bulkActionResolveViewContext(viewRef);
+    const normalizedFieldKeys = bulkActionNormalizeFieldKeys(includeFieldKeys);
+
+    if (!viewElement || !normalizedFieldKeys.length) return {};
+
+    return normalizedFieldKeys.reduce((payload, fieldKey) => {
+        const fieldWrapper = knackNavigator.getFieldWrapper(viewElement, fieldKey);
+        const fieldType = knackValueResolver.getFieldType(fieldKey);
+
+        if (!fieldWrapper || !bulkActionIsVisibleFormField(fieldWrapper) || !bulkActionHasWritableFormControl(fieldWrapper)) {
+            return payload;
+        }
+
+        if (!bulkActionIsFormFieldEmpty(fieldWrapper, fieldType)) {
+            return payload;
+        }
+
+        payload[fieldKey] = bulkActionGetEmptyRequestValue(fieldWrapper, fieldType);
+        return payload;
+    }, {});
+}
+
+function bulkActionBuildDynamicRequestPayload(record, { excludeFieldKeys = [], includeFieldKeys = [] } = {}) {
+    const payload = knackValueResolver.buildRequestPayload(record, Array.isArray(includeFieldKeys) && includeFieldKeys.length ? includeFieldKeys : undefined);
+    const exclude = new Set((Array.isArray(excludeFieldKeys) ? excludeFieldKeys : []).map((fieldKey) => knackNavigator.normalizeFieldId(fieldKey)).filter(Boolean));
+    exclude.forEach((fieldKey) => delete payload[fieldKey]);
+    return payload;
+}
+
+function bulkActionBuildReplicateBasePayload({ mode = 'create', bulkState = {}, formViewRef = null, record = null, includeFieldKeys = [], excludeFieldKeys = [] } = {}) {
+    const dynamicPayload = bulkActionBuildDynamicRequestPayload(record, { includeFieldKeys, excludeFieldKeys });
+    if (mode !== 'update') {
+        return dynamicPayload;
+    }
+
+    const submittedFieldPayload = {
+        ...bulkActionObjectOrEmpty(bulkState?.submittedFieldPayload),
+        ...bulkActionBuildVisibleFormRequestPayload(formViewRef, includeFieldKeys, { includeEmpty: true })
+    };
+    const emptyFieldPayload = {
+        ...bulkActionObjectOrEmpty(bulkState?.emptyFieldPayload),
+        ...bulkActionBuildVisibleEmptyFieldPayload(formViewRef, includeFieldKeys)
+    };
+
+    return Object.keys(submittedFieldPayload).length
+        ? {
+            ...submittedFieldPayload,
+            ...emptyFieldPayload
+        }
+        : {
+            ...dynamicPayload,
+            ...emptyFieldPayload
+        };
+}
+
+function bulkActionResolveConnectionFieldRecordId(record, fieldKey) {
+    const normalizedFieldKey = knackNavigator.normalizeFieldId(fieldKey);
+    if (!record || !normalizedFieldKey) return '';
+
+    const rawReference = knackValueResolver.toConnectionRef(record?.[`${normalizedFieldKey}_raw`] ?? record?.[normalizedFieldKey]);
+    if (rawReference?.id) return rawReference.id;
+    return knackValueResolver.toStringSafe(record?.[normalizedFieldKey]);
+}
+
+function bulkActionNotify(message, type = 'info', options = {}) {
+    if (typeof options.notify === 'function') {
+        options.notify({ message, type });
+        return;
+    }
+
+    if (type === 'error') {
+        console.error('[KnackBulkActions]', message);
+        return;
+    }
+
+    if (type === 'warning') {
+        console.warn('[KnackBulkActions]', message);
+        return;
+    }
+
+    console.log('[KnackBulkActions]', message);
+}
+
+function bulkActionLog(message, data = null, level = 'info') {
+    const prefix = `[KnackBulkActions] ${message}`;
+
+    switch (level) {
+        case 'warn':
+            console.warn(prefix, data || '');
+            break;
+        case 'error':
+            console.error(prefix, data || '');
+            break;
+        default:
+            console.info(prefix, data || '');
+    }
+}
+
+function bulkActionReportError(error, meta = {}, label = 'Bulk action error', options = {}) {
+    if (typeof options.onError === 'function') {
+        options.onError(error, meta, label);
+        return;
+    }
+
+    console.error(`[KnackBulkActions] ${label}`, { error, ...meta });
+}
+
+function bulkActionMergeStyleMaps(base = {}, overrides = {}) {
+    const next = { ...(base || {}) };
+
+    Object.entries(bulkActionObjectOrEmpty(overrides)).forEach(([key, value]) => {
+        if (bulkActionIsPlainObject(value)) {
+            next[key] = bulkActionMergeStyleMaps(base?.[key] || {}, value);
+            return;
+        }
+
+        next[key] = value;
+    });
+
+    return next;
+}
+
+const BULK_ACTION_BASE_STYLE_ID = 'knackBulkActionBaseStyles';
+
+function bulkActionGetBaseCssText() {
+    return `
+:root {
+    --knack-bulk-surface: #f6f7f8;
+    --knack-bulk-surface-alt: #eef1f3;
+    --knack-bulk-border: #d7dde3;
+    --knack-bulk-text: #34424c;
+    --knack-bulk-text-muted: #5d6974;
+    --knack-bulk-primary-border: #365f7f;
+    --knack-bulk-primary-top: #5b84a3;
+    --knack-bulk-primary-bottom: #456b89;
+    --knack-bulk-primary-active-top: #6a93b1;
+    --knack-bulk-primary-active-bottom: #507694;
+    --knack-bulk-warning: #b45309;
+    --knack-bulk-danger: #c0362c;
+    --knack-bulk-form-notice: #3f7db6;
+    --knack-bulk-form-notice-bg: #f6fbff;
+}
+
+.knackBulkActionBar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.knackBulkActionButton {
+    border: 1px solid #c5d4e6;
+    background: #f8fafc;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+}
+
+.knackBulkActionButton.is-disabled,
+.knackBulkActionButton:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.knackBulkActionButton.is-active:not(:disabled) {
+    box-shadow: 0 0 0 1px #5f7f98;
+}
+
+.knackBulkActionModal {
+    display: none;
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    width: 360px;
+    max-width: calc(100vw - 40px);
+    max-height: 70vh;
+    z-index: 2147483000;
+    overflow: hidden;
+    flex-direction: column;
+    border-radius: 10px;
+    background: var(--knack-bulk-surface);
+    border: 1px solid var(--knack-bulk-border);
+    box-shadow: 0 14px 34px rgba(33, 43, 54, 0.18);
+}
+
+.knackBulkActionModalHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--knack-bulk-border);
+    background: #e8edf1;
+    color: #32414b;
+    font-weight: 600;
+}
+
+.knackBulkActionModalClose {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    color: #5a6975;
+    font-size: 18px;
+}
+
+.knackBulkActionModalBody {
+    background: var(--knack-bulk-surface);
+    padding: 10px 14px;
+    overflow: auto;
+    flex: 1 1 auto;
+}
+
+.knackBulkActionModalMeta {
+    font-size: 12px;
+    color: var(--knack-bulk-text-muted);
+    margin-bottom: 10px;
+}
+
+.knackBulkActionModalList {
+    display: grid;
+    gap: 8px;
+}
+
+.knackBulkActionModalFooter {
+    padding: 10px 14px;
+    border-top: 1px solid var(--knack-bulk-border);
+    background: var(--knack-bulk-surface-alt);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.knackBulkActionModalActions {
+    display: flex;
+    flex-wrap: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 8px;
+}
+
+.knackBulkActionModalProgress {
+    flex: 1 0 100%;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    display: none;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid rgba(54, 95, 127, 0.18);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.8);
+}
+
+.knackBulkActionModalProgress.is-visible {
+    display: grid;
+    gap: 6px;
+}
+
+.knackBulkActionModalProgress.is-running {
+    background: linear-gradient(180deg, rgba(246, 251, 255, 0.98) 0%, rgba(235, 243, 249, 0.96) 100%);
+    border-color: rgba(63, 125, 182, 0.3);
+}
+
+.knackBulkActionModalProgress.has-failures {
+    border-color: rgba(180, 83, 9, 0.28);
+}
+
+.knackBulkActionModalProgressSummary {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+}
+
+.knackBulkActionModalProgressTitle {
+    color: var(--knack-bulk-text);
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.1;
+    overflow-wrap: anywhere;
+}
+
+.knackBulkActionModalProgressPercent {
+    color: var(--knack-bulk-text-muted);
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.knackBulkActionModalProgressDetail,
+.knackBulkActionModalProgressMeta {
+    color: var(--knack-bulk-text-muted);
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.knackBulkActionModalProgressTrack {
+    position: relative;
+    overflow: hidden;
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(93, 105, 116, 0.16);
+}
+
+.knackBulkActionModalProgressBar {
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--knack-bulk-primary-top) 0%, var(--knack-bulk-primary-bottom) 100%);
+    transition: width 180ms ease-out;
+}
+
+.knackBulkActionModalClear {
+    flex: 0 0 auto;
+    border: 1px solid #d9dee5;
+    background: #ffffff;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+}
+
+.knackBulkActionModalEmpty {
+    font-size: 13px;
+    color: var(--knack-bulk-text-muted);
+}
+
+.knackBulkActionModalItem {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    background: #ffffff;
+    border: 1px solid #dde4ea;
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+.knackBulkActionModalItemText {
+    color: var(--knack-bulk-text);
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.knackBulkActionModalItemFailure {
+    font-size: 11px;
+    margin-top: 4px;
+    color: var(--knack-bulk-warning);
+}
+
+.knackBulkActionModalRemove {
+    border: 0;
+    background: transparent;
+    color: var(--knack-bulk-danger);
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.knackBulkActionModalAction.knackBulkActionButton {
+    border: 1px solid var(--knack-bulk-primary-border);
+    background: linear-gradient(180deg, var(--knack-bulk-primary-top) 0%, var(--knack-bulk-primary-bottom) 100%);
+    box-shadow: 0 2px 6px rgba(42, 63, 80, 0.18);
+    color: #ffffff;
+    font-weight: 600;
+    padding: 6px 14px;
+}
+
+.knackBulkActionModalAction.knackBulkActionButton.is-active:not(:disabled) {
+    background: linear-gradient(180deg, var(--knack-bulk-primary-active-top) 0%, var(--knack-bulk-primary-active-bottom) 100%);
+}
+
+.knackBulkActionFormNotice {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--knack-bulk-form-notice);
+    border-left: 4px solid var(--knack-bulk-form-notice);
+    border-radius: 6px;
+    background: var(--knack-bulk-form-notice-bg);
+    color: #24527a;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+@media (max-width: 640px) {
+    .knackBulkActionModal {
+        right: 12px;
+        left: 12px;
+        bottom: 12px;
+        width: auto;
+        max-width: none;
+    }
+}
+`;
+}
+
+function ensureBulkActionBaseStyles() {
+    if (typeof document === 'undefined') return;
+    if (document.getElementById(BULK_ACTION_BASE_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = BULK_ACTION_BASE_STYLE_ID;
+    style.textContent = bulkActionGetBaseCssText();
+    document.head.appendChild(style);
+}
+
+function bulkActionBuildButtonId(viewId, actionKey, suffix = 'button') {
+    return [
+        knackNavigator.normalizeViewId(viewId) || 'view',
+        'bulk',
+        knackValueResolver.toStringSafe(actionKey || suffix).replace(/[^a-z0-9_-]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || suffix,
+        suffix
+    ].join('-');
+}
+
+function bulkActionCreateButton(container, config = {}, options = {}) {
+    const parent = bulkActionResolveElement(container);
+    if (!parent) return null;
+
+    if (typeof options.createButton === 'function') {
+        const customButton = options.createButton(parent, config, options);
+        const element = bulkActionResolveElement(customButton) || customButton;
+        if (element instanceof Element) {
+            return element;
+        }
+    }
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    if (config.id) button.id = config.id;
+    if (Array.isArray(config.classes) && config.classes.length) {
+        button.classList.add(...config.classes.filter(Boolean));
+    }
+    button.textContent = knackValueResolver.toStringSafe(config.label || 'Button') || 'Button';
+    parent.appendChild(button);
+    return button;
+}
+
+class BulkActionModal {
+    constructor({ viewId, title = 'Basket', emptyText = 'No items yet. Tick rows to add.', createButton = null, buttonClass = '', modalClass = '' } = {}) {
+        this.viewId = knackNavigator.normalizeViewId(viewId);
+        this.title = knackValueResolver.toStringSafe(title) || 'Basket';
+        this.emptyText = knackValueResolver.toStringSafe(emptyText) || 'No items yet. Tick rows to add.';
+        this.modalId = `knack-bulk-basket-${this.viewId}`;
+        this.createButton = typeof createButton === 'function' ? createButton : null;
+        this.buttonClass = knackValueResolver.toStringSafe(buttonClass);
+        this.modalClass = knackValueResolver.toStringSafe(modalClass);
+        this.isOpen = false;
+        this.onClose = null;
+        this.onRemove = null;
+        this.onClear = null;
+        this.onAction = null;
+        this.syncOpenStateFromDom();
+    }
+
+    syncOpenStateFromDom() {
+        const modal = document.getElementById(this.modalId);
+        if (!modal) {
+            this.isOpen = false;
+            return;
+        }
+
+        this.isOpen = modal.style.display !== 'none';
+    }
+
+    ensureModal() {
+        let modal = document.getElementById(this.modalId);
+        if (modal) return modal;
+
+        modal = document.createElement('div');
+        modal.id = this.modalId;
+        modal.className = ['knackBulkActionModal', this.modalClass].filter(Boolean).join(' ');
+
+        const header = document.createElement('div');
+        header.className = 'knackBulkActionModalHeader';
+
+        const title = document.createElement('div');
+        title.className = 'knackBulkActionModalTitle';
+        title.textContent = this.title;
+
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.textContent = 'x';
+        closeButton.setAttribute('aria-label', 'Close basket');
+        closeButton.className = 'knackBulkActionModalClose';
+        closeButton.addEventListener('click', () => {
+            this.close();
+            if (typeof this.onClose === 'function') this.onClose();
+        });
+
+        header.appendChild(title);
+        header.appendChild(closeButton);
+
+        const body = document.createElement('div');
+        body.className = 'knackBulkActionModalBody';
+        body.dataset.knackBulkBasketBody = '1';
+
+        const meta = document.createElement('div');
+        meta.dataset.knackBulkBasketMeta = '1';
+        meta.className = 'knackBulkActionModalMeta';
+
+        const list = document.createElement('div');
+        list.dataset.knackBulkBasketList = '1';
+        list.className = 'knackBulkActionModalList';
+
+        body.appendChild(meta);
+        body.appendChild(list);
+
+        const footer = document.createElement('div');
+        footer.className = 'knackBulkActionModalFooter';
+
+        const actions = document.createElement('div');
+        actions.dataset.knackBulkBasketActions = '1';
+        actions.className = 'knackBulkActionModalActions';
+
+        const progress = document.createElement('div');
+        progress.dataset.knackBulkBasketProgress = '1';
+        progress.className = 'knackBulkActionModalProgress';
+
+        const progressSummary = document.createElement('div');
+        progressSummary.className = 'knackBulkActionModalProgressSummary';
+
+        const progressTitle = document.createElement('div');
+        progressTitle.dataset.knackBulkBasketProgressTitle = '1';
+        progressTitle.className = 'knackBulkActionModalProgressTitle';
+
+        const progressPercent = document.createElement('div');
+        progressPercent.dataset.knackBulkBasketProgressPercent = '1';
+        progressPercent.className = 'knackBulkActionModalProgressPercent';
+
+        progressSummary.appendChild(progressTitle);
+        progressSummary.appendChild(progressPercent);
+
+        const progressDetail = document.createElement('div');
+        progressDetail.dataset.knackBulkBasketProgressDetail = '1';
+        progressDetail.className = 'knackBulkActionModalProgressDetail';
+
+        const progressTrack = document.createElement('div');
+        progressTrack.className = 'knackBulkActionModalProgressTrack';
+
+        const progressBar = document.createElement('div');
+        progressBar.dataset.knackBulkBasketProgressBar = '1';
+        progressBar.className = 'knackBulkActionModalProgressBar';
+        progressTrack.appendChild(progressBar);
+
+        const progressMeta = document.createElement('div');
+        progressMeta.dataset.knackBulkBasketProgressMeta = '1';
+        progressMeta.className = 'knackBulkActionModalProgressMeta';
+
+        progress.appendChild(progressSummary);
+        progress.appendChild(progressDetail);
+        progress.appendChild(progressTrack);
+        progress.appendChild(progressMeta);
+
+        const clearButton = document.createElement('button');
+        clearButton.type = 'button';
+        clearButton.textContent = 'Clear';
+        clearButton.className = 'knackBulkActionModalClear';
+        clearButton.addEventListener('click', () => {
+            if (typeof this.onClear === 'function') this.onClear();
+        });
+
+        footer.appendChild(actions);
+        footer.appendChild(clearButton);
+        footer.appendChild(progress);
+
+        modal.appendChild(header);
+        modal.appendChild(body);
+        modal.appendChild(footer);
+        document.body.appendChild(modal);
+        return modal;
+    }
+
+    render({ items = [] } = {}) {
+        const modal = document.getElementById(this.modalId);
+        if (!modal) return;
+
+        const meta = modal.querySelector('[data-knack-bulk-basket-meta="1"]');
+        if (meta) {
+            meta.textContent = `${items.length} item${items.length === 1 ? '' : 's'} in basket`;
+        }
+
+        const list = modal.querySelector('[data-knack-bulk-basket-list="1"]');
+        if (!list) return;
+        list.innerHTML = '';
+
+        if (!items.length) {
+            const empty = document.createElement('div');
+            empty.className = 'knackBulkActionModalEmpty';
+            empty.textContent = this.emptyText;
+            list.appendChild(empty);
+            return;
+        }
+
+        items.forEach((item) => {
+            const row = document.createElement('div');
+            row.className = 'knackBulkActionModalItem';
+
+            const text = document.createElement('div');
+            text.className = 'knackBulkActionModalItemText';
+            text.textContent = knackValueResolver.toStringSafe(item?.label || item?.recordId);
+
+            if (item?.failureType || item?.failureMessage) {
+                const failure = document.createElement('div');
+                failure.className = 'knackBulkActionModalItemFailure';
+                failure.textContent = `${item.failureType === 'validation' ? 'Validation' : 'Network'}: ${knackValueResolver.toStringSafe(item.failureMessage) || 'Retry this item.'}`;
+                text.appendChild(failure);
+            }
+
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.textContent = 'x';
+            removeButton.setAttribute('aria-label', 'Remove item');
+            removeButton.className = 'knackBulkActionModalRemove';
+            removeButton.addEventListener('click', () => {
+                if (typeof this.onRemove === 'function') this.onRemove(item?.recordId);
+            });
+
+            row.appendChild(text);
+            row.appendChild(removeButton);
+            list.appendChild(row);
+        });
+    }
+
+    renderActions(actions = []) {
+        const modal = document.getElementById(this.modalId);
+        if (!modal) return;
+
+        const container = modal.querySelector('[data-knack-bulk-basket-actions="1"]');
+        if (!container) return;
+        container.innerHTML = '';
+
+        (Array.isArray(actions) ? actions : []).forEach((action) => {
+            const button = bulkActionCreateButton(container, {
+                id: bulkActionBuildButtonId(this.viewId, action?.key || 'action', 'modal-action'),
+                label: action?.label || 'Submit',
+                classes: ['knackBulkActionButton', 'knackBulkActionModalAction', this.buttonClass].filter(Boolean),
+                styleText: ''
+            }, {
+                createButton: this.createButton,
+                viewId: this.viewId,
+                location: 'modal-action',
+                actionKey: action?.key,
+                action
+            });
+            if (!(button instanceof Element)) return;
+            button.disabled = Boolean(action?.disabled);
+            button.classList.toggle('is-active', Boolean(action?.active));
+            button.classList.toggle('is-disabled', button.disabled);
+            button.addEventListener('click', () => {
+                if (button.disabled) return;
+                if (typeof this.onAction === 'function') this.onAction(action?.key);
+            });
+            container.appendChild(button);
+        });
+    }
+
+    setProgressState(runState = {}) {
+        const modal = document.getElementById(this.modalId);
+        if (!modal) return;
+        const progress = modal.querySelector('[data-knack-bulk-basket-progress="1"]');
+        if (!progress) return;
+
+        const summary = bulkActionSummarizeRunState(runState);
+        progress.className = ['knackBulkActionModalProgress', summary.visible ? 'is-visible' : '', summary.stateClass].filter(Boolean).join(' ');
+
+        const title = modal.querySelector('[data-knack-bulk-basket-progress-title="1"]');
+        const detail = modal.querySelector('[data-knack-bulk-basket-progress-detail="1"]');
+        const meta = modal.querySelector('[data-knack-bulk-basket-progress-meta="1"]');
+        const percent = modal.querySelector('[data-knack-bulk-basket-progress-percent="1"]');
+        const bar = modal.querySelector('[data-knack-bulk-basket-progress-bar="1"]');
+
+        if (title) title.textContent = summary.title;
+        if (detail) detail.textContent = summary.detail;
+        if (meta) meta.textContent = summary.meta;
+        if (percent) percent.textContent = summary.visible ? `${summary.percent}%` : '';
+        if (bar instanceof Element) {
+            bar.style.width = `${summary.percent}%`;
+        }
+    }
+
+    open() {
+        const modal = this.ensureModal();
+        modal.style.display = 'flex';
+        this.isOpen = true;
+    }
+
+    close() {
+        const modal = document.getElementById(this.modalId);
+        if (modal) modal.style.display = 'none';
+        this.isOpen = false;
+    }
+}
+
+function ensureBulkActionFallbackCheckboxes(viewId, options = {}) {
+    const viewElement = bulkActionFindViewRoot(viewId);
+    if (!viewElement) return;
+
+    const rowCheckboxClass = knackValueResolver.toStringSafe(options.rowCheckboxClass || 'knackBulkRowCheckbox');
+    const masterCheckboxClass = knackValueResolver.toStringSafe(options.masterCheckboxClass || 'knackBulkMasterCheckbox');
+    const table = viewElement.querySelector('table.kn-table, table');
+    if (!table) return;
+
+    const headerRow = table.querySelector('thead tr');
+    if (headerRow && !headerRow.querySelector(`.${masterCheckboxClass}`)) {
+        const th = document.createElement('th');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = masterCheckboxClass;
+        checkbox.addEventListener('change', () => {
+            table.querySelectorAll(`tbody .${rowCheckboxClass}`).forEach((rowCheckbox) => {
+                rowCheckbox.checked = checkbox.checked;
+                rowCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+        });
+        th.appendChild(checkbox);
+        headerRow.prepend(th);
+    }
+
+    Array.from(table.querySelectorAll('tbody tr[id]')).forEach((row) => {
+        if (row.querySelector(`.${rowCheckboxClass}`)) return;
+        const td = document.createElement('td');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = rowCheckboxClass;
+        checkbox.dataset.recordId = knackValueResolver.toStringSafe(row.id);
+        td.appendChild(checkbox);
+        row.prepend(td);
+    });
+}
+
+class BulkActionGridController {
+    constructor({
+        viewId,
+        rowRecords = [],
+        labelFieldIds = [],
+        actions = [],
+        bulkActionsApi = KnackBulkActions,
+        namespace = 'KNACK_BULK',
+        basketTitle = 'Basket',
+        emptyBasketText = 'No items yet. Tick rows to add.',
+        buttonClass = 'knackBulkActionButton',
+        buttonBarClass = 'knackBulkActionBar',
+        rowCheckboxClass = 'knackBulkRowCheckbox',
+        masterCheckboxClass = 'knackBulkMasterCheckbox',
+        selectionScope = 'knack-bulk-actions',
+        basketMessages = {},
+        styles = {},
+        modalClass = '',
+        formNoticeClass = '',
+        createButton = null,
+        getButtonContainer = null,
+        addCheckboxes = null,
+        notify = null,
+        onError = null,
+        api = {},
+        basketTtlMs = 15 * 60 * 1000,
+        chosenUpdateEvent = 'liszt:updated'
+    } = {}) {
+        this.viewId = knackNavigator.normalizeViewId(viewId);
+        this.rowRecords = Array.isArray(rowRecords) ? rowRecords : [];
+        this.labelFieldIds = Array.isArray(labelFieldIds) ? labelFieldIds : [labelFieldIds];
+        this.actions = Array.isArray(actions) ? actions.filter((action) => action?.key && action?.label) : [];
+        this.bulkActionsApi = bulkActionsApi;
+        this.namespace = knackValueResolver.toStringSafe(namespace || 'KNACK_BULK') || 'KNACK_BULK';
+        this.basketMessages = bulkActionObjectOrEmpty(basketMessages);
+        this.options = {
+            buttonClass,
+            buttonBarClass,
+            rowCheckboxClass,
+            masterCheckboxClass,
+            selectionScope,
+            modalClass,
+            formNoticeClass,
+            getButtonContainer,
+            createButton,
+            addCheckboxes,
+            notify,
+            onError,
+            api,
+            basketTtlMs,
+            chosenUpdateEvent
+        };
+
+        this.recordById = new Map();
+        this.labelById = new Map();
+        this.rebuildRecordMaps();
+
+        this.basketModal = new BulkActionModal({
+            viewId: this.viewId,
+            title: basketTitle,
+            emptyText: emptyBasketText,
+            createButton: createButton,
+            buttonClass: buttonClass,
+            modalClass
+        });
+        this.basketModal.onRemove = (recordId) => this.removeFromBasket([recordId]);
+        this.basketModal.onClear = () => this.clearBasket();
+        this.basketModal.onAction = (actionKey) => this.runAction(actionKey);
+
+        this.basketStore = this.bulkActionsApi.createBasketStore({
+            namespace: this.namespace,
+            viewId: this.viewId,
+            ttlMs: basketTtlMs,
+            isOpen: () => this.basketModal.isOpen
+        });
+
+        this.basketItems = this.basketStore.getItems();
+        this.activeActionKey = this.basketStore.getActiveActionKey() || knackValueResolver.toStringSafe(this.actions[0]?.key);
+        this.runState = bulkActionCreateRunState();
+    }
+
+    rebuildRecordMaps() {
+        this.recordById.clear();
+        this.labelById.clear();
+
+        this.rowRecords.forEach((record) => {
+            const recordId = knackValueResolver.toStringSafe(record?.id);
+            if (!recordId) return;
+            this.recordById.set(recordId, record);
+            this.labelById.set(recordId, this.bulkActionsApi.getRecordLabel(record, this.labelFieldIds) || recordId);
+        });
+    }
+
+    resolveViewElement() {
+        return bulkActionFindViewRoot(this.viewId);
+    }
+
+    getSelectedRecordIds() {
+        const viewElement = this.resolveViewElement();
+        if (!viewElement) return [];
+
+        return Array.from(viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}:checked`))
+            .map((checkbox) => knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id))
+            .filter(Boolean);
+    }
+
+    findRowCheckbox(recordId, viewElement = this.resolveViewElement()) {
+        const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
+        if (!viewElement || !normalizedRecordId) return null;
+
+        return Array.from(viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}`)).find((checkbox) => {
+            return knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id) === normalizedRecordId;
+        }) || null;
+    }
+
+    buildBasketItems(recordIds = []) {
+        return bulkActionUniqueStrings(recordIds).map((recordId) => {
+            return {
+                recordId,
+                label: this.labelById.get(recordId) || recordId,
+                sourceRecord: this.recordById.get(recordId) || null
+            };
+        });
+    }
+
+    addToBasket(recordIds = []) {
+        const nextItems = this.basketStore.addItems(this.buildBasketItems(recordIds));
+        this.basketItems = nextItems;
+        this.syncBasketUi();
+        this.restoreSelectionFromBasket();
+        return nextItems;
+    }
+
+    replaceBasketFromRecordIds(recordIds = []) {
+        const nextItems = this.basketStore.setItems(this.buildBasketItems(recordIds));
+        this.basketItems = nextItems;
+        this.syncBasketUi();
+        this.restoreSelectionFromBasket();
+        this.updateButtonsDisabledState();
+        return nextItems;
+    }
+
+    removeFromBasket(recordIds = []) {
+        const normalizedRecordIds = bulkActionUniqueStrings(recordIds);
+        const viewElement = this.resolveViewElement();
+        if (viewElement && normalizedRecordIds.length) {
+            let syncedFromDom = false;
+
+            normalizedRecordIds.forEach((recordId) => {
+                const checkbox = this.findRowCheckbox(recordId, viewElement);
+                if (!(checkbox instanceof HTMLInputElement) || !checkbox.checked) return;
+
+                checkbox.checked = false;
+                syncedFromDom = true;
+            });
+
+            if (syncedFromDom) {
+                this.syncSelectionFromDom();
+                return this.basketItems;
+            }
+        }
+
+        const nextItems = this.basketStore.removeItems(recordIds);
+        this.basketItems = nextItems;
+        this.syncBasketUi();
+        this.restoreSelectionFromBasket();
+        this.updateButtonsDisabledState();
+        return nextItems;
+    }
+
+    clearBasket() {
+        this.basketItems = this.basketStore.clear();
+        this.activeActionKey = '';
+        this.runState = bulkActionCreateRunState();
+        this.basketModal.close();
+        this.syncBasketUi();
+        this.restoreSelectionFromBasket();
+        this.updateButtonsDisabledState();
+    }
+
+    clearBasketItemFailures(recordIds = []) {
+        const clearSet = new Set(bulkActionUniqueStrings(recordIds));
+        const nextItems = this.basketStore.getItems().map((item) => {
+            if (!clearSet.size || clearSet.has(item.recordId)) {
+                const nextItem = { ...item };
+                delete nextItem.failureType;
+                delete nextItem.failureMessage;
+                return nextItem;
+            }
+            return item;
+        });
+
+        this.basketItems = this.basketStore.setItems(nextItems);
+        this.syncBasketUi();
+    }
+
+    setBasketItemFailure(recordId, error) {
+        const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
+        if (!normalizedRecordId) return;
+
+        const failure = this.bulkActionsApi.classifyFailure(error);
+        const nextItems = this.basketStore.getItems().map((item) => {
+            if (item.recordId !== normalizedRecordId) return item;
+            return {
+                ...item,
+                failureType: failure.type,
+                failureMessage: failure.message
+            };
+        });
+
+        this.basketItems = this.basketStore.setItems(nextItems);
+        this.syncBasketUi();
+    }
+
+    resolveActiveAction() {
+        const availableActions = this.actions.filter((action) => action?.key);
+        if (!availableActions.length) return null;
+
+        if (this.activeActionKey) {
+            const match = availableActions.find((action) => action.key === this.activeActionKey);
+            if (match) return match;
+        }
+
+        return availableActions[0] || null;
+    }
+
+    setActiveActionKey(actionKey) {
+        const normalizedActionKey = knackValueResolver.toStringSafe(actionKey);
+        this.activeActionKey = normalizedActionKey;
+        this.basketStore.setActiveActionKey(normalizedActionKey);
+        this.syncBasketUi();
+        this.updateButtonsDisabledState();
+    }
+
+    getBasketActionConfigs() {
+        const activeAction = this.resolveActiveAction();
+        if (!activeAction) return [];
+
+        return [{
+            key: activeAction.key,
+            label: activeAction.label,
+            active: true,
+            disabled: this.runState.isRunning || !this.basketItems.length
+        }];
+    }
+
+    syncBasketUi() {
+        this.basketItems = this.basketStore.getItems();
+        const modalExists = document.getElementById(this.basketModal.modalId);
+        if (modalExists) {
+            this.basketModal.render({ items: this.basketItems });
+            this.basketModal.renderActions(this.getBasketActionConfigs());
+            this.basketModal.setProgressState(this.runState);
+        }
+    }
+
+    restoreSelectionFromBasket() {
+        const viewElement = this.resolveViewElement();
+        if (!viewElement) return;
+
+        const selectedIds = new Set(this.basketItems.map((item) => item.recordId));
+        viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}`).forEach((checkbox) => {
+            const recordId = knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id);
+            checkbox.checked = selectedIds.has(recordId);
+        });
+
+        this.syncMasterCheckboxState(viewElement);
+    }
+
+    syncMasterCheckboxState(viewElement = this.resolveViewElement()) {
+        if (!viewElement) return;
+
+        const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}`));
+        const checkedCount = rowCheckboxes.filter((checkbox) => checkbox.checked).length;
+        const hasRows = rowCheckboxes.length > 0;
+        const allChecked = hasRows && checkedCount === rowCheckboxes.length;
+        const someChecked = checkedCount > 0;
+
+        viewElement.querySelectorAll(`.${this.options.masterCheckboxClass}`).forEach((checkbox) => {
+            checkbox.checked = allChecked;
+            checkbox.indeterminate = someChecked && !allChecked;
+        });
+    }
+
+    syncSelectionFromDom() {
+        const viewElement = this.resolveViewElement();
+        if (!viewElement) return;
+
+        const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}`));
+        const checkedIds = rowCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id)).filter(Boolean);
+        this.replaceBasketFromRecordIds(checkedIds);
+    }
+
+    updateButtonsDisabledState() {
+        const wrapper = document.querySelector(`[data-knack-bulk-bar="${this.viewId}"]`);
+        if (!wrapper) return;
+
+        const hasSelection = this.getSelectedRecordIds().length > 0 || this.basketItems.length > 0;
+        wrapper.querySelectorAll(`.${this.options.buttonClass}`).forEach((button) => {
+            button.disabled = !hasSelection;
+            button.classList.toggle('is-disabled', !hasSelection);
+
+            if (knackValueResolver.toStringSafe(button.dataset.bulkActionKey) === knackValueResolver.toStringSafe(this.resolveActiveAction()?.key)) {
+                button.classList.add('is-active');
+                button.classList.remove('is-inactive');
+            } else {
+                button.classList.remove('is-active');
+                button.classList.add('is-inactive');
+            }
+        });
+    }
+
+    resolveButtonContainer() {
+        if (typeof this.options.getButtonContainer === 'function') {
+            const container = bulkActionResolveElement(this.options.getButtonContainer(this.viewId, this.resolveViewElement()));
+            if (container) return container;
+        }
+
+        const viewElement = this.resolveViewElement();
+        if (!viewElement) return null;
+
+        return viewElement.querySelector('.kn-records-nav') || viewElement.querySelector('.view-header') || viewElement;
+    }
+
+    removeExistingUi() {
+        const existing = document.querySelector(`[data-knack-bulk-bar="${this.viewId}"]`);
+        if (existing) existing.remove();
+    }
+
+    renderButtonBar() {
+        const container = this.resolveButtonContainer();
+        if (!container) return;
+
+        this.removeExistingUi();
+
+        const wrapper = document.createElement('div');
+        wrapper.dataset.knackBulkBar = this.viewId;
+        wrapper.className = ['knackBulkActionBar', this.options.buttonBarClass].filter(Boolean).join(' ');
+
+        this.actions.forEach((action) => {
+            const button = bulkActionCreateButton(wrapper, {
+                id: bulkActionBuildButtonId(this.viewId, action.key, 'toolbar-action'),
+                label: action.label,
+                classes: ['knackBulkActionButton', 'knackBulkActionToolbarButton', this.options.buttonClass].filter(Boolean),
+                styleText: ''
+            }, {
+                createButton: this.options.createButton,
+                viewId: this.viewId,
+                location: 'toolbar-action',
+                actionKey: action.key,
+                action
+            });
+            if (!(button instanceof Element)) return;
+            button.dataset.bulkActionKey = action.key;
+            button.addEventListener('click', () => {
+                const selectedIds = this.getSelectedRecordIds();
+                if (!selectedIds.length && !this.basketItems.length) {
+                    bulkActionNotify('Select one or more rows first.', 'warning', this.options);
+                    return;
+                }
+
+                this.setActiveActionKey(action.key);
+                this.openBasketAndAdd(selectedIds);
+            });
+            wrapper.appendChild(button);
+        });
+
+        if (container === this.resolveViewElement()) {
+            container.prepend(wrapper);
+        } else {
+            container.appendChild(wrapper);
+        }
+    }
+
+    ensureCheckboxes() {
+        if (typeof this.options.addCheckboxes === 'function') {
+            this.options.addCheckboxes(this.viewId, {
+                selectionScope: this.options.selectionScope,
+                rowCheckboxClass: this.options.rowCheckboxClass,
+                masterCheckboxClass: this.options.masterCheckboxClass
+            });
+            return;
+        }
+
+        ensureBulkActionFallbackCheckboxes(this.viewId, {
+            rowCheckboxClass: this.options.rowCheckboxClass,
+            masterCheckboxClass: this.options.masterCheckboxClass
+        });
+    }
+
+    openBasketAndAdd(recordIds = []) {
+        if (Array.isArray(recordIds) && recordIds.length) {
+            this.addToBasket(recordIds);
+        }
+
+        if (!this.basketItems.length) {
+            bulkActionNotify('Select one or more rows first.', 'warning', this.options);
+            return;
+        }
+
+        this.basketModal.open();
+        this.syncBasketUi();
+    }
+
+    resetFormActionState() {
+        this.runState = bulkActionCreateRunState();
+        this.syncBasketUi();
+        this.updateButtonsDisabledState();
+    }
+
+    async startFormAction(action) {
+        const sceneInfo = getSceneFromViewId(action?.target);
+        const sceneSlug = knackValueResolver.toStringSafe(sceneInfo?.slug);
+        if (!sceneSlug) {
+            bulkActionNotify('Bulk action could not resolve the target form route.', 'error', this.options);
+            return;
+        }
+
+        const recordIds = this.basketItems.map((item) => item.recordId).filter(Boolean);
+        if (!recordIds.length) return;
+
+        const firstRecordId = recordIds[0];
+        const firstItem = this.basketItems.find((item) => item.recordId === firstRecordId) || null;
+        const sessionKey = bulkActionBuildFormFlowSessionKey(this.namespace, action.target);
+        const navToken = bulkActionMakeToken();
+
+        bulkActionWriteFormFlowState(sessionKey, {
+            sourceViewId: this.viewId,
+            recordIds,
+            recordFieldId: action.recordFieldId || '',
+            firstRecordLabel: knackValueResolver.toStringSafe(firstItem?.label),
+            formMode: String(action.operation || 'create').toLowerCase() === 'update' ? 'update' : 'create',
+            sceneSlug,
+            navToken,
+            createdAt: Date.now(),
+            activeFormViewId: ''
+        });
+
+        this.runState = bulkActionCreateRunState({
+            isRunning: true,
+            total: recordIds.length,
+            completionMessage: 'Waiting for form submission...'
+        });
+        this.syncBasketUi();
+
+        if (String(action.operation || '').toLowerCase() === 'update') {
+            bulkActionNavigateToSceneSlug(sceneSlug, { recordId: firstRecordId, params: { coBulkToken: navToken } });
+            return;
+        }
+
+        bulkActionNavigateToSceneSlug(sceneSlug, { params: { coBulkToken: navToken } });
+    }
+
+    async runAction(actionKey) {
+        const action = this.actions.find((candidate) => knackValueResolver.toStringSafe(candidate?.key) === knackValueResolver.toStringSafe(actionKey));
+        if (!action || this.runState.isRunning) return;
+
+        if (action.targetType === 'form') {
+            await this.startFormAction(action);
+            return;
+        }
+
+        const runner = this.bulkActionsApi.createActionRunner({
+            actions: [action],
+            concurrency: 'serial',
+            onStateChange: (state) => {
+                this.runState = state;
+                this.syncBasketUi();
+            }
+        });
+
+        try {
+            const result = await runner.run(action.key, {
+                items: this.basketItems,
+                context: {
+                    viewId: this.viewId,
+                    controller: this
+                }
+            });
+
+            const failedItems = (result?.items || []).filter((item) => item?.failureType || item?.failureMessage);
+            this.basketItems = this.basketStore.setItems(failedItems);
+            this.runState = result?.state || this.runState;
+            this.syncBasketUi();
+
+            if (!failedItems.length) {
+                this.basketModal.close();
+            }
+        } catch (error) {
+            bulkActionReportError(error, { viewId: this.viewId, actionKey: action.key }, 'Bulk batch action failed', this.options);
+            bulkActionNotify('Bulk action failed. See console for details.', 'error', this.options);
+        }
+    }
+
+    init() {
+        if (!this.viewId) return null;
+        const viewElement = this.resolveViewElement();
+        if (!viewElement) return null;
+
+        ensureBulkActionBaseStyles();
+        ensureBulkActionControllerLifecycleBinding();
+        bulkActionControllerStore.set(this.viewId, this);
+        this.rebuildRecordMaps();
+        this.ensureCheckboxes();
+        this.renderButtonBar();
+        this.restoreSelectionFromBasket();
+        this.syncBasketUi();
+        this.updateButtonsDisabledState();
+
+        if (!viewElement.dataset.knackBulkActionsBound) {
+            viewElement.addEventListener('change', (event) => {
+                const target = event.target;
+                if (!(target instanceof HTMLInputElement)) return;
+                if (!target.classList.contains(this.options.rowCheckboxClass) && !target.classList.contains(this.options.masterCheckboxClass)) return;
+                this.syncSelectionFromDom();
+            });
+            viewElement.dataset.knackBulkActionsBound = 'true';
+        }
+
+        this.actions.filter((action) => action?.targetType === 'form').forEach((action) => {
+            registerBulkActionFormReplicateWorkflow({
+                namespace: this.namespace,
+                action,
+                api: this.options.api,
+                notify: this.options.notify,
+                onError: this.options.onError,
+                chosenUpdateEvent: this.options.chosenUpdateEvent,
+                formNoticeClass: this.options.formNoticeClass
+            });
+        });
+
+        return this;
+    }
+}
+
+async function replicateBulkActionSubmittedRecord({ action, bulkState, record, api = {}, options = {} } = {}) {
+    const mode = String(bulkState?.formMode || 'create').toLowerCase() === 'update' ? 'update' : 'create';
+    const sourceViewId = knackNavigator.normalizeViewId(bulkState?.sourceViewId);
+    const recordIds = bulkActionUniqueStrings(bulkState?.recordIds || []);
+    const recordFieldId = knackNavigator.normalizeFieldId(bulkState?.recordFieldId);
+    const sourceController = bulkActionControllerStore.get(sourceViewId) || null;
+    const sourceStore = action?.bulkActionsApi?.createBasketStore
+        ? action.bulkActionsApi.createBasketStore({ namespace: bulkState?.namespace || options.namespace || 'KNACK_BULK', viewId: sourceViewId })
+        : createBulkActionBasketStore({ namespace: bulkState?.namespace || options.namespace || 'KNACK_BULK', viewId: sourceViewId });
+    const apiClient = bulkActionResolveReplicationApi(api);
+
+    const processedRecordId = mode === 'update'
+        ? knackValueResolver.toStringSafe(record?.id) || recordIds[0] || ''
+        : bulkActionResolveConnectionFieldRecordId(record, recordFieldId) || recordIds[0] || '';
+
+    const formViewRef = options.formViewId || action.target;
+    const includeFieldKeys = mode === 'update' ? bulkActionGetFormFieldKeys(action.target) : [];
+    const excludeFieldKeys = mode === 'create' && recordFieldId ? [recordFieldId] : [];
+    const basePayload = bulkActionBuildReplicateBasePayload({
+        mode,
+        bulkState,
+        formViewRef,
+        record,
+        includeFieldKeys,
+        excludeFieldKeys
+    });
+
+    if (processedRecordId) {
+        sourceStore.removeItems([processedRecordId]);
+    }
+
+    const remainingIds = recordIds.filter((recordId) => recordId && recordId !== processedRecordId);
+    if (!remainingIds.length) {
+        if (sourceController) {
+            sourceController.runState = {
+                isRunning: false,
+                processed: recordIds.length,
+                total: recordIds.length,
+                success: recordIds.length,
+                failed: 0,
+                completionMessage: `Done: ${recordIds.length} ok.`
+            };
+            sourceController.syncBasketUi();
+            sourceController.basketModal.close();
+        }
+        return { failedIds: [], total: recordIds.length };
+    }
+
+    if (sourceController) {
+        sourceController.runState = bulkActionCreateRunState({
+            isRunning: true,
+            processed: processedRecordId ? 1 : 0,
+            total: recordIds.length,
+            success: processedRecordId ? 1 : 0
+        });
+        sourceController.clearBasketItemFailures(recordIds);
+        sourceController.syncBasketUi();
+    }
+
+    const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || getSceneFromViewId(action.target)?.key);
+    const apiViewId = knackNavigator.normalizeViewId(action?.target);
+    const failedIds = [];
+    const { preparedOperations, failedIds: preparationFailedIds } = await bulkActionPrepareReplicateOperations({
+        mode,
+        remainingIds,
+        basePayload,
+        action,
+        sourceController,
+        processedRecordId,
+        sourceViewId,
+        record,
+        recordFieldId,
+        options
+    });
+
+    if (preparationFailedIds.length) {
+        failedIds.push(...preparationFailedIds);
+        if (sourceController) {
+            sourceController.runState = {
+                ...sourceController.runState,
+                processed: Math.min(Number(sourceController.runState.total || 0), Number(sourceController.runState.processed || 0) + preparationFailedIds.length),
+                failed: Number(sourceController.runState.failed || 0) + preparationFailedIds.length
+            };
+            sourceController.syncBasketUi();
+        }
+    }
+
+    const onBatchProgress = (progress = {}) => {
+        if (!sourceController) return;
+
+        const targetId = mode === 'update'
+            ? knackValueResolver.toStringSafe(progress.recordId)
+            : knackValueResolver.toStringSafe(preparedOperations[Number(progress.index)]?.id);
+
+        if (targetId && !progress.error) {
+            sourceStore.removeItems([targetId]);
+        }
+
+        if (targetId && progress.error) {
+            failedIds.push(targetId);
+            sourceController.setBasketItemFailure(targetId, progress.error);
+            bulkActionReportError(progress.error, { sourceViewId, targetViewId: apiViewId, targetId, mode }, 'Bulk form replicate failed', options);
+        }
+
+        const batchSuccess = mode === 'update'
+            ? Number(progress.updated || 0)
+            : Number(progress.created || 0);
+        const batchFailed = Number(progress.failed || 0);
+        sourceController.runState = {
+            ...sourceController.runState,
+            processed: (processedRecordId ? 1 : 0) + preparationFailedIds.length + batchSuccess + batchFailed,
+            success: (processedRecordId ? 1 : 0) + batchSuccess,
+            failed: preparationFailedIds.length + batchFailed
+        };
+        sourceController.syncBasketUi();
+    };
+
+    const canUseBatchApi = bulkActionHasBatchWriteApi(apiClient, mode);
+    const concurrencyInfo = bulkActionResolveApiConcurrency(apiClient, preparedOperations.length);
+    bulkActionLog('Starting bulk form replication', {
+        mode,
+        sourceViewId,
+        targetViewId: apiViewId,
+        totalSelected: recordIds.length,
+        alreadyProcessed: processedRecordId ? 1 : 0,
+        queuedForReplication: preparedOperations.length,
+        preparationFailures: preparationFailedIds.length,
+        method: canUseBatchApi ? 'batch-api' : 'fallback-sequential',
+        apiSource: apiClient._source || 'unknown',
+        concurrencyConfigured: concurrencyInfo.configured,
+        recordsAtOnce: canUseBatchApi ? concurrencyInfo.atOnce : 1,
+        queueActive: concurrencyInfo.queueActive,
+        queuedWritesAhead: concurrencyInfo.queuedWrites
+    });
+
+    if (preparedOperations.length) {
+        if (canUseBatchApi) {
+            if (mode === 'update') {
+                await apiClient.updateRecords(sceneId, apiViewId, preparedOperations, {
+                    continueOnError: true,
+                    onProgress: onBatchProgress
+                });
+            } else {
+                await apiClient.createRecords(sceneId, apiViewId, preparedOperations.map((operation) => operation.data), {
+                    continueOnError: true,
+                    onProgress: onBatchProgress
+                });
+            }
+        } else {
+            const fallbackFailedIds = await bulkActionReplicateFallback({
+                mode,
+                operations: preparedOperations,
+                api: apiClient,
+                sceneId,
+                apiViewId,
+                sourceStore,
+                sourceController,
+                sourceViewId,
+                options
+            });
+            failedIds.push(...fallbackFailedIds);
+        }
+    }
+
+    if (sourceController) {
+        const successCount = Math.max(0, recordIds.length - failedIds.length);
+        sourceController.runState = {
+            ...sourceController.runState,
+            isRunning: false,
+            processed: recordIds.length,
+            success: successCount,
+            failed: failedIds.length,
+            completionMessage: failedIds.length
+                ? `Done: ${successCount} ok, ${failedIds.length} failed.`
+                : `Done: ${successCount} ok.`
+        };
+        sourceController.syncBasketUi();
+        if (!failedIds.length) {
+            sourceController.basketModal.close();
+        }
+    }
+
+    if (typeof apiClient.refreshView === 'function' && document.getElementById(sourceViewId)) {
+        try {
+            await apiClient.refreshView(sourceViewId);
+        } catch (_) {}
+    }
+
+    return {
+        failedIds,
+        total: recordIds.length
+    };
+}
+
+function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', action, api = {}, notify = null, onError = null, chosenUpdateEvent = 'liszt:updated', styles = {}, formNoticeClass = '' } = {}) {
+    const formViewId = knackNavigator.normalizeViewId(action?.target);
+    if (!formViewId) return;
+
+    const workflowKey = `${namespace}::${formViewId}`;
+    if (bulkActionWorkflowRegistry.has(workflowKey)) return;
+    bulkActionWorkflowRegistry.add(workflowKey);
+
+    const sessionKey = bulkActionBuildFormFlowSessionKey(namespace, formViewId);
+    const viewRenderEvent = `knack-view-render.${formViewId}`;
+    const formSubmitEvent = `knack-form-submit.${formViewId}`;
+    const anyViewRenderEvent = 'knack-view-render.any';
+    const modalClosedEvent = 'KTL.modalClosed';
+    const knackModalCloseEvent = 'knack-modal-close';
+
+    const handleFormClosed = (closedViewId = '', callback = null) => {
+        const bulkState = bulkActionReadFormFlowState(sessionKey);
+        if (!bulkState) return false;
+
+        const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
+        const closeContext = {
+            sessionKey,
+            bulkState,
+            formViewId: activeFormViewId || knackNavigator.normalizeViewId(formViewId)
+        };
+
+        return handleModalClosed({
+            activeViewId: activeFormViewId,
+            closedViewId,
+            context: closeContext,
+            callback: ({ context }) => {
+                bulkActionResetPendingFormFlow(sessionKey);
+                if (typeof callback === 'function') {
+                    callback(context || closeContext);
+                }
+            }
+        });
+    };
+
+    $(document).on(viewRenderEvent, function (_, view) {
+        const bulkState = bulkActionReadFormFlowState(sessionKey);
+        if (!bulkState) return;
+
+        const createdAt = Number(bulkState.createdAt || 0);
+        if (createdAt && Date.now() - createdAt > BULK_ACTION_FORM_FLOW_TTL_MS) {
+            bulkActionClearFormFlowState(sessionKey);
+            return;
+        }
+
+        const stateToken = knackValueResolver.toStringSafe(bulkState.navToken);
+        const hashToken = bulkActionGetHashQueryParam('coBulkToken');
+        if (!stateToken || !hashToken || stateToken !== hashToken) return;
+
+        const renderedViewId = knackNavigator.normalizeViewId(view?.key);
+        const viewElement = bulkActionFindViewRoot(renderedViewId);
+        if (!renderedViewId || !viewElement) return;
+
+        bulkActionMergeFormFlowState(sessionKey, {
+            tokenVerifiedAt: Date.now(),
+            activeFormViewId: renderedViewId
+        }, bulkState);
+
+        bulkActionRenderFormNotice({
+            viewElement,
+            bulkState,
+            messages: {
+                ...(action?.messages?.formReplicate || {}),
+                styles: bulkActionMergeStyleMaps(
+                    styles?.formNotice || {},
+                    action?.messages?.formReplicate?.styles || {}
+                )
+            },
+            noticeClass: formNoticeClass
+        });
+
+        if (String(bulkState.formMode || 'create').toLowerCase() === 'update') {
+            const form = viewElement.querySelector('form');
+            if (form && !form.dataset.knackBulkEmptyCaptureBound) {
+                const captureFormFieldPayload = () => bulkActionCaptureEmptyFieldPayload({
+                    sessionKey,
+                    viewElement,
+                    activeFormViewId: renderedViewId
+                });
+
+                form.addEventListener('input', captureFormFieldPayload, true);
+                form.addEventListener('change', captureFormFieldPayload, true);
+                form.addEventListener('submit', captureFormFieldPayload, true);
+                form.dataset.knackBulkEmptyCaptureBound = 'true';
+
+                window.setTimeout(captureFormFieldPayload, 0);
+            }
+        }
+
+        if (String(bulkState.formMode || 'create').toLowerCase() === 'update') return;
+
+        const firstRecordId = bulkActionUniqueStrings(bulkState.recordIds || [])[0] || '';
+        if (!firstRecordId || !bulkState.recordFieldId) return;
+
+        bulkActionSetChosenSelectValue({
+            viewId: renderedViewId,
+            fieldKey: bulkState.recordFieldId,
+            value: firstRecordId,
+            label: bulkState.firstRecordLabel,
+            updateEvent: chosenUpdateEvent
+        });
+    });
+
+    $(document).on(anyViewRenderEvent, function (_, view) {
+        const bulkState = bulkActionReadFormFlowState(sessionKey);
+        if (!bulkState) return;
+
+        const sourceViewId = knackNavigator.normalizeViewId(bulkState.sourceViewId);
+        const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
+        const renderedViewId = knackNavigator.normalizeViewId(view?.key);
+        if (!sourceViewId || !renderedViewId || renderedViewId !== sourceViewId) return;
+        if (activeFormViewId && renderedViewId === activeFormViewId) return;
+
+        handleFormClosed();
+    });
+
+    $(document).on(modalClosedEvent, function (_, closedViewId) {
+        handleFormClosed(closedViewId);
+    });
+
+    $(document).on(knackModalCloseEvent, function () {
+        window.setTimeout(() => {
+            const bulkState = bulkActionReadFormFlowState(sessionKey);
+            if (!bulkState) return;
+
+            const sourceViewId = knackNavigator.normalizeViewId(bulkState.sourceViewId);
+            const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
+            const sourceViewVisible = Boolean(sourceViewId && bulkActionFindViewRoot(sourceViewId));
+            const activeFormVisible = Boolean(activeFormViewId && bulkActionFindViewRoot(activeFormViewId));
+            if (sourceViewVisible && !activeFormVisible) {
+                handleFormClosed(activeFormViewId);
+            }
+        }, 0);
+    });
+
+    $(document).on(formSubmitEvent, async function (_, view, record) {
+        const bulkState = bulkActionReadFormFlowState(sessionKey);
+        if (!bulkState) return;
+
+        const createdAt = Number(bulkState.createdAt || 0);
+        if (createdAt && Date.now() - createdAt > BULK_ACTION_FORM_FLOW_TTL_MS) {
+            bulkActionClearFormFlowState(sessionKey);
+            return;
+        }
+
+        const stateToken = knackValueResolver.toStringSafe(bulkState.navToken);
+        const hashToken = bulkActionGetHashQueryParam('coBulkToken');
+        const tokenVerifiedAt = Number(bulkState.tokenVerifiedAt || 0);
+        const tokenVerifiedRecently = tokenVerifiedAt && Date.now() - tokenVerifiedAt < BULK_ACTION_FORM_FLOW_TTL_MS;
+        if ((!stateToken || !hashToken || stateToken !== hashToken) && !tokenVerifiedRecently) return;
+
+        const submitViewId = knackNavigator.normalizeViewId(view?.key);
+        const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
+        if (activeFormViewId && submitViewId !== activeFormViewId) return;
+
+        bulkActionClearFormFlowState(sessionKey);
+
+        const resolvedApi = bulkActionResolveReplicationApi(api);
+        const hasCreateApi = typeof resolvedApi.createRecords === 'function' || typeof resolvedApi.createRecord === 'function';
+        const hasUpdateApi = typeof resolvedApi.updateRecords === 'function' || typeof resolvedApi.updateRecord === 'function';
+        if (!hasCreateApi || !hasUpdateApi) {
+            bulkActionNotify('Bulk action API callbacks are missing create/update handlers.', 'error', { notify });
+            return;
+        }
+
+        const actionWithApi = {
+            ...action,
+            sceneId: view?.scene?.key || getSceneFromViewId(submitViewId)?.key || '',
+            bulkActionsApi: KnackBulkActions
+        };
+
+        try {
+            const result = await replicateBulkActionSubmittedRecord({
+                action: actionWithApi,
+                bulkState: { ...bulkState, namespace },
+                record,
+                api: resolvedApi,
+                options: { notify, onError, namespace, formViewId: submitViewId }
+            });
+
+            const successCount = Math.max(0, Number(result?.total || 0) - Number(result?.failedIds?.length || 0));
+            if (result?.failedIds?.length) {
+                bulkActionNotify(`Completed ${successCount} item(s); ${result.failedIds.length} failed.`, 'warning', { notify });
+            } else {
+                bulkActionNotify(`Completed ${successCount} item(s).`, 'success', { notify });
+            }
+        } catch (error) {
+            bulkActionReportError(error, { targetViewId: submitViewId, sourceViewId: bulkState.sourceViewId }, 'Bulk form submit replicate failed', { onError });
+            bulkActionNotify('Bulk form replication failed.', 'error', { notify });
+        }
+    });
+}
+
+function mountBulkActionGrid(context, options = {}) {
+    const viewId = knackNavigator.normalizeViewId(context?.viewId || context?.view?.key);
+    const config = context?.config || {};
+    if (!viewId || !Array.isArray(config?.actions) || !config.actions.length || !Array.isArray(config?.labelFieldIds) || !config.labelFieldIds.length) {
+        return null;
+    }
+
+    const controller = new BulkActionGridController({
+        viewId,
+        rowRecords: resolveBulkActionRecords(viewId, context?.data),
+        labelFieldIds: config.labelFieldIds,
+        actions: config.actions,
+        bulkActionsApi: context?.bulkActions || KnackBulkActions,
+        namespace: options.namespace || 'KNACK_BULK',
+        basketTitle: options.basketTitle || 'Basket',
+        emptyBasketText: options.emptyBasketText || 'No items yet. Tick rows to add.',
+        buttonClass: options.buttonClass || 'knackBulkActionButton',
+        buttonBarClass: options.buttonBarClass || 'knackBulkActionBar',
+        rowCheckboxClass: options.rowCheckboxClass || 'knackBulkRowCheckbox',
+        masterCheckboxClass: options.masterCheckboxClass || 'knackBulkMasterCheckbox',
+        selectionScope: options.selectionScope || 'knack-bulk-actions',
+        basketMessages: options.basketMessages || {},
+        styles: options.styles || {},
+        modalClass: options.modalClass || '',
+        formNoticeClass: options.formNoticeClass || '',
+        createButton: options.createButton,
+        getButtonContainer: options.getButtonContainer,
+        addCheckboxes: options.addCheckboxes,
+        notify: options.notify,
+        onError: options.onError,
+        api: options.api || {},
+        basketTtlMs: options.basketTtlMs,
+        chosenUpdateEvent: options.chosenUpdateEvent || 'liszt:updated'
+    });
+
+    return controller.init();
+}
+
+function mountBulkActionKeyword(view, keywords, data, options = {}) {
+    return processBulkActionsKeyword(view, keywords, data, {
+        ...options,
+        onKeyword(context) {
+            if (typeof options.onKeyword === 'function') {
+                options.onKeyword(context);
+            }
+
+            return mountBulkActionGrid(context, options);
+        }
+    });
+}
+
+function processBulkActionsKeyword(view, keywords, data, options = {}) {
+    const keywordName = knackValueResolver.toStringSafe(options.keywordName || '_bulk_actions') || '_bulk_actions';
+    const viewId = knackNavigator.normalizeViewId(view?.key);
+    if (!viewId || !keywords?.[keywordName]) return null;
+
+    const parseOptions = options.parseOptions || {};
+    const bulkActionsApi = options.bulkActionsApi && typeof options.bulkActionsApi.parseKeywordGroups === 'function'
+        ? options.bulkActionsApi
+        : createKnackBulkActions(options);
+    const config = bulkActionsApi.parseKeywordGroups(keywords, {
+        ...parseOptions,
+        sourceViewId: parseOptions.sourceViewId || viewId
+    });
+
+    if (options.logWarnings !== false && Array.isArray(config?.warnings)) {
+        config.warnings.forEach((warning) => {
+            console.warn('[KnackBulkActions]', warning.message, {
+                viewId,
+                keywordName,
+                warning
+            });
+        });
+    }
+
+    const context = {
+        view,
+        viewId,
+        keywords,
+        data,
+        keywordName,
+        config,
+        bulkActions: bulkActionsApi
+    };
+
+    if (typeof options.onKeyword === 'function') {
+        return options.onKeyword(context);
+    }
+
+    return context;
+}
+
+function createKnackBulkActions(options = {}) {
+    const config = { ...options };
+    const withConfig = (overrides = {}) => ({
+        ...config,
+        ...overrides
+    });
+
+    const api = {
+        normalizeFieldId: knackNavigator.normalizeFieldId.bind(knackNavigator),
+        normalizeViewId: knackNavigator.normalizeViewId.bind(knackNavigator),
+        getFieldValueMeta: knackValueResolver.getFieldValueMeta.bind(knackValueResolver),
+        getRecordLabel: knackValueResolver.getRecordLabel.bind(knackValueResolver),
+        classifyFailure: classifyBulkActionFailure,
+        resolveRegistryCallback: bulkActionResolveRegistryCallback,
+        normalizeKeywordGroupsInput: normalizeBulkActionKeywordGroupsInput,
+        parseKeywordGroups(keywordGroups, parseOptions) {
+            return parseBulkActionKeywordGroups(keywordGroups, withConfig(parseOptions));
+        },
+        createBasketStore(storeOptions) {
+            return createBulkActionBasketStore(withConfig(storeOptions));
+        },
+        createActionRunner(runnerOptions) {
+            return createBulkActionRunner(withConfig(runnerOptions));
+        },
+        mountGrid(context, mountOptions) {
+            return mountBulkActionGrid(context, withConfig(mountOptions));
+        },
+        mountKeyword(view, keywords, data, mountOptions) {
+            return mountBulkActionKeyword(view, keywords, data, withConfig(mountOptions));
+        },
+        processKeyword(view, keywords, data, processOptions) {
+            return processBulkActionsKeyword(view, keywords, data, {
+                ...withConfig(processOptions),
+                bulkActionsApi: api
+            });
+        }
+    };
+
+    return api;
+}
+
+const KnackBulkActions = {
+    normalizeFieldId: knackNavigator.normalizeFieldId.bind(knackNavigator),
+    normalizeViewId: knackNavigator.normalizeViewId.bind(knackNavigator),
+    getFieldValueMeta: knackValueResolver.getFieldValueMeta.bind(knackValueResolver),
+    getRecordLabel: knackValueResolver.getRecordLabel.bind(knackValueResolver),
+    classifyFailure: classifyBulkActionFailure,
+    resolveRegistryCallback: bulkActionResolveRegistryCallback,
+    normalizeKeywordGroupsInput: normalizeBulkActionKeywordGroupsInput,
+    parseKeywordGroups: parseBulkActionKeywordGroups,
+    createBasketStore: createBulkActionBasketStore,
+    createActionRunner: createBulkActionRunner,
+    mountGrid: mountBulkActionGrid,
+    mountKeyword: mountBulkActionKeyword,
+    createKnackBulkActions,
+    processKeyword: processBulkActionsKeyword
+};
+
+if (typeof globalThis !== 'undefined') {
+    globalThis.KnackBulkActions = {
+        ...(globalThis.KnackBulkActions || {}),
+        ...KnackBulkActions
+    };
+    globalThis.createKnackBulkActions = createKnackBulkActions;
+    globalThis.processBulkActionsKeyword = processBulkActionsKeyword;
+}
 
 /**
  * Gets an element by ID scoped to an optional context.
@@ -5841,9 +9245,9 @@ class KnackAPI {
                 const failed = [];
                 for (const key of requestedKeys) {
                     const sentVal = recordData[key];
-                    const gotVal = this._extractResponseValueFromRecord(recordObj, key);
+                    const gotVal = this._extractResponseValueFromRecord(recordObj, key, sentVal);
 
-                    if (gotVal === undefined || !this._valuesEffectivelyEqual(gotVal, sentVal)) {
+                    if (gotVal === undefined || !this._valuesEffectivelyEqualForField(key, gotVal, sentVal)) {
                         failed.push({
                             field: key,
                             sent: sentVal,
@@ -6698,7 +10102,19 @@ class KnackAPI {
      * @returns {*} - The field value if found, otherwise undefined.
      * @private
      */
-    _extractResponseValueFromRecord(recordObj, fieldKey) {
+    _extractResponseValueFromRecord(recordObj, fieldKey, requestedValue = undefined) {
+        if (!recordObj || typeof recordObj !== 'object') return undefined;
+
+        const normalizedFieldKey = knackValueResolver.normalizeFieldKey(fieldKey);
+        const fieldType = knackValueResolver.getFieldType(normalizedFieldKey);
+        const rawKey = normalizedFieldKey ? `${normalizedFieldKey}_raw` : '';
+        const shouldPreferRaw = fieldType === 'date_time'
+            || (requestedValue && typeof requestedValue === 'object' && !Array.isArray(requestedValue));
+
+        if (shouldPreferRaw && rawKey && Object.prototype.hasOwnProperty.call(recordObj, rawKey)) {
+            return recordObj[rawKey];
+        }
+
         return knackValueResolver.extractResponseFieldValue(recordObj, fieldKey);
     }
 
@@ -6744,6 +10160,53 @@ class KnackAPI {
         return String(val).trim();
     }
 
+    _normaliseDateTimeForCompare(val) {
+        if (val === null || val === undefined) return null;
+
+        const pad2 = (value) => String(value || '').trim().padStart(2, '0');
+        const normaliseAmPm = (value) => {
+            const normalized = String(value || '').trim().toUpperCase();
+            return normalized === 'AM' || normalized === 'PM' ? normalized : '';
+        };
+
+        const parseTimeString = (value) => {
+            const normalized = String(value || '').trim();
+            if (!normalized) return null;
+
+            const match = normalized.match(/(?:(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+)?(\d{1,2}):(\d{2})\s*([AP]M)/i);
+            if (!match) return null;
+
+            return {
+                date: String(match[1] || '').trim(),
+                hours: pad2(match[2]),
+                minutes: pad2(match[3]),
+                amPm: normaliseAmPm(match[4])
+            };
+        };
+
+        if (typeof val === 'object' && !Array.isArray(val)) {
+            const parsed = parseTimeString(val.time || val.time_formatted || val.datetime_formatted || '');
+            const date = String(val.date || val.iso_date || val.date_formatted || parsed?.date || '').trim();
+            const hours = pad2(val.hours || parsed?.hours || '');
+            const minutes = pad2(val.minutes || parsed?.minutes || '');
+            const amPm = normaliseAmPm(val.am_pm || parsed?.amPm || '');
+            return [date, hours, minutes, amPm].join('|');
+        }
+
+        const parsed = parseTimeString(val);
+        if (parsed) {
+            return [parsed.date, parsed.hours, parsed.minutes, parsed.amPm].join('|');
+        }
+
+        return String(val).trim();
+    }
+
+    _normaliseDisplayForCompare(val) {
+        if (val === null || val === undefined) return null;
+        const displayValue = knackValueResolver.toDisplayString(val);
+        return displayValue ? displayValue.trim() : this._normaliseForCompare(val);
+    }
+
     /**
      * Compares two values after normalisation to determine if they are effectively equal.
      * @param {*} a - The first value.
@@ -6753,6 +10216,18 @@ class KnackAPI {
      */
     _valuesEffectivelyEqual(a, b) {
         return this._normaliseForCompare(a) === this._normaliseForCompare(b);
+    }
+
+    _valuesEffectivelyEqualForField(fieldKey, receivedValue, sentValue) {
+        const normalizedFieldKey = knackValueResolver.normalizeFieldKey(fieldKey);
+        const fieldType = knackValueResolver.getFieldType(normalizedFieldKey);
+
+        if (fieldType === 'date_time') {
+            return this._normaliseDateTimeForCompare(receivedValue) === this._normaliseDateTimeForCompare(sentValue);
+        }
+
+        return this._valuesEffectivelyEqual(receivedValue, sentValue)
+            || this._normaliseDisplayForCompare(receivedValue) === this._normaliseDisplayForCompare(sentValue);
     }
 
     /**
