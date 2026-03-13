@@ -13,12 +13,21 @@ const CLASS_DISABLED = 'disabled';
  * Provides view and field metadata lookups with memoization.
  */
 class KnackNavigator {
+    /**
+     * Creates a navigator with memoized view and field caches.
+     */
     constructor() {
         this._viewCache = new Map();
         this._fieldMetaCache = new Map();
         this._fieldTypeCache = new Map();
     }
 
+    /**
+     * Normalises an id to the expected prefixed Knack format.
+     * @param {string|number} value - Id value with or without the prefix.
+     * @param {string} prefix - Expected prefix, such as `view_` or `field_`.
+     * @returns {string} Normalised id, or an empty string.
+     */
     normalizePrefixedId(value, prefix) {
         const normalizedValue = String(value ?? '').trim().toLowerCase();
         if (!normalizedValue) return '';
@@ -30,14 +39,29 @@ class KnackNavigator {
         return /^\d+$/.test(normalizedValue) ? `${prefix}${normalizedValue}` : '';
     }
 
+    /**
+     * Normalises a view id.
+     * @param {string|number} viewId - View id with or without the `view_` prefix.
+     * @returns {string} Normalised view id.
+     */
     normalizeViewId(viewId) {
         return this.normalizePrefixedId(viewId, 'view_');
     }
 
+    /**
+     * Normalises a field id.
+     * @param {string|number} fieldId - Field id with or without the `field_` prefix.
+     * @returns {string} Normalised field id.
+     */
     normalizeFieldId(fieldId) {
         return this.normalizePrefixedId(fieldId, 'field_');
     }
 
+    /**
+     * Normalises every field reference in a field map.
+     * @param {Object} [fieldMap={}] - Field map keyed by logical names.
+     * @returns {Object} Field map with normalised field ids.
+     */
     normalizeFieldMap(fieldMap = {}) {
         return Object.fromEntries(
             Object.entries(fieldMap || {}).map(([fieldKey, fieldValue]) => [
@@ -47,6 +71,12 @@ class KnackNavigator {
         );
     }
 
+    /**
+     * Returns the DOM wrapper for a Knack field inside a view.
+     * @param {Element} viewRoot - Root element for the view.
+     * @param {string|number} fieldId - Field id to resolve.
+     * @returns {Element|null} Field wrapper element.
+     */
     getFieldWrapper(viewRoot, fieldId) {
         if (!(viewRoot instanceof Element)) return null;
         const normalizedFieldId = this.normalizeFieldId(fieldId);
@@ -54,15 +84,30 @@ class KnackNavigator {
         return viewRoot.querySelector(`#kn-input-${normalizedFieldId}`);
     }
 
+    /**
+     * Normalises a field id to its `_raw` companion key.
+     * @param {string|number} fieldId - Field id to normalise.
+     * @returns {string} Raw field id.
+     */
     normalizeRawFieldId(fieldId) {
         const normalized = this.normalizeFieldId(fieldId);
         return normalized ? `${normalized}_raw` : '';
     }
 
+    /**
+     * Normalises a scene id.
+     * @param {string|number} sceneId - Scene id with or without the `scene_` prefix.
+     * @returns {string} Normalised scene id.
+     */
     normalizeSceneId(sceneId) {
         return this.normalizePrefixedId(sceneId, 'scene_');
     }
 
+    /**
+     * Resolves the Knack view metadata object for a view id.
+     * @param {string|number} viewId - View id to resolve.
+     * @returns {Object|null} Knack view metadata.
+     */
     getViewObject(viewId) {
         const vid = this.normalizeViewId(viewId);
         if (!vid) return null;
@@ -89,6 +134,11 @@ class KnackNavigator {
         return null;
     }
 
+    /**
+     * Resolves field metadata from Knack object definitions.
+     * @param {string|number} fieldKey - Field id to resolve.
+     * @returns {Object|null} Field metadata.
+     */
     getFieldMeta(fieldKey) {
         const key = this.normalizeFieldId(fieldKey);
         if (!key) return null;
@@ -115,6 +165,11 @@ class KnackNavigator {
         return fieldMeta;
     }
 
+    /**
+     * Resolves the normalised field type for a field id.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {string} Lower-cased Knack field type.
+     */
     getFieldType(fieldKey) {
         const key = this.normalizeFieldId(fieldKey);
         if (!key) return '';
@@ -126,6 +181,12 @@ class KnackNavigator {
         return fieldType;
     }
 
+    /**
+     * Resolves a field id from a view-specific field label or name.
+     * @param {string|number} viewId - View id containing the field.
+     * @param {string} fieldLabel - Field label or name.
+     * @returns {string} Matching field id, or an empty string.
+     */
     getFieldIdFromLabel(viewId, fieldLabel) {
         const normalizedLabel = String(fieldLabel || '').trim().toLowerCase();
         if (!normalizedLabel) return '';
@@ -149,30 +210,49 @@ const knackNavigator = new KnackNavigator();
  * Handles per-field-type normalization using Knack object metadata.
  */
 class KnackValueResolver {
+    /**
+     * Creates a value resolver backed by a navigator.
+     * @param {KnackNavigator} navigator - Metadata navigator instance.
+     */
     constructor(navigator) {
         this.navigator = navigator;
     }
 
-    normalizeFieldKey(fieldKey) {
+    /**
+     * Normalises a field id for value resolution.
+     * @param {string|number} fieldId - Field id with or without the `field_` prefix.
+     * @returns {string} Normalised field id.
+     */
+    normalizeFieldId(fieldId) {
         if (this.navigator?.normalizeFieldId) {
-            return this.navigator.normalizeFieldId(fieldKey);
+            return this.navigator.normalizeFieldId(fieldId);
         }
 
-        const value = String(fieldKey ?? '').trim().toLowerCase();
+        const value = String(fieldId ?? '').trim().toLowerCase();
         if (!value) return '';
         if (/^field_\d+$/.test(value)) return value;
         if (/^\d+$/.test(value)) return `field_${value}`;
         return '';
     }
 
+    /**
+     * Returns field metadata for a field id.
+     * @param {string|number} fieldKey - Field id to resolve.
+     * @returns {Object|null} Field metadata.
+     */
     getFieldMeta(fieldKey) {
-        const key = this.normalizeFieldKey(fieldKey);
+        const key = this.normalizeFieldId(fieldKey);
         if (!key) return null;
         return this.navigator?.getFieldMeta ? this.navigator.getFieldMeta(key) : null;
     }
 
+    /**
+     * Returns the Knack field type for a field id.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {string} Lower-cased field type.
+     */
     getFieldType(fieldKey) {
-        const key = this.normalizeFieldKey(fieldKey);
+        const key = this.normalizeFieldId(fieldKey);
         if (!key) return '';
         return this.navigator?.getFieldType ? this.navigator.getFieldType(key) : '';
     }
@@ -187,7 +267,7 @@ class KnackValueResolver {
      * console.log(shape.write.key); // field_6374
      */
     getFieldShape(fieldKey) {
-        const key = this.normalizeFieldKey(fieldKey);
+        const key = this.normalizeFieldId(fieldKey);
         if (!key) return null;
 
         const fieldType = this.getFieldType(key) || 'unknown';
@@ -343,7 +423,7 @@ class KnackValueResolver {
             : Object.keys(source).filter((key) => /^field_\d+$/.test(String(key)));
 
         return keys.reduce((payload, fieldKey) => {
-            const normalizedKey = this.normalizeFieldKey(fieldKey);
+            const normalizedKey = this.normalizeFieldId(fieldKey);
             if (!normalizedKey) return payload;
 
             const requestValue = this.toRequestValue({
@@ -360,8 +440,15 @@ class KnackValueResolver {
         }, {});
     }
 
+    /**
+     * Resolves a field value in the requested output mode.
+     * @param {Object} record - Knack record object.
+     * @param {string|number} fieldKey - Field id to resolve.
+     * @param {Object} [options={}] - Resolution options.
+     * @returns {*} Resolved field value or fallback.
+     */
     resolve(record, fieldKey, { mode = 'typed', preferRaw = true, fallback = undefined } = {}) {
-        const key = this.normalizeFieldKey(fieldKey);
+        const key = this.normalizeFieldId(fieldKey);
         if (!record || !key) return fallback;
 
         const rawKey = `${key}_raw`;
@@ -384,6 +471,15 @@ class KnackValueResolver {
         return typedValue === undefined ? fallback : typedValue;
     }
 
+    /**
+     * Converts raw/display field values into a typed runtime value.
+     * @param {Object} input - Raw/display value inputs.
+     * @param {*} input.rawValue - `_raw` field value.
+     * @param {*} input.displayValue - Display field value.
+     * @param {string} input.fieldType - Knack field type.
+     * @param {boolean} input.preferRaw - Whether `_raw` values should win when present.
+     * @returns {*} Typed value for runtime use.
+     */
     toTypedValue({ rawValue, displayValue, fieldType, preferRaw }) {
         const sourceValue = preferRaw ? (rawValue ?? displayValue) : (displayValue ?? rawValue);
         if (sourceValue === undefined || sourceValue === null || sourceValue === '') return undefined;
@@ -402,6 +498,14 @@ class KnackValueResolver {
         return sourceValue;
     }
 
+    /**
+     * Converts raw/display field values into an API-friendly primitive or array.
+     * @param {Object} input - Raw/display value inputs.
+     * @param {*} input.rawValue - `_raw` field value.
+     * @param {*} input.displayValue - Display field value.
+     * @param {string} input.fieldType - Knack field type.
+     * @returns {*} API-ready value, or undefined when no write should occur.
+     */
     toApiValue({ rawValue, displayValue, fieldType }) {
         const displayString = typeof displayValue === 'string' ? displayValue.trim() : '';
 
@@ -478,6 +582,11 @@ class KnackValueResolver {
         return sourceValue;
     }
 
+    /**
+     * Extracts one or more connected record ids from a Knack connection value.
+     * @param {*} value - Connection value in array, object, or primitive form.
+     * @returns {Array<string>} Connected record ids.
+     */
     toConnectionIds(value) {
         if (!value) return [];
         if (Array.isArray(value)) {
@@ -678,9 +787,8 @@ class KnackValueResolver {
     extractResponseFieldValue(recordObj, fieldKey) {
         if (!recordObj || typeof recordObj !== 'object') return undefined;
 
-        const normalizedKey = this.normalizeFieldKey(fieldKey);
-        const fallbackKey = String(fieldKey || '').trim();
-        const fieldId = normalizedKey || fallbackKey;
+        const fieldId = this.normalizeFieldId(fieldKey);
+
         if (!fieldId) return undefined;
 
         if (Object.prototype.hasOwnProperty.call(recordObj, fieldId)) {
@@ -695,6 +803,11 @@ class KnackValueResolver {
         return undefined;
     }
 
+    /**
+     * Converts a value to an array of display strings.
+     * @param {*} value - Value to flatten.
+     * @returns {Array<string>} String values.
+     */
     toStringArray(value) {
         if (!value) return [];
         if (Array.isArray(value)) {
@@ -709,6 +822,12 @@ class KnackValueResolver {
         return single ? [single] : [];
     }
 
+    /**
+     * Converts a Knack value into a human-readable string.
+     * @param {*} value - Value to convert.
+     * @param {Set<Object>} [seen=new Set()] - Tracks visited objects to avoid cycles.
+     * @returns {string} Display string.
+     */
     toDisplayString(value, seen = new Set()) {
         if (value === undefined || value === null) return '';
         if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -768,6 +887,11 @@ class KnackValueResolver {
         return fallback.length ? fallback.join(', ') : '';
     }
 
+    /**
+     * Safely converts a value to a trimmed string.
+     * @param {*} value - Value to convert.
+     * @returns {string} Trimmed string value.
+     */
     toStringSafe(value) {
         if (value === undefined || value === null) return '';
         try {
@@ -777,12 +901,24 @@ class KnackValueResolver {
         }
     }
 
+    /**
+     * Joins a value into a separator-delimited string.
+     * @param {*} value - Value to join.
+     * @param {string} [separator=', '] - Separator to use.
+     * @returns {string} Joined string.
+     */
     toJoinedString(value, separator = ', ') {
         return this.toStringArray(value).join(separator);
     }
 
+    /**
+     * Extracts a human-readable label for a field from a record.
+     * @param {Object} recordObj - Knack record object.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {string} Field label.
+     */
     extractFieldLabel(recordObj, fieldKey) {
-        const normalizedKey = this.normalizeFieldKey(fieldKey);
+        const normalizedKey = this.normalizeFieldId(fieldKey);
         if (!normalizedKey) return '';
 
         const rawLabel = this.toJoinedString(recordObj?.[`${normalizedKey}_raw`]);
@@ -793,6 +929,12 @@ class KnackValueResolver {
         );
     }
 
+    /**
+     * Builds a combined label for a record from one or more field ids.
+     * @param {Object} recordObj - Knack record object.
+     * @param {string|number|Array<string|number>} fieldKeys - Field ids to use for the label.
+     * @returns {string} Joined record label.
+     */
     getRecordLabel(recordObj, fieldKeys) {
         const keys = Array.isArray(fieldKeys) ? fieldKeys : [fieldKeys];
 
@@ -801,7 +943,7 @@ class KnackValueResolver {
             const parts = [];
 
             for (const value of keys) {
-                const fieldId = this.normalizeFieldKey(value);
+                const fieldId = this.normalizeFieldId(value);
                 if (!fieldId || seen.has(fieldId)) continue;
                 seen.add(fieldId);
 
@@ -818,8 +960,11 @@ class KnackValueResolver {
 
 const knackValueResolver = new KnackValueResolver(knackNavigator);
 
-const BULK_ACTION_VALIDATION_ERROR_PATTERN = /required|invalid|validation|duplicate|conflict|not found|forbidden|unauthori[zs]ed/;
-
+/**
+ * Returns unique non-empty string values while preserving input order.
+ * @param {Array<*>} values - Values to normalise and deduplicate.
+ * @returns {Array<string>} Distinct string values.
+ */
 function bulkActionUniqueStrings(values) {
     return Array.from(
         new Set(
@@ -830,6 +975,13 @@ function bulkActionUniqueStrings(values) {
     );
 }
 
+/**
+ * Resolves a named callback from a local registry first, then from global scope.
+ * @param {string} name - Callback name to resolve.
+ * @param {Object|null} registry - Optional local callback registry.
+ * @param {Object|null} globalScope - Optional global scope fallback.
+ * @returns {Function|null} Resolved callback or null.
+ */
 function bulkActionResolveRegistryCallback(name, registry, globalScope) {
     const key = knackValueResolver.toStringSafe(name);
     if (!key) return null;
@@ -841,6 +993,11 @@ function bulkActionResolveRegistryCallback(name, registry, globalScope) {
     return typeof globalFn === 'function' ? globalFn : null;
 }
 
+/**
+ * Classifies a bulk-action failure into validation or network-like categories.
+ * @param {*} error - Error thrown by the underlying request or handler.
+ * @returns {{type: string, message: string}} Normalised failure metadata.
+ */
 function classifyBulkActionFailure(error) {
     const status = Number(
         error?.status
@@ -860,13 +1017,18 @@ function classifyBulkActionFailure(error) {
     const normalized = message.toLowerCase();
     const isValidationError =
         [400, 401, 403, 404, 409, 422].includes(status)
-        || BULK_ACTION_VALIDATION_ERROR_PATTERN.test(normalized);
+        || BULK_ACTION_DEFAULT_CONFIG.constants.validationErrorPattern.test(normalized);
 
     return isValidationError
         ? { type: 'validation', message: message || 'Validation issue. Check required or invalid fields.' }
         : { type: 'network', message: message || 'Network or unexpected error.' };
 }
 
+/**
+ * Wraps storage access with safe get/set/remove guards.
+ * @param {Storage|null} storage - Storage provider, typically sessionStorage.
+ * @returns {{get: Function, set: Function, remove: Function}} Safe storage adapter.
+ */
 function createBulkActionStorageAdapter(storage) {
     return {
         get(key) {
@@ -898,6 +1060,11 @@ function createBulkActionStorageAdapter(storage) {
     };
 }
 
+/**
+ * Resolves the current Knack application id from the provided global scope.
+ * @param {Object|null} globalScope - Global scope candidate.
+ * @returns {string} Normalised application id.
+ */
 function resolveDefaultBulkActionAppId(globalScope) {
     return knackValueResolver.toStringSafe(
         globalScope?.Knack?.application_id
@@ -905,6 +1072,12 @@ function resolveDefaultBulkActionAppId(globalScope) {
     );
 }
 
+/**
+ * Resolves a field reference from a field id or a view-specific label.
+ * @param {string|number} value - Field id, field key, or field label.
+ * @param {string} [viewId=''] - View id used for label lookups.
+ * @returns {string} Normalised field id, or an empty string.
+ */
 function resolveBulkActionFieldId(value, viewId = '') {
     const normalizedFieldId = knackNavigator.normalizeFieldId(value);
     if (normalizedFieldId) return normalizedFieldId;
@@ -915,6 +1088,13 @@ function resolveBulkActionFieldId(value, viewId = '') {
     return knackNavigator.getFieldIdFromLabel(normalizedViewId, value);
 }
 
+/**
+ * Parses a bulk-action keyword definition into form replication metadata.
+ * @param {Array<*>} params - Raw keyword parameters.
+ * @param {string} operation - Target form operation, create or update.
+ * @param {Object} [options={}] - Optional parsing hooks.
+ * @returns {{recordFieldId: string, dataCallbackName: string}} Parsed definition.
+ */
 function parseBulkActionDefinition(params, operation, options = {}) {
     const { resolveFieldId = (value) => knackNavigator.normalizeFieldId(value) } = options;
     const op = String(operation || '').toLowerCase() === 'update' ? 'update' : 'create';
@@ -942,8 +1122,12 @@ function parseBulkActionDefinition(params, operation, options = {}) {
     };
 }
 
-const BULK_ACTION_RESERVED_LABELS = new Set(['record', 'recordid', 'id', 'target', 'picker']);
-
+/**
+ * Flattens supported keyword input shapes into a list of parameter groups.
+ * @param {*} keywordSource - Raw keyword source value.
+ * @param {string} [keywordName='_bulk_actions'] - Keyword name to extract.
+ * @returns {Array<Array<*>>} Flattened keyword groups.
+ */
 function normalizeBulkActionKeywordGroupsInput(keywordSource, keywordName = '_bulk_actions') {
     const normalizedKeywordName = knackValueResolver.toStringSafe(keywordName || '_bulk_actions');
 
@@ -974,6 +1158,12 @@ function normalizeBulkActionKeywordGroupsInput(keywordSource, keywordName = '_bu
     return flatten(keywordSource);
 }
 
+/**
+ * Parses bulk-action keyword groups into grid/form action configuration.
+ * @param {*} keywordGroups - Raw keyword groups from the Knack keyword parser.
+ * @param {Object} [options={}] - Parsing options and callback registries.
+ * @returns {{labelFieldIds: Array<string>, defaultRecordFieldId: string, actions: Array<Object>, warnings: Array<Object>}} Parsed configuration.
+ */
 function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
     const {
         resolveView = (viewId) => knackNavigator.getViewObject(viewId),
@@ -1020,7 +1210,7 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             return;
         }
 
-        if (BULK_ACTION_RESERVED_LABELS.has(first)) {
+        if (BULK_ACTION_DEFAULT_CONFIG.constants.reservedLabels.has(first)) {
             const fieldId = knackNavigator.normalizeFieldId(params[1]);
             if (!fieldId) {
                 warnings.push({ type: 'config', message: 'Invalid record picker field configuration.', params });
@@ -1036,7 +1226,7 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
         const label = knackValueResolver.toStringSafe(params[0]);
         const target = knackValueResolver.toStringSafe(params[1]);
         const labelLower = label.toLowerCase();
-        if (!label || !target || labelLower === 'label' || BULK_ACTION_RESERVED_LABELS.has(labelLower)) {
+        if (!label || !target || labelLower === 'label' || BULK_ACTION_DEFAULT_CONFIG.constants.reservedLabels.has(labelLower)) {
             return;
         }
 
@@ -1109,12 +1299,168 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
     };
 }
 
+/**
+ * Normalises stored basket items so each item has a valid string record id.
+ * @param {Array<Object>} [items=[]] - Basket items to normalise.
+ * @returns {Array<Object>} Normalised basket items.
+ */
 function bulkActionNormalizeBasketItems(items = []) {
     return (Array.isArray(items) ? items : [])
         .filter((item) => knackValueResolver.toStringSafe(item?.recordId))
         .map((item) => ({ ...item, recordId: knackValueResolver.toStringSafe(item.recordId) }));
 }
 
+const BULK_ACTION_DEFAULT_CONFIG = {
+    namespace: 'KNACK_BULK',
+    constants: {
+        validationErrorPattern: /required|invalid|validation|duplicate|conflict|not found|forbidden|unauthori[zs]ed/,
+        reservedLabels: new Set(['record', 'recordid', 'id', 'target', 'picker']),
+        formFlowTtlMs: 10 * 60 * 1000,
+        selectors: {
+            formField: '[id^="kn-input-field_"]',
+            writableControl: 'select:not([disabled]), textarea:not([disabled]), input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([disabled]), [contenteditable="true"]',
+            textInput: 'textarea:not([disabled]), input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([disabled])',
+            richText: '[contenteditable="true"], .redactor_editor'
+        },
+        styleId: 'knackBulkActionBaseStyles'
+    },
+    basket: {
+        title: 'Basket',
+        emptyText: 'No items yet. Tick rows to add.',
+        ttlMs: 15 * 60 * 1000,
+        modalClass: ''
+    },
+    action: {
+        buttonClass: 'knackBulkActionButton',
+        buttonBarClass: 'knackBulkActionBar',
+        notify: null,
+        onError: null,
+        api: {}
+    },
+    selection: {
+        scope: 'ktlCheckbox',
+        rowCheckboxClass: 'knackBulkRowCheckbox',
+        masterCheckboxClass: 'knackBulkMasterCheckbox'
+    },
+    form: {
+        noticeClass: '',
+        chosenUpdateEvent: 'liszt:updated',
+        styles: {}
+    }
+};
+
+/**
+ * Creates the canonical bulk-actions config used by grid, basket, and form workflows.
+ * @param {Object} [config={}] - Bulk-actions config overrides.
+ * @returns {Object} Normalised bulk-actions config.
+ */
+function createBulkActionConfig(config = {}) {
+    const source = config && typeof config === 'object' ? config : {};
+    const basket = source.basket && typeof source.basket === 'object' ? source.basket : {};
+    const action = source.action && typeof source.action === 'object' ? source.action : {};
+    const selection = source.selection && typeof source.selection === 'object' ? source.selection : {};
+    const form = source.form && typeof source.form === 'object' ? source.form : {};
+    const constants = source.constants && typeof source.constants === 'object' ? source.constants : {};
+    const sourceSelectors = constants.selectors && typeof constants.selectors === 'object' ? constants.selectors : {};
+
+    return {
+        namespace: knackValueResolver.toStringSafe(source.namespace || BULK_ACTION_DEFAULT_CONFIG.namespace) || BULK_ACTION_DEFAULT_CONFIG.namespace,
+        constants: {
+            validationErrorPattern: constants.validationErrorPattern instanceof RegExp
+                ? constants.validationErrorPattern
+                : BULK_ACTION_DEFAULT_CONFIG.constants.validationErrorPattern,
+            reservedLabels: constants.reservedLabels instanceof Set
+                ? constants.reservedLabels
+                : BULK_ACTION_DEFAULT_CONFIG.constants.reservedLabels,
+            formFlowTtlMs: Number.isFinite(Number(constants.formFlowTtlMs))
+                ? Number(constants.formFlowTtlMs)
+                : BULK_ACTION_DEFAULT_CONFIG.constants.formFlowTtlMs,
+            selectors: {
+                formField: knackValueResolver.toStringSafe(sourceSelectors.formField || BULK_ACTION_DEFAULT_CONFIG.constants.selectors.formField) || BULK_ACTION_DEFAULT_CONFIG.constants.selectors.formField,
+                writableControl: knackValueResolver.toStringSafe(sourceSelectors.writableControl || BULK_ACTION_DEFAULT_CONFIG.constants.selectors.writableControl) || BULK_ACTION_DEFAULT_CONFIG.constants.selectors.writableControl,
+                textInput: knackValueResolver.toStringSafe(sourceSelectors.textInput || BULK_ACTION_DEFAULT_CONFIG.constants.selectors.textInput) || BULK_ACTION_DEFAULT_CONFIG.constants.selectors.textInput,
+                richText: knackValueResolver.toStringSafe(sourceSelectors.richText || BULK_ACTION_DEFAULT_CONFIG.constants.selectors.richText) || BULK_ACTION_DEFAULT_CONFIG.constants.selectors.richText
+            },
+            styleId: knackValueResolver.toStringSafe(constants.styleId || BULK_ACTION_DEFAULT_CONFIG.constants.styleId) || BULK_ACTION_DEFAULT_CONFIG.constants.styleId
+        },
+        basket: {
+            title: knackValueResolver.toStringSafe(basket.title || BULK_ACTION_DEFAULT_CONFIG.basket.title) || BULK_ACTION_DEFAULT_CONFIG.basket.title,
+            emptyText: knackValueResolver.toStringSafe(basket.emptyText || BULK_ACTION_DEFAULT_CONFIG.basket.emptyText) || BULK_ACTION_DEFAULT_CONFIG.basket.emptyText,
+            ttlMs: Number.isFinite(Number(basket.ttlMs)) ? Number(basket.ttlMs) : BULK_ACTION_DEFAULT_CONFIG.basket.ttlMs,
+            modalClass: knackValueResolver.toStringSafe(basket.modalClass)
+        },
+        action: {
+            buttonClass: knackValueResolver.toStringSafe(action.buttonClass || BULK_ACTION_DEFAULT_CONFIG.action.buttonClass) || BULK_ACTION_DEFAULT_CONFIG.action.buttonClass,
+            buttonBarClass: knackValueResolver.toStringSafe(action.buttonBarClass || BULK_ACTION_DEFAULT_CONFIG.action.buttonBarClass) || BULK_ACTION_DEFAULT_CONFIG.action.buttonBarClass,
+            notify: typeof action.notify === 'function' ? action.notify : null,
+            onError: typeof action.onError === 'function' ? action.onError : null,
+            api: action.api && typeof action.api === 'object' ? action.api : {}
+        },
+        selection: {
+            scope: knackValueResolver.toStringSafe(selection.scope || BULK_ACTION_DEFAULT_CONFIG.selection.scope) || BULK_ACTION_DEFAULT_CONFIG.selection.scope,
+            rowCheckboxClass: knackValueResolver.toStringSafe(selection.rowCheckboxClass || BULK_ACTION_DEFAULT_CONFIG.selection.rowCheckboxClass) || BULK_ACTION_DEFAULT_CONFIG.selection.rowCheckboxClass,
+            masterCheckboxClass: knackValueResolver.toStringSafe(selection.masterCheckboxClass || BULK_ACTION_DEFAULT_CONFIG.selection.masterCheckboxClass) || BULK_ACTION_DEFAULT_CONFIG.selection.masterCheckboxClass
+        },
+        form: {
+            noticeClass: knackValueResolver.toStringSafe(form.noticeClass),
+            chosenUpdateEvent: knackValueResolver.toStringSafe(form.chosenUpdateEvent || BULK_ACTION_DEFAULT_CONFIG.form.chosenUpdateEvent) || BULK_ACTION_DEFAULT_CONFIG.form.chosenUpdateEvent,
+            styles: form.styles && typeof form.styles === 'object' ? form.styles : {}
+        }
+    };
+}
+
+/**
+ * Merges a bulk-actions config override onto an existing config.
+ * @param {Object} baseConfig - Base bulk-actions config.
+ * @param {Object} [overrideConfig={}] - Override config.
+ * @returns {Object} Merged bulk-actions config.
+ */
+function mergeBulkActionConfig(baseConfig, overrideConfig = {}) {
+    const base = createBulkActionConfig(baseConfig);
+    const override = overrideConfig && typeof overrideConfig === 'object' ? overrideConfig : {};
+    const overrideAction = override.action && typeof override.action === 'object' ? override.action : {};
+    const overrideForm = override.form && typeof override.form === 'object' ? override.form : {};
+
+    return createBulkActionConfig({
+        ...base,
+        ...override,
+        basket: {
+            ...base.basket,
+            ...(override.basket && typeof override.basket === 'object' ? override.basket : {})
+        },
+        action: {
+            ...base.action,
+            ...overrideAction,
+            api: {
+                ...base.action.api,
+                ...(overrideAction.api && typeof overrideAction.api === 'object' ? overrideAction.api : {})
+            }
+        },
+        selection: {
+            ...base.selection,
+            ...(override.selection && typeof override.selection === 'object' ? override.selection : {})
+        },
+        constants: {
+            ...base.constants,
+            ...(override.constants && typeof override.constants === 'object' ? override.constants : {}),
+            selectors: {
+                ...base.constants.selectors,
+                ...(override.constants?.selectors && typeof override.constants.selectors === 'object' ? override.constants.selectors : {})
+            }
+        },
+        form: {
+            ...base.form,
+            ...overrideForm,
+            styles: bulkActionMergeStyleMaps(base.form.styles, overrideForm.styles)
+        }
+    });
+}
+
+/**
+ * Creates the persistent basket store used by a single bulk-action grid.
+ * @param {Object} [options={}] - Store options such as namespace, view id, and storage adapter.
+ * @returns {Object} Basket store API.
+ */
 function createBulkActionBasketStore(options = {}) {
     const {
         namespace = 'KNACK_BULK',
@@ -1252,6 +1598,11 @@ function createBulkActionBasketStore(options = {}) {
     };
 }
 
+/**
+ * Creates the runner used for non-form bulk actions.
+ * @param {Object} [options={}] - Runner options, handlers, and callbacks.
+ * @returns {{run: Function, resolveAction: Function}} Runner API.
+ */
 function createBulkActionRunner(options = {}) {
     const {
         actions = [],
@@ -1299,6 +1650,7 @@ function createBulkActionRunner(options = {}) {
             if (index < 0) return null;
             if (clonedIndexes.has(index)) return nextItems[index];
 
+            // Clone only the item being mutated so we preserve immutability without copying the whole basket on every update.
             const current = nextItems[index];
             nextItems[index] = current && typeof current === 'object' ? { ...current } : {};
             clonedIndexes.add(index);
@@ -1462,9 +1814,12 @@ function createBulkActionRunner(options = {}) {
 
 const bulkActionControllerStore = new Map();
 const bulkActionWorkflowRegistry = new Set();
-const BULK_ACTION_FORM_FLOW_TTL_MS = 10 * 60 * 1000;
 let bulkActionControllerLifecycleBound = false;
 
+/**
+ * Removes UI for controllers whose view is no longer present in the DOM.
+ * @returns {void}
+ */
 function bulkActionSyncControllerVisibility() {
     bulkActionControllerStore.forEach((controller, viewId) => {
         if (!controller || controller.viewId !== viewId) {
@@ -1479,6 +1834,10 @@ function bulkActionSyncControllerVisibility() {
     });
 }
 
+/**
+ * Binds a single lifecycle listener that keeps controller UI in sync with Knack renders.
+ * @returns {void}
+ */
 function ensureBulkActionControllerLifecycleBinding() {
     if (bulkActionControllerLifecycleBound || typeof window.jQuery !== 'function') return;
 
@@ -1490,6 +1849,11 @@ function ensureBulkActionControllerLifecycleBinding() {
     });
 }
 
+/**
+ * Normalises a DOM, jQuery, or array-like element reference into a single element.
+ * @param {*} value - Candidate element reference.
+ * @returns {Element|null} Resolved element.
+ */
 function bulkActionResolveElement(value) {
     if (!value) return null;
     if (value instanceof Element) return value;
@@ -1498,6 +1862,11 @@ function bulkActionResolveElement(value) {
     return null;
 }
 
+/**
+ * Finds the root element for a Knack view.
+ * @param {string} viewId - View id or key.
+ * @returns {Element|null} View root element when present.
+ */
 function bulkActionFindViewRoot(viewId) {
     const normalizedViewId = knackNavigator.normalizeViewId(viewId);
     if (!normalizedViewId) return null;
@@ -1506,6 +1875,12 @@ function bulkActionFindViewRoot(viewId) {
         || document.querySelector(`#connection-form-view:has(input[value="${normalizedViewId}"])`);
 }
 
+/**
+ * Resolves the current record collection for a grid view render.
+ * @param {string} viewId - Source view id.
+ * @param {*} data - Knack view render payload.
+ * @returns {Array<Object>} Resolved row records.
+ */
 function resolveBulkActionRecords(viewId, data) {
     if (Array.isArray(data) && data.length) return data;
 
@@ -1525,6 +1900,12 @@ function resolveBulkActionRecords(viewId, data) {
         .filter(Boolean);
 }
 
+/**
+ * Builds the session-storage key for a form replication workflow.
+ * @param {string} namespace - Bulk-action namespace.
+ * @param {string} formViewId - Target form view id.
+ * @returns {string} Session key.
+ */
 function bulkActionBuildFormFlowSessionKey(namespace, formViewId) {
     return [
         knackValueResolver.toStringSafe(namespace || 'KNACK_BULK'),
@@ -1533,6 +1914,11 @@ function bulkActionBuildFormFlowSessionKey(namespace, formViewId) {
     ].filter(Boolean).join('_');
 }
 
+/**
+ * Reads persisted form-flow state for an in-progress bulk form action.
+ * @param {string} sessionKey - Form-flow session key.
+ * @returns {Object|null} Parsed state, or null when unavailable.
+ */
 function bulkActionReadFormFlowState(sessionKey) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
     if (!normalizedKey || typeof sessionStorage === 'undefined') return null;
@@ -1547,6 +1933,12 @@ function bulkActionReadFormFlowState(sessionKey) {
     }
 }
 
+/**
+ * Persists form-flow state to session storage.
+ * @param {string} sessionKey - Form-flow session key.
+ * @param {Object|null} state - State to write.
+ * @returns {boolean} True when the write succeeds.
+ */
 function bulkActionWriteFormFlowState(sessionKey, state) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
     if (!normalizedKey || typeof sessionStorage === 'undefined') return;
@@ -1556,7 +1948,15 @@ function bulkActionWriteFormFlowState(sessionKey, state) {
     } catch (_) {}
 }
 
+/**
+ * Merges a partial state patch into the latest form-flow state.
+ * @param {string} sessionKey - Form-flow session key.
+ * @param {Object} [statePatch={}] - Partial state to merge.
+ * @param {Object|null} [fallbackState=null] - Optional already-read state.
+ * @returns {Object|null} Merged state, or null when no base state exists.
+ */
 function bulkActionMergeFormFlowState(sessionKey, statePatch = {}, fallbackState = null) {
+    // Callers that already have a fresh state object can pass it in to avoid rereading session storage during the same workflow step.
     const baseState = fallbackState && typeof fallbackState === 'object'
         ? fallbackState
         : bulkActionReadFormFlowState(sessionKey);
@@ -1571,6 +1971,11 @@ function bulkActionMergeFormFlowState(sessionKey, statePatch = {}, fallbackState
     return nextState;
 }
 
+/**
+ * Clears persisted form-flow state.
+ * @param {string} sessionKey - Form-flow session key.
+ * @returns {boolean} True when the state is cleared.
+ */
 function bulkActionClearFormFlowState(sessionKey) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
     if (!normalizedKey || typeof sessionStorage === 'undefined') return;
@@ -1580,6 +1985,11 @@ function bulkActionClearFormFlowState(sessionKey) {
     } catch (_) {}
 }
 
+/**
+ * Resets pending form replication state and restores the source controller UI.
+ * @param {string} sessionKey - Form-flow session key.
+ * @returns {boolean} True when there was state to clear.
+ */
 function bulkActionResetPendingFormFlow(sessionKey) {
     const bulkState = bulkActionReadFormFlowState(sessionKey);
     if (!bulkState) return false;
@@ -1596,6 +2006,11 @@ function bulkActionResetPendingFormFlow(sessionKey) {
     return true;
 }
 
+/**
+ * Determines whether a modal close event applies to the active bulk-action form.
+ * @param {Object} [options={}] - Modal close handling options.
+ * @returns {boolean} True when the close event was handled.
+ */
 function handleModalClosed({ activeViewId = '', closedViewId = '', callback = null, context = null } = {}) {
     const normalizedActiveViewId = knackNavigator.normalizeViewId(activeViewId);
     const normalizedClosedViewId = knackNavigator.normalizeViewId(closedViewId);
@@ -1614,6 +2029,10 @@ function handleModalClosed({ activeViewId = '', closedViewId = '', callback = nu
     return true;
 }
 
+/**
+ * Parses the current hash into path and query components.
+ * @returns {{raw: string, path: string, query: string}} Hash parts.
+ */
 function bulkActionParseHash() {
     const hash = knackValueResolver.toStringSafe(window.location.hash);
     const withoutHash = hash.startsWith('#') ? hash.slice(1) : hash;
@@ -1626,6 +2045,11 @@ function bulkActionParseHash() {
     };
 }
 
+/**
+ * Reads a query-string parameter from the current location hash.
+ * @param {string} name - Query-string parameter name.
+ * @returns {string} Parameter value, or an empty string.
+ */
 function bulkActionGetHashQueryParam(name) {
     const key = knackValueResolver.toStringSafe(name);
     if (!key) return '';
@@ -1637,6 +2061,10 @@ function bulkActionGetHashQueryParam(name) {
     return knackValueResolver.toStringSafe(params.get(key));
 }
 
+/**
+ * Generates a navigation token used to bind a form route to a basket workflow.
+ * @returns {string} Opaque token.
+ */
 function bulkActionMakeToken() {
     try {
         const bytes = new Uint8Array(12);
@@ -1647,6 +2075,12 @@ function bulkActionMakeToken() {
     }
 }
 
+/**
+ * Builds a Knack scene hash with an optional record id and query-string params.
+ * @param {string} sceneSlug - Target scene slug.
+ * @param {Object} [options={}] - Optional record id and params.
+ * @returns {string} Hash fragment.
+ */
 function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
     const slug = knackValueResolver.toStringSafe(sceneSlug).replace(/^#/, '');
     if (!slug) return '';
@@ -1666,6 +2100,12 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
     return `#${slug}${recordPath}${query ? `?${query}` : ''}`;
 }
 
+/**
+ * Navigates the browser to a target scene hash when it differs from the current one.
+ * @param {string} sceneSlug - Target scene slug.
+ * @param {Object} [options={}] - Optional record id and params.
+ * @returns {void}
+ */
 function bulkActionNavigateToSceneSlug(sceneSlug, { recordId = '', params = {} } = {}) {
     const targetHash = bulkActionBuildHash(sceneSlug, { recordId, params });
     if (!targetHash) return;
@@ -1673,6 +2113,11 @@ function bulkActionNavigateToSceneSlug(sceneSlug, { recordId = '', params = {} }
     window.location.hash = targetHash;
 }
 
+/**
+ * Sets a chosen-style select value, retrying while the widget initialises asynchronously.
+ * @param {Object} [options={}] - Target view, field, and selected value details.
+ * @returns {void}
+ */
 function bulkActionSetChosenSelectValue({ viewId, fieldKey, value, label = '', updateEvent = 'liszt:updated' } = {}) {
     const normalizedViewId = knackNavigator.normalizeViewId(viewId);
     const normalizedFieldKey = knackNavigator.normalizeFieldId(fieldKey);
@@ -1716,6 +2161,7 @@ function bulkActionSetChosenSelectValue({ viewId, fieldKey, value, label = '', u
             select.trigger('change');
         }
 
+        // Chosen-enhanced inputs can rebuild after render, so retry a few times with a backoff until the hidden select keeps the requested value.
         if (nextValue === normalizedValue || attempt >= maxAttempts) return;
         window.setTimeout(() => applyValue(attempt + 1), baseDelayMs * attempt);
     }
@@ -1723,6 +2169,11 @@ function bulkActionSetChosenSelectValue({ viewId, fieldKey, value, label = '', u
     window.setTimeout(() => applyValue(1), 0);
 }
 
+/**
+ * Renders or updates the explanatory notice shown on replicated forms.
+ * @param {Object} [options={}] - Form notice options.
+ * @returns {void}
+ */
 function bulkActionRenderFormNotice({ viewElement, bulkState, messages = {}, noticeClass = '' } = {}) {
     if (!(viewElement instanceof Element) || !bulkState) return;
 
@@ -1753,11 +2204,11 @@ function bulkActionRenderFormNotice({ viewElement, bulkState, messages = {}, not
     notice.innerHTML = `<strong>${prefix}</strong> ${additionalCount > 0 ? pluralMessage : singleMessage}`;
 }
 
-const BULK_ACTION_FORM_FIELD_SELECTOR = '[id^="kn-input-field_"]';
-const BULK_ACTION_WRITABLE_CONTROL_SELECTOR = 'select:not([disabled]), textarea:not([disabled]), input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([disabled]), [contenteditable="true"]';
-const BULK_ACTION_TEXT_INPUT_SELECTOR = 'textarea:not([disabled]), input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([disabled])';
-const BULK_ACTION_RICH_TEXT_SELECTOR = '[contenteditable="true"], .redactor_editor';
-
+/**
+ * Resolves the DOM element, metadata object, and id for a view reference.
+ * @param {*} viewRef - View id, key, element, or view object.
+ * @returns {{viewElement: Element|null, viewObject: Object|null, viewId: string}} View context.
+ */
 function bulkActionResolveViewContext(viewRef) {
     const viewElement = bulkActionResolveElement(viewRef);
     const viewId = knackNavigator.normalizeViewId(viewElement?.id || viewRef?.key || viewRef);
@@ -1770,6 +2221,11 @@ function bulkActionResolveViewContext(viewRef) {
     };
 }
 
+/**
+ * Normalises and deduplicates field ids used by form replication helpers.
+ * @param {Array<string|number>} [fieldKeys=[]] - Field ids or field keys.
+ * @returns {Array<string>} Normalised field ids.
+ */
 function bulkActionNormalizeFieldKeys(fieldKeys = []) {
     return Array.from(new Set(
         (Array.isArray(fieldKeys) ? fieldKeys : [])
@@ -1778,14 +2234,29 @@ function bulkActionNormalizeFieldKeys(fieldKeys = []) {
     ));
 }
 
+/**
+ * Returns true when the value is a plain object.
+ * @param {*} value - Value to inspect.
+ * @returns {boolean} True for plain objects.
+ */
 function bulkActionIsPlainObject(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Returns the provided value when it is a plain object, otherwise an empty object.
+ * @param {*} value - Value to normalise.
+ * @returns {Object} Plain object or empty object.
+ */
 function bulkActionObjectOrEmpty(value) {
     return bulkActionIsPlainObject(value) ? value : {};
 }
 
+/**
+ * Captures the current visible and empty-field form payload for update replication.
+ * @param {Object} [options={}] - Capture options.
+ * @returns {void}
+ */
 function bulkActionCaptureEmptyFieldPayload({ sessionKey, viewElement, activeFormViewId = '' } = {}) {
     if (!(viewElement instanceof Element)) return;
 
@@ -1804,6 +2275,11 @@ function bulkActionCaptureEmptyFieldPayload({ sessionKey, viewElement, activeFor
     }, latestState);
 }
 
+/**
+ * Creates the initial run-state object used by basket progress UI.
+ * @param {Object} [overrides={}] - Optional state overrides.
+ * @returns {Object} Run-state object.
+ */
 function bulkActionCreateRunState(overrides = {}) {
     return {
         isRunning: false,
@@ -1816,6 +2292,11 @@ function bulkActionCreateRunState(overrides = {}) {
     };
 }
 
+/**
+ * Converts run-state counters into display-ready modal progress text.
+ * @param {Object} [runState={}] - Current run-state counters.
+ * @returns {{visible: boolean, title: string, detail: string, meta: string, percent: number, stateClass: string}} Progress summary.
+ */
 function bulkActionSummarizeRunState(runState = {}) {
     const total = Math.max(0, Number(runState?.total || 0));
     const processed = Math.max(0, total > 0
@@ -1880,12 +2361,24 @@ function bulkActionSummarizeRunState(runState = {}) {
     };
 }
 
+/**
+ * Returns true when the API exposes the batch write method needed for the mode.
+ * @param {Object} [api={}] - API client.
+ * @param {string} [mode='update'] - Replication mode.
+ * @returns {boolean} Whether batch writes are supported.
+ */
 function bulkActionHasBatchWriteApi(api = {}, mode = 'update') {
     return mode === 'update'
         ? typeof api?.updateRecords === 'function'
         : typeof api?.createRecords === 'function';
 }
 
+/**
+ * Resolves write concurrency metadata for progress reporting and logging.
+ * @param {Object} [api={}] - API client.
+ * @param {number} [total=0] - Total queued writes.
+ * @returns {{configured: number, atOnce: number, queueActive: number, queuedWrites: number, total: number}} Concurrency metadata.
+ */
 function bulkActionResolveApiConcurrency(api = {}, total = 0) {
     const normalizedTotal = Math.max(0, Number(total || 0));
     const queue = api?._writeQueue || {};
@@ -1905,6 +2398,11 @@ function bulkActionResolveApiConcurrency(api = {}, total = 0) {
     };
 }
 
+/**
+ * Resolves the API client used for bulk form replication.
+ * @param {Object} [api={}] - Preferred API overrides.
+ * @returns {Object} API client with single-record and batch write methods.
+ */
 function bulkActionResolveReplicationApi(api = {}) {
     const sharedApiClient = getKnackApiClient();
     const providedApi = api && typeof api === 'object' ? api : {};
@@ -1934,6 +2432,11 @@ function bulkActionResolveReplicationApi(api = {}) {
     };
 }
 
+/**
+ * Prepares per-record replication payloads before writes begin.
+ * @param {Object} [options={}] - Replication preparation options.
+ * @returns {Promise<{preparedOperations: Array<Object>, failedIds: Array<string>}>} Prepared operations and preparation failures.
+ */
 async function bulkActionPrepareReplicateOperations({ mode = 'create', remainingIds = [], basePayload = {}, action, sourceController = null, processedRecordId = '', sourceViewId = '', record = null, recordFieldId = '', options = {} } = {}) {
     const preparedOperations = [];
     const failedIds = [];
@@ -1958,6 +2461,7 @@ async function bulkActionPrepareReplicateOperations({ mode = 'create', remaining
                     record
                 });
 
+                // Callback-provided values intentionally override the base payload so app code can tailor each replicated record.
                 if (bulkActionIsPlainObject(additions)) {
                     Object.assign(payload, additions);
                 }
@@ -1984,6 +2488,11 @@ async function bulkActionPrepareReplicateOperations({ mode = 'create', remaining
     return { preparedOperations, failedIds };
 }
 
+/**
+ * Falls back to sequential single-record writes when batch APIs are unavailable.
+ * @param {Object} [options={}] - Fallback replication options.
+ * @returns {Promise<Array<string>>} Failed record ids.
+ */
 async function bulkActionReplicateFallback({ mode = 'create', operations = [], api = {}, sceneId = '', apiViewId = '', sourceStore, sourceController = null, sourceViewId = '', options = {} } = {}) {
     const failedIds = [];
 
@@ -2022,6 +2531,11 @@ async function bulkActionReplicateFallback({ mode = 'create', operations = [], a
     return failedIds;
 }
 
+/**
+ * Resolves the writable field ids present in a form.
+ * @param {*} viewRef - View id, key, element, or view object.
+ * @returns {Array<string>} Form field ids.
+ */
 function bulkActionGetFormFieldKeys(viewRef) {
     const { viewElement, viewObject } = bulkActionResolveViewContext(viewRef);
 
@@ -2034,11 +2548,16 @@ function bulkActionGetFormFieldKeys(viewRef) {
     if (!viewElement) return [];
 
     return bulkActionNormalizeFieldKeys(
-        Array.from(viewElement.querySelectorAll(BULK_ACTION_FORM_FIELD_SELECTOR))
+        Array.from(viewElement.querySelectorAll(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.formField))
             .map((element) => String(element.id || '').replace(/^kn-input-/, ''))
     );
 }
 
+/**
+ * Returns true when a form field wrapper is visible to the user.
+ * @param {*} element - Field wrapper candidate.
+ * @returns {boolean} Whether the field is visible.
+ */
 function bulkActionIsVisibleFormField(element) {
     const resolvedElement = bulkActionResolveElement(element);
     if (!(resolvedElement instanceof Element)) return false;
@@ -2053,12 +2572,23 @@ function bulkActionIsVisibleFormField(element) {
     return resolvedElement.getClientRects().length > 0;
 }
 
+/**
+ * Returns true when a field wrapper contains a writable control.
+ * @param {Element} fieldWrapper - Form field wrapper element.
+ * @returns {boolean} Whether the field contains a writable control.
+ */
 function bulkActionHasWritableFormControl(fieldWrapper) {
     if (!(fieldWrapper instanceof Element)) return false;
 
-    return Boolean(fieldWrapper.querySelector(BULK_ACTION_WRITABLE_CONTROL_SELECTOR));
+    return Boolean(fieldWrapper.querySelector(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.writableControl));
 }
 
+/**
+ * Returns true when all writable controls in a field are empty.
+ * @param {Element} fieldWrapper - Form field wrapper.
+ * @param {string} [fieldType=''] - Knack field type.
+ * @returns {boolean} Whether the field is empty.
+ */
 function bulkActionIsFormFieldEmpty(fieldWrapper, fieldType = '') {
     if (!(fieldWrapper instanceof Element)) return false;
 
@@ -2091,7 +2621,7 @@ function bulkActionIsFormFieldEmpty(fieldWrapper, fieldType = '') {
         if (hasSelectedValue) return false;
     }
 
-    const textInputs = Array.from(fieldWrapper.querySelectorAll(BULK_ACTION_TEXT_INPUT_SELECTOR));
+    const textInputs = Array.from(fieldWrapper.querySelectorAll(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.textInput));
     if (textInputs.length) {
         sawWritableControl = true;
         if (textInputs.some((input) => knackValueResolver.toStringSafe(input.value).trim() !== '')) {
@@ -2099,7 +2629,7 @@ function bulkActionIsFormFieldEmpty(fieldWrapper, fieldType = '') {
         }
     }
 
-    const richTextInput = fieldWrapper.querySelector(BULK_ACTION_RICH_TEXT_SELECTOR);
+    const richTextInput = fieldWrapper.querySelector(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.richText);
     if (richTextInput instanceof Element) {
         sawWritableControl = true;
         if (knackValueResolver.toStringSafe(richTextInput.textContent).trim() !== '') {
@@ -2107,9 +2637,16 @@ function bulkActionIsFormFieldEmpty(fieldWrapper, fieldType = '') {
         }
     }
 
+    // Distinguish between fields that are genuinely empty and wrappers that never exposed a writable control in the first place.
     return sawWritableControl;
 }
 
+/**
+ * Returns the empty request value that should be written for a field type.
+ * @param {Element} fieldWrapper - Form field wrapper.
+ * @param {string} [fieldType=''] - Knack field type.
+ * @returns {string|boolean|Array<string>} Empty request value.
+ */
 function bulkActionGetEmptyRequestValue(fieldWrapper, fieldType = '') {
     const normalizedFieldType = String(fieldType || '').trim().toLowerCase();
 
@@ -2131,6 +2668,11 @@ function bulkActionGetEmptyRequestValue(fieldWrapper, fieldType = '') {
     return '';
 }
 
+/**
+ * Builds the structured request value expected by Knack date-time fields.
+ * @param {Element} fieldWrapper - Date-time field wrapper.
+ * @returns {string|Object} Date-time request value.
+ */
 function bulkActionBuildDateTimeRequestValue(fieldWrapper) {
     const parts = getDateTimeParts(fieldWrapper);
     const hasDate = knackValueResolver.toStringSafe(parts?.date);
@@ -2157,6 +2699,12 @@ function bulkActionBuildDateTimeRequestValue(fieldWrapper) {
     };
 }
 
+/**
+ * Reads the current request-ready value from a visible form field.
+ * @param {Element} fieldWrapper - Form field wrapper.
+ * @param {string} [fieldType=''] - Knack field type.
+ * @returns {*} Request-ready field value.
+ */
 function bulkActionReadFormFieldRequestValue(fieldWrapper, fieldType = '') {
     if (!(fieldWrapper instanceof Element)) return undefined;
 
@@ -2190,12 +2738,12 @@ function bulkActionReadFormFieldRequestValue(fieldWrapper, fieldType = '') {
         return selectInput.value;
     }
 
-    const textInput = fieldWrapper.querySelector(BULK_ACTION_TEXT_INPUT_SELECTOR);
+    const textInput = fieldWrapper.querySelector(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.textInput);
     if (textInput instanceof HTMLInputElement || textInput instanceof HTMLTextAreaElement) {
         return textInput.value;
     }
 
-    const richTextInput = fieldWrapper.querySelector(BULK_ACTION_RICH_TEXT_SELECTOR);
+    const richTextInput = fieldWrapper.querySelector(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.richText);
     if (richTextInput instanceof HTMLElement) {
         return richTextInput.innerHTML || richTextInput.textContent || '';
     }
@@ -2203,6 +2751,13 @@ function bulkActionReadFormFieldRequestValue(fieldWrapper, fieldType = '') {
     return undefined;
 }
 
+/**
+ * Builds a request payload from the visible fields in a form.
+ * @param {*} viewRef - View id, key, element, or view object.
+ * @param {Array<string|number>} [includeFieldKeys=[]] - Field ids to include.
+ * @param {Object} [options={}] - Payload options.
+ * @returns {Object} Request payload.
+ */
 function bulkActionBuildVisibleFormRequestPayload(viewRef, includeFieldKeys = [], { includeEmpty = false } = {}) {
     const { viewElement } = bulkActionResolveViewContext(viewRef);
     const normalizedFieldKeys = bulkActionNormalizeFieldKeys(includeFieldKeys);
@@ -2233,6 +2788,12 @@ function bulkActionBuildVisibleFormRequestPayload(viewRef, includeFieldKeys = []
     }, {});
 }
 
+/**
+ * Builds a payload of visible fields that are currently empty.
+ * @param {*} viewRef - View id, key, element, or view object.
+ * @param {Array<string|number>} [includeFieldKeys=[]] - Field ids to inspect.
+ * @returns {Object} Empty-field payload.
+ */
 function bulkActionBuildVisibleEmptyFieldPayload(viewRef, includeFieldKeys = []) {
     const { viewElement } = bulkActionResolveViewContext(viewRef);
     const normalizedFieldKeys = bulkActionNormalizeFieldKeys(includeFieldKeys);
@@ -2256,6 +2817,12 @@ function bulkActionBuildVisibleEmptyFieldPayload(viewRef, includeFieldKeys = [])
     }, {});
 }
 
+/**
+ * Builds a dynamic payload from a record while excluding selected fields.
+ * @param {Object} record - Source record.
+ * @param {Object} [options={}] - Include and exclude field options.
+ * @returns {Object} Request payload.
+ */
 function bulkActionBuildDynamicRequestPayload(record, { excludeFieldKeys = [], includeFieldKeys = [] } = {}) {
     const payload = knackValueResolver.buildRequestPayload(record, Array.isArray(includeFieldKeys) && includeFieldKeys.length ? includeFieldKeys : undefined);
     const exclude = new Set((Array.isArray(excludeFieldKeys) ? excludeFieldKeys : []).map((fieldKey) => knackNavigator.normalizeFieldId(fieldKey)).filter(Boolean));
@@ -2263,6 +2830,11 @@ function bulkActionBuildDynamicRequestPayload(record, { excludeFieldKeys = [], i
     return payload;
 }
 
+/**
+ * Builds the base payload used when replicating a submitted form across basket items.
+ * @param {Object} [options={}] - Replication payload options.
+ * @returns {Object} Base replication payload.
+ */
 function bulkActionBuildReplicateBasePayload({ mode = 'create', bulkState = {}, formViewRef = null, record = null, includeFieldKeys = [], excludeFieldKeys = [] } = {}) {
     const dynamicPayload = bulkActionBuildDynamicRequestPayload(record, { includeFieldKeys, excludeFieldKeys });
     if (mode !== 'update') {
@@ -2289,6 +2861,12 @@ function bulkActionBuildReplicateBasePayload({ mode = 'create', bulkState = {}, 
         };
 }
 
+/**
+ * Resolves the connected record id stored in a connection field.
+ * @param {Object} record - Source record.
+ * @param {string|number} fieldKey - Connection field id.
+ * @returns {string} Connected record id.
+ */
 function bulkActionResolveConnectionFieldRecordId(record, fieldKey) {
     const normalizedFieldKey = knackNavigator.normalizeFieldId(fieldKey);
     if (!record || !normalizedFieldKey) return '';
@@ -2298,6 +2876,13 @@ function bulkActionResolveConnectionFieldRecordId(record, fieldKey) {
     return knackValueResolver.toStringSafe(record?.[normalizedFieldKey]);
 }
 
+/**
+ * Emits a bulk-action notification through a custom handler or the console.
+ * @param {string} message - Notification message.
+ * @param {string} [type='info'] - Notification severity.
+ * @param {Object} [options={}] - Notification options.
+ * @returns {void}
+ */
 function bulkActionNotify(message, type = 'info', options = {}) {
     if (typeof options.notify === 'function') {
         options.notify({ message, type });
@@ -2317,6 +2902,13 @@ function bulkActionNotify(message, type = 'info', options = {}) {
     console.log('[KnackBulkActions]', message);
 }
 
+/**
+ * Writes a bulk-action log message to the console.
+ * @param {string} message - Log message.
+ * @param {*} [data=null] - Optional log payload.
+ * @param {string} [level='info'] - Console level.
+ * @returns {void}
+ */
 function bulkActionLog(message, data = null, level = 'info') {
     const prefix = `[KnackBulkActions] ${message}`;
 
@@ -2332,6 +2924,14 @@ function bulkActionLog(message, data = null, level = 'info') {
     }
 }
 
+/**
+ * Reports a bulk-action error through a custom handler or the console.
+ * @param {*} error - Error to report.
+ * @param {Object} [meta={}] - Additional error metadata.
+ * @param {string} [label='Bulk action error'] - Log label.
+ * @param {Object} [options={}] - Error reporting options.
+ * @returns {void}
+ */
 function bulkActionReportError(error, meta = {}, label = 'Bulk action error', options = {}) {
     if (typeof options.onError === 'function') {
         options.onError(error, meta, label);
@@ -2341,6 +2941,12 @@ function bulkActionReportError(error, meta = {}, label = 'Bulk action error', op
     console.error(`[KnackBulkActions] ${label}`, { error, ...meta });
 }
 
+/**
+ * Deep-merges nested style map objects used by bulk-action UI.
+ * @param {Object} [base={}] - Base style map.
+ * @param {Object} [overrides={}] - Override style map.
+ * @returns {Object} Merged style map.
+ */
 function bulkActionMergeStyleMaps(base = {}, overrides = {}) {
     const next = { ...(base || {}) };
 
@@ -2356,8 +2962,10 @@ function bulkActionMergeStyleMaps(base = {}, overrides = {}) {
     return next;
 }
 
-const BULK_ACTION_BASE_STYLE_ID = 'knackBulkActionBaseStyles';
-
+/**
+ * Returns the shared CSS text for the bulk-action UI.
+ * @returns {string} CSS text.
+ */
 function bulkActionGetBaseCssText() {
     return `
 :root {
@@ -2638,16 +3246,27 @@ function bulkActionGetBaseCssText() {
 `;
 }
 
+/**
+ * Injects the shared bulk-action stylesheet once per page.
+ * @returns {void}
+ */
 function ensureBulkActionBaseStyles() {
     if (typeof document === 'undefined') return;
-    if (document.getElementById(BULK_ACTION_BASE_STYLE_ID)) return;
+    if (document.getElementById(BULK_ACTION_DEFAULT_CONFIG.constants.styleId)) return;
 
     const style = document.createElement('style');
-    style.id = BULK_ACTION_BASE_STYLE_ID;
+    style.id = BULK_ACTION_DEFAULT_CONFIG.constants.styleId;
     style.textContent = bulkActionGetBaseCssText();
     document.head.appendChild(style);
 }
 
+/**
+ * Builds a stable DOM id for a bulk-action button.
+ * @param {string} viewId - Source view id.
+ * @param {string} actionKey - Action key.
+ * @param {string} [suffix='button'] - Button suffix.
+ * @returns {string} DOM id.
+ */
 function bulkActionBuildButtonId(viewId, actionKey, suffix = 'button') {
     return [
         knackNavigator.normalizeViewId(viewId) || 'view',
@@ -2657,38 +3276,55 @@ function bulkActionBuildButtonId(viewId, actionKey, suffix = 'button') {
     ].join('-');
 }
 
+/**
+ * Creates a bulk-action button using KTL button rendering.
+ * @param {*} container - Target container element.
+ * @param {Object} [config={}] - Button configuration.
+ * @param {Object} [options={}] - Creation options.
+ * @returns {Element|null} Created button element.
+ */
 function bulkActionCreateButton(container, config = {}, options = {}) {
     const parent = bulkActionResolveElement(container);
     if (!parent) return null;
 
-    if (typeof options.createButton === 'function') {
-        const customButton = options.createButton(parent, config, options);
-        const element = bulkActionResolveElement(customButton) || customButton;
-        if (element instanceof Element) {
-            return element;
-        }
+    if (typeof ktl?.fields?.addButton !== 'function') return null;
+
+    const classes = ['kn-button', 'ktlButtonMargin'];
+    if (Array.isArray(config.classes) && config.classes.length) {
+        classes.push(...config.classes.filter(Boolean));
     }
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    if (config.id) button.id = config.id;
-    if (Array.isArray(config.classes) && config.classes.length) {
-        button.classList.add(...config.classes.filter(Boolean));
+    const button = ktl.fields.addButton(
+        parent,
+        knackValueResolver.toStringSafe(config.label || 'Button') || 'Button',
+        knackValueResolver.toStringSafe(config.styleText || ''),
+        Array.from(new Set(classes)),
+        knackValueResolver.toStringSafe(config.id || '')
+    );
+
+    if (button instanceof HTMLElement && options.location === 'modal-action') {
+        button.classList.remove('ktlButtonMargin');
     }
-    button.textContent = knackValueResolver.toStringSafe(config.label || 'Button') || 'Button';
-    parent.appendChild(button);
-    return button;
+
+    return button instanceof Element ? button : null;
 }
 
+/**
+ * Modal UI used to display basket contents and progress.
+ */
 class BulkActionModal {
-    constructor({ viewId, title = 'Basket', emptyText = 'No items yet. Tick rows to add.', createButton = null, buttonClass = '', modalClass = '' } = {}) {
+    /**
+     * Creates a new basket modal.
+     * @param {Object} [options={}] - Modal options.
+     */
+    constructor({ viewId, bulkActionConfig } = {}) {
+        const config = createBulkActionConfig(bulkActionConfig);
         this.viewId = knackNavigator.normalizeViewId(viewId);
-        this.title = knackValueResolver.toStringSafe(title) || 'Basket';
-        this.emptyText = knackValueResolver.toStringSafe(emptyText) || 'No items yet. Tick rows to add.';
+        this.title = config.basket.title;
+        this.emptyText = config.basket.emptyText;
         this.modalId = `knack-bulk-basket-${this.viewId}`;
-        this.createButton = typeof createButton === 'function' ? createButton : null;
-        this.buttonClass = knackValueResolver.toStringSafe(buttonClass);
-        this.modalClass = knackValueResolver.toStringSafe(modalClass);
+        this.buttonClass = config.action.buttonClass;
+        this.modalClass = config.basket.modalClass;
         this.isOpen = false;
         this.onClose = null;
         this.onRemove = null;
@@ -2697,6 +3333,10 @@ class BulkActionModal {
         this.syncOpenStateFromDom();
     }
 
+    /**
+     * Syncs open state from the existing DOM node.
+     * @returns {void}
+     */
     syncOpenStateFromDom() {
         const modal = document.getElementById(this.modalId);
         if (!modal) {
@@ -2707,6 +3347,10 @@ class BulkActionModal {
         this.isOpen = modal.style.display !== 'none';
     }
 
+    /**
+     * Ensures the modal DOM exists and returns it.
+     * @returns {HTMLElement} Modal element.
+     */
     ensureModal() {
         let modal = document.getElementById(this.modalId);
         if (modal) return modal;
@@ -2815,6 +3459,11 @@ class BulkActionModal {
         return modal;
     }
 
+    /**
+     * Renders the basket item list.
+     * @param {Object} [options={}] - Render options.
+     * @returns {void}
+     */
     render({ items = [] } = {}) {
         const modal = document.getElementById(this.modalId);
         if (!modal) return;
@@ -2866,6 +3515,11 @@ class BulkActionModal {
         });
     }
 
+    /**
+     * Renders the action buttons shown in the modal footer.
+     * @param {Array<Object>} [actions=[]] - Action button configuration.
+     * @returns {void}
+     */
     renderActions(actions = []) {
         const modal = document.getElementById(this.modalId);
         if (!modal) return;
@@ -2881,7 +3535,6 @@ class BulkActionModal {
                 classes: ['knackBulkActionButton', 'knackBulkActionModalAction', this.buttonClass].filter(Boolean),
                 styleText: ''
             }, {
-                createButton: this.createButton,
                 viewId: this.viewId,
                 location: 'modal-action',
                 actionKey: action?.key,
@@ -2899,6 +3552,11 @@ class BulkActionModal {
         });
     }
 
+    /**
+     * Updates the progress state shown in the modal.
+     * @param {Object} [runState={}] - Current run-state object.
+     * @returns {void}
+     */
     setProgressState(runState = {}) {
         const modal = document.getElementById(this.modalId);
         if (!modal) return;
@@ -2923,12 +3581,20 @@ class BulkActionModal {
         }
     }
 
+    /**
+     * Opens the modal.
+     * @returns {void}
+     */
     open() {
         const modal = this.ensureModal();
         modal.style.display = 'flex';
         this.isOpen = true;
     }
 
+    /**
+     * Closes the modal.
+     * @returns {void}
+     */
     close() {
         const modal = document.getElementById(this.modalId);
         if (modal) modal.style.display = 'none';
@@ -2936,95 +3602,96 @@ class BulkActionModal {
     }
 }
 
-function ensureBulkActionFallbackCheckboxes(viewId, options = {}) {
-    const viewElement = bulkActionFindViewRoot(viewId);
-    if (!viewElement) return;
+/**
+ * Ensures a grid exposes shared KTL-managed selection checkboxes.
+ * @param {string} viewId - Grid view id.
+ * @param {Object} selectionConfig - Selection config containing checkbox classes.
+ * @param {Object} [handlers={}] - Checkbox change handlers.
+ * @returns {void}
+ */
+function ensureBulkActionCheckboxes(viewId, selectionConfig, handlers = {}) {
+    if (typeof ktl?.views?.addCheckboxesToTable !== 'function') return;
+    const selectionScope = knackValueResolver.toStringSafe(selectionConfig?.scope || 'ktlCheckbox') || 'ktlCheckbox';
 
-    const rowCheckboxClass = knackValueResolver.toStringSafe(options.rowCheckboxClass || 'knackBulkRowCheckbox');
-    const masterCheckboxClass = knackValueResolver.toStringSafe(options.masterCheckboxClass || 'knackBulkMasterCheckbox');
-    const table = viewElement.querySelector('table.kn-table, table');
-    if (!table) return;
-
-    const headerRow = table.querySelector('thead tr');
-    if (headerRow && !headerRow.querySelector(`.${masterCheckboxClass}`)) {
-        const th = document.createElement('th');
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = masterCheckboxClass;
-        checkbox.addEventListener('change', () => {
-            table.querySelectorAll(`tbody .${rowCheckboxClass}`).forEach((rowCheckbox) => {
-                rowCheckbox.checked = checkbox.checked;
-                rowCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-            });
-        });
-        th.appendChild(checkbox);
-        headerRow.prepend(th);
-    }
-
-    Array.from(table.querySelectorAll('tbody tr[id]')).forEach((row) => {
-        if (row.querySelector(`.${rowCheckboxClass}`)) return;
-        const td = document.createElement('td');
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = rowCheckboxClass;
-        checkbox.dataset.recordId = knackValueResolver.toStringSafe(row.id);
-        td.appendChild(checkbox);
-        row.prepend(td);
+    ktl.views.addCheckboxesToTable(viewId, {
+        withMaster: true,
+        selectionScope,
+        checkboxClasses: ['bulkEditCb', 'ktlCheckbox-bulkops'],
+        checkboxDataAttrs: {
+            'data-ktl-selection': selectionScope,
+            'data-ktl-bulkops': '1'
+        },
+        masterCheckboxDataAttrs: {
+            'data-ktl-bulkops': '1'
+        },
+        rowCheckboxDataAttrs: {
+            'data-ktl-bulkops': '1'
+        },
+        rowCheckboxClasses: [selectionConfig?.rowCheckboxClass].filter(Boolean),
+        masterCheckboxClasses: [selectionConfig?.masterCheckboxClass].filter(Boolean),
+        enhanceExisting: true,
+        onMasterChange: () => {
+            if (typeof handlers.onSelectionChange === 'function') {
+                handlers.onSelectionChange();
+            }
+        },
+        onRowChange: () => {
+            if (typeof handlers.onSelectionChange === 'function') {
+                handlers.onSelectionChange();
+            }
+        },
+        shiftClickChangeHandler: () => {
+            if (typeof handlers.onSelectionChange === 'function') {
+                handlers.onSelectionChange();
+            }
+        },
     });
 }
 
+/**
+ * Mounts the bulk-action toolbar group into the shared KTL add-ons div.
+ * @param {Element} container - KTL add-ons container.
+ * @param {Element} wrapper - Bulk-action toolbar group.
+ * @param {string} viewId - Source view id.
+ * @returns {void}
+ */
+function bulkActionMountToolbarGroup(container, wrapper, viewId) {
+    if (!(container instanceof Element) || !(wrapper instanceof Element)) return;
+
+    const bulkOpsGroup = container.querySelector(`#bulkOpsControlsDiv-${viewId}`) || container.querySelector('.bulkOpsControlsDiv');
+    if (bulkOpsGroup instanceof Element && bulkOpsGroup.parentElement === container) {
+        if (bulkOpsGroup.nextSibling !== wrapper) {
+            bulkOpsGroup.insertAdjacentElement('afterend', wrapper);
+        }
+        return;
+    }
+
+    container.appendChild(wrapper);
+}
+
+/**
+ * Controller that wires a grid view to basket UI and bulk-action workflows.
+ */
 class BulkActionGridController {
+    /**
+     * Creates a grid controller for a single bulk-action-enabled view.
+     * @param {Object} options - Grid controller options.
+     */
     constructor({
         viewId,
         rowRecords = [],
         labelFieldIds = [],
         actions = [],
         bulkActionsApi = KnackBulkActions,
-        namespace = 'KNACK_BULK',
-        basketTitle = 'Basket',
-        emptyBasketText = 'No items yet. Tick rows to add.',
-        buttonClass = 'knackBulkActionButton',
-        buttonBarClass = 'knackBulkActionBar',
-        rowCheckboxClass = 'knackBulkRowCheckbox',
-        masterCheckboxClass = 'knackBulkMasterCheckbox',
-        selectionScope = 'knack-bulk-actions',
-        basketMessages = {},
-        styles = {},
-        modalClass = '',
-        formNoticeClass = '',
-        createButton = null,
-        getButtonContainer = null,
-        addCheckboxes = null,
-        notify = null,
-        onError = null,
-        api = {},
-        basketTtlMs = 15 * 60 * 1000,
-        chosenUpdateEvent = 'liszt:updated'
+        bulkActionConfig
     } = {}) {
         this.viewId = knackNavigator.normalizeViewId(viewId);
         this.rowRecords = Array.isArray(rowRecords) ? rowRecords : [];
         this.labelFieldIds = Array.isArray(labelFieldIds) ? labelFieldIds : [labelFieldIds];
         this.actions = Array.isArray(actions) ? actions.filter((action) => action?.key && action?.label) : [];
         this.bulkActionsApi = bulkActionsApi;
-        this.namespace = knackValueResolver.toStringSafe(namespace || 'KNACK_BULK') || 'KNACK_BULK';
-        this.basketMessages = bulkActionObjectOrEmpty(basketMessages);
-        this.options = {
-            buttonClass,
-            buttonBarClass,
-            rowCheckboxClass,
-            masterCheckboxClass,
-            selectionScope,
-            modalClass,
-            formNoticeClass,
-            getButtonContainer,
-            createButton,
-            addCheckboxes,
-            notify,
-            onError,
-            api,
-            basketTtlMs,
-            chosenUpdateEvent
-        };
+        this.bulkActionConfig = createBulkActionConfig(bulkActionConfig);
+        this.namespace = this.bulkActionConfig.namespace;
 
         this.recordById = new Map();
         this.labelById = new Map();
@@ -3032,11 +3699,7 @@ class BulkActionGridController {
 
         this.basketModal = new BulkActionModal({
             viewId: this.viewId,
-            title: basketTitle,
-            emptyText: emptyBasketText,
-            createButton: createButton,
-            buttonClass: buttonClass,
-            modalClass
+            bulkActionConfig: this.bulkActionConfig
         });
         this.basketModal.onRemove = (recordId) => this.removeFromBasket([recordId]);
         this.basketModal.onClear = () => this.clearBasket();
@@ -3045,7 +3708,7 @@ class BulkActionGridController {
         this.basketStore = this.bulkActionsApi.createBasketStore({
             namespace: this.namespace,
             viewId: this.viewId,
-            ttlMs: basketTtlMs,
+            ttlMs: this.bulkActionConfig.basket.ttlMs,
             isOpen: () => this.basketModal.isOpen
         });
 
@@ -3054,6 +3717,10 @@ class BulkActionGridController {
         this.runState = bulkActionCreateRunState();
     }
 
+    /**
+     * Rebuilds record and label lookup maps for the current row data.
+     * @returns {void}
+     */
     rebuildRecordMaps() {
         this.recordById.clear();
         this.labelById.clear();
@@ -3066,28 +3733,47 @@ class BulkActionGridController {
         });
     }
 
+    /**
+     * Resolves the current view root element.
+     * @returns {Element|null} View element.
+     */
     resolveViewElement() {
         return bulkActionFindViewRoot(this.viewId);
     }
 
+    /**
+     * Returns the currently selected row record ids.
+     * @returns {Array<string>} Selected record ids.
+     */
     getSelectedRecordIds() {
         const viewElement = this.resolveViewElement();
         if (!viewElement) return [];
 
-        return Array.from(viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}:checked`))
+        return Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}:checked`))
             .map((checkbox) => knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id))
             .filter(Boolean);
     }
 
+    /**
+     * Finds the row checkbox for a specific record id.
+     * @param {string} recordId - Record id to find.
+     * @param {Element|null} [viewElement=this.resolveViewElement()] - Optional view element.
+     * @returns {HTMLInputElement|null} Row checkbox when found.
+     */
     findRowCheckbox(recordId, viewElement = this.resolveViewElement()) {
         const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
         if (!viewElement || !normalizedRecordId) return null;
 
-        return Array.from(viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}`)).find((checkbox) => {
+        return Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`)).find((checkbox) => {
             return knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id) === normalizedRecordId;
         }) || null;
     }
 
+    /**
+     * Builds basket items from record ids.
+     * @param {Array<string>} [recordIds=[]] - Record ids to convert.
+     * @returns {Array<Object>} Basket items.
+     */
     buildBasketItems(recordIds = []) {
         return bulkActionUniqueStrings(recordIds).map((recordId) => {
             return {
@@ -3098,6 +3784,11 @@ class BulkActionGridController {
         });
     }
 
+    /**
+     * Adds records to the basket.
+     * @param {Array<string>} [recordIds=[]] - Record ids to add.
+     * @returns {Array<Object>} Updated basket items.
+     */
     addToBasket(recordIds = []) {
         const nextItems = this.basketStore.addItems(this.buildBasketItems(recordIds));
         this.basketItems = nextItems;
@@ -3106,6 +3797,11 @@ class BulkActionGridController {
         return nextItems;
     }
 
+    /**
+     * Replaces the basket contents with the supplied record ids.
+     * @param {Array<string>} [recordIds=[]] - Replacement record ids.
+     * @returns {Array<Object>} Updated basket items.
+     */
     replaceBasketFromRecordIds(recordIds = []) {
         const nextItems = this.basketStore.setItems(this.buildBasketItems(recordIds));
         this.basketItems = nextItems;
@@ -3115,6 +3811,11 @@ class BulkActionGridController {
         return nextItems;
     }
 
+    /**
+     * Removes records from the basket.
+     * @param {Array<string>} [recordIds=[]] - Record ids to remove.
+     * @returns {Array<Object>} Updated basket items.
+     */
     removeFromBasket(recordIds = []) {
         const normalizedRecordIds = bulkActionUniqueStrings(recordIds);
         const viewElement = this.resolveViewElement();
@@ -3143,6 +3844,10 @@ class BulkActionGridController {
         return nextItems;
     }
 
+    /**
+     * Clears the basket and resets modal progress state.
+     * @returns {void}
+     */
     clearBasket() {
         this.basketItems = this.basketStore.clear();
         this.activeActionKey = '';
@@ -3153,6 +3858,11 @@ class BulkActionGridController {
         this.updateButtonsDisabledState();
     }
 
+    /**
+     * Clears stored failure metadata for matching basket items.
+     * @param {Array<string>} [recordIds=[]] - Optional record ids to clear.
+     * @returns {void}
+     */
     clearBasketItemFailures(recordIds = []) {
         const clearSet = new Set(bulkActionUniqueStrings(recordIds));
         const nextItems = this.basketStore.getItems().map((item) => {
@@ -3169,6 +3879,12 @@ class BulkActionGridController {
         this.syncBasketUi();
     }
 
+    /**
+     * Records a failure against a basket item.
+     * @param {string} recordId - Failed record id.
+     * @param {*} error - Error to classify and store.
+     * @returns {void}
+     */
     setBasketItemFailure(recordId, error) {
         const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
         if (!normalizedRecordId) return;
@@ -3187,6 +3903,10 @@ class BulkActionGridController {
         this.syncBasketUi();
     }
 
+    /**
+     * Resolves the currently active action.
+     * @returns {Object|null} Active action.
+     */
     resolveActiveAction() {
         const availableActions = this.actions.filter((action) => action?.key);
         if (!availableActions.length) return null;
@@ -3199,6 +3919,11 @@ class BulkActionGridController {
         return availableActions[0] || null;
     }
 
+    /**
+     * Sets the active action key and refreshes the UI.
+     * @param {string} actionKey - Action key to activate.
+     * @returns {void}
+     */
     setActiveActionKey(actionKey) {
         const normalizedActionKey = knackValueResolver.toStringSafe(actionKey);
         this.activeActionKey = normalizedActionKey;
@@ -3207,6 +3932,10 @@ class BulkActionGridController {
         this.updateButtonsDisabledState();
     }
 
+    /**
+     * Returns the action configuration shown in the basket modal.
+     * @returns {Array<Object>} Modal action configuration.
+     */
     getBasketActionConfigs() {
         const activeAction = this.resolveActiveAction();
         if (!activeAction) return [];
@@ -3219,6 +3948,10 @@ class BulkActionGridController {
         }];
     }
 
+    /**
+     * Syncs basket contents, actions, and progress into the modal UI.
+     * @returns {void}
+     */
     syncBasketUi() {
         this.basketItems = this.basketStore.getItems();
         const modalExists = document.getElementById(this.basketModal.modalId);
@@ -3229,12 +3962,16 @@ class BulkActionGridController {
         }
     }
 
+    /**
+     * Restores row checkbox selection from the current basket.
+     * @returns {void}
+     */
     restoreSelectionFromBasket() {
         const viewElement = this.resolveViewElement();
         if (!viewElement) return;
 
         const selectedIds = new Set(this.basketItems.map((item) => item.recordId));
-        viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}`).forEach((checkbox) => {
+        viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`).forEach((checkbox) => {
             const recordId = knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id);
             checkbox.checked = selectedIds.has(recordId);
         });
@@ -3242,36 +3979,49 @@ class BulkActionGridController {
         this.syncMasterCheckboxState(viewElement);
     }
 
+    /**
+     * Updates the master checkbox state for the current grid.
+     * @param {Element|null} [viewElement=this.resolveViewElement()] - Optional view element.
+     * @returns {void}
+     */
     syncMasterCheckboxState(viewElement = this.resolveViewElement()) {
         if (!viewElement) return;
 
-        const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}`));
+        const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`));
         const checkedCount = rowCheckboxes.filter((checkbox) => checkbox.checked).length;
         const hasRows = rowCheckboxes.length > 0;
         const allChecked = hasRows && checkedCount === rowCheckboxes.length;
         const someChecked = checkedCount > 0;
 
-        viewElement.querySelectorAll(`.${this.options.masterCheckboxClass}`).forEach((checkbox) => {
+        viewElement.querySelectorAll(`.${this.bulkActionConfig.selection.masterCheckboxClass}`).forEach((checkbox) => {
             checkbox.checked = allChecked;
             checkbox.indeterminate = someChecked && !allChecked;
         });
     }
 
+    /**
+     * Rebuilds basket contents from the current DOM checkbox selection.
+     * @returns {void}
+     */
     syncSelectionFromDom() {
         const viewElement = this.resolveViewElement();
         if (!viewElement) return;
 
-        const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.options.rowCheckboxClass}`));
+        const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`));
         const checkedIds = rowCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id)).filter(Boolean);
         this.replaceBasketFromRecordIds(checkedIds);
     }
 
+    /**
+     * Updates toolbar button disabled and active states.
+     * @returns {void}
+     */
     updateButtonsDisabledState() {
         const wrapper = document.querySelector(`[data-knack-bulk-bar="${this.viewId}"]`);
         if (!wrapper) return;
 
         const hasSelection = this.getSelectedRecordIds().length > 0 || this.basketItems.length > 0;
-        wrapper.querySelectorAll(`.${this.options.buttonClass}`).forEach((button) => {
+        wrapper.querySelectorAll(`.${this.bulkActionConfig.action.buttonClass}`).forEach((button) => {
             button.disabled = !hasSelection;
             button.classList.toggle('is-disabled', !hasSelection);
 
@@ -3285,41 +4035,50 @@ class BulkActionGridController {
         });
     }
 
+    /**
+     * Resolves the container used to mount the toolbar button bar.
+     * @returns {Element|null} Button container.
+     */
     resolveButtonContainer() {
-        if (typeof this.options.getButtonContainer === 'function') {
-            const container = bulkActionResolveElement(this.options.getButtonContainer(this.viewId, this.resolveViewElement()));
-            if (container) return container;
-        }
-
-        const viewElement = this.resolveViewElement();
-        if (!viewElement) return null;
-
-        return viewElement.querySelector('.kn-records-nav') || viewElement.querySelector('.view-header') || viewElement;
+        if (typeof ktl?.views?.getKtlAddOnsDiv !== 'function') return null;
+        return bulkActionResolveElement(ktl.views.getKtlAddOnsDiv(this.viewId));
     }
 
+    /**
+     * Removes any previously rendered toolbar UI for this controller.
+     * @returns {void}
+     */
     removeExistingUi() {
         const existing = document.querySelector(`[data-knack-bulk-bar="${this.viewId}"]`);
         if (existing) existing.remove();
     }
 
+    /**
+     * Renders the toolbar button bar for available actions.
+     * @returns {void}
+     */
     renderButtonBar() {
         const container = this.resolveButtonContainer();
         if (!container) return;
+        const isKtlAddonsContainer = container.classList?.contains('ktlAddonsDiv');
 
         this.removeExistingUi();
 
         const wrapper = document.createElement('div');
         wrapper.dataset.knackBulkBar = this.viewId;
-        wrapper.className = ['knackBulkActionBar', this.options.buttonBarClass].filter(Boolean).join(' ');
+        wrapper.id = `bulkActionControlsDiv-${this.viewId}`;
+        wrapper.className = ['knackBulkActionBar', this.bulkActionConfig.action.buttonBarClass].filter(Boolean).join(' ');
+        if (isKtlAddonsContainer) {
+            wrapper.classList.add('ktlFeatureGroup');
+        }
 
         this.actions.forEach((action) => {
             const button = bulkActionCreateButton(wrapper, {
                 id: bulkActionBuildButtonId(this.viewId, action.key, 'toolbar-action'),
                 label: action.label,
-                classes: ['knackBulkActionButton', 'knackBulkActionToolbarButton', this.options.buttonClass].filter(Boolean),
+                classes: ['knackBulkActionButton', 'knackBulkActionToolbarButton', this.bulkActionConfig.action.buttonClass].filter(Boolean),
                 styleText: ''
             }, {
-                createButton: this.options.createButton,
                 viewId: this.viewId,
                 location: 'toolbar-action',
                 actionKey: action.key,
@@ -3330,46 +4089,36 @@ class BulkActionGridController {
             button.addEventListener('click', () => {
                 const selectedIds = this.getSelectedRecordIds();
                 if (!selectedIds.length && !this.basketItems.length) {
-                    bulkActionNotify('Select one or more rows first.', 'warning', this.options);
+                    bulkActionNotify('Select one or more rows first.', 'warning', this.bulkActionConfig.action);
                     return;
                 }
 
                 this.setActiveActionKey(action.key);
                 this.openBasketAndAdd(selectedIds);
             });
-            wrapper.appendChild(button);
         });
 
-        if (container === this.resolveViewElement()) {
-            container.prepend(wrapper);
-        } else {
-            container.appendChild(wrapper);
-        }
+        bulkActionMountToolbarGroup(container, wrapper, this.viewId);
+        window.setTimeout(() => {
+            const bulkOpsGroup = container.querySelector(`#bulkOpsControlsDiv-${this.viewId}`) || container.querySelector('.bulkOpsControlsDiv');
+            if (wrapper.isConnected && bulkOpsGroup instanceof Element && bulkOpsGroup.nextElementSibling !== wrapper) {
+                bulkActionMountToolbarGroup(container, wrapper, this.viewId);
+            }
+        }, 0);
     }
 
-    ensureCheckboxes() {
-        if (typeof this.options.addCheckboxes === 'function') {
-            this.options.addCheckboxes(this.viewId, {
-                selectionScope: this.options.selectionScope,
-                rowCheckboxClass: this.options.rowCheckboxClass,
-                masterCheckboxClass: this.options.masterCheckboxClass
-            });
-            return;
-        }
-
-        ensureBulkActionFallbackCheckboxes(this.viewId, {
-            rowCheckboxClass: this.options.rowCheckboxClass,
-            masterCheckboxClass: this.options.masterCheckboxClass
-        });
-    }
-
+    /**
+     * Opens the basket modal and optionally adds record ids first.
+     * @param {Array<string>} [recordIds=[]] - Record ids to add before opening.
+     * @returns {void}
+     */
     openBasketAndAdd(recordIds = []) {
         if (Array.isArray(recordIds) && recordIds.length) {
             this.addToBasket(recordIds);
         }
 
         if (!this.basketItems.length) {
-            bulkActionNotify('Select one or more rows first.', 'warning', this.options);
+            bulkActionNotify('Select one or more rows first.', 'warning', this.bulkActionConfig.action);
             return;
         }
 
@@ -3377,17 +4126,26 @@ class BulkActionGridController {
         this.syncBasketUi();
     }
 
+    /**
+     * Resets form-action progress state without altering basket contents.
+     * @returns {void}
+     */
     resetFormActionState() {
         this.runState = bulkActionCreateRunState();
         this.syncBasketUi();
         this.updateButtonsDisabledState();
     }
 
+    /**
+     * Starts a form-based bulk action by storing workflow state and navigating to the form.
+     * @param {Object} action - Target form action.
+     * @returns {Promise<void>}
+     */
     async startFormAction(action) {
         const sceneInfo = getSceneFromViewId(action?.target);
         const sceneSlug = knackValueResolver.toStringSafe(sceneInfo?.slug);
         if (!sceneSlug) {
-            bulkActionNotify('Bulk action could not resolve the target form route.', 'error', this.options);
+            bulkActionNotify('Bulk action could not resolve the target form route.', 'error', this.bulkActionConfig.action);
             return;
         }
 
@@ -3402,6 +4160,7 @@ class BulkActionGridController {
         bulkActionWriteFormFlowState(sessionKey, {
             sourceViewId: this.viewId,
             recordIds,
+            actionKey: knackValueResolver.toStringSafe(action?.key),
             recordFieldId: action.recordFieldId || '',
             firstRecordLabel: knackValueResolver.toStringSafe(firstItem?.label),
             formMode: String(action.operation || 'create').toLowerCase() === 'update' ? 'update' : 'create',
@@ -3426,6 +4185,11 @@ class BulkActionGridController {
         bulkActionNavigateToSceneSlug(sceneSlug, { params: { coBulkToken: navToken } });
     }
 
+    /**
+     * Runs the selected bulk action.
+     * @param {string} actionKey - Action key to run.
+     * @returns {Promise<void>}
+     */
     async runAction(actionKey) {
         const action = this.actions.find((candidate) => knackValueResolver.toStringSafe(candidate?.key) === knackValueResolver.toStringSafe(actionKey));
         if (!action || this.runState.isRunning) return;
@@ -3462,11 +4226,15 @@ class BulkActionGridController {
                 this.basketModal.close();
             }
         } catch (error) {
-            bulkActionReportError(error, { viewId: this.viewId, actionKey: action.key }, 'Bulk batch action failed', this.options);
-            bulkActionNotify('Bulk action failed. See console for details.', 'error', this.options);
+            bulkActionReportError(error, { viewId: this.viewId, actionKey: action.key }, 'Bulk batch action failed', this.bulkActionConfig.action);
+            bulkActionNotify('Bulk action failed. See console for details.', 'error', this.bulkActionConfig.action);
         }
     }
 
+    /**
+     * Initialises checkbox wiring, toolbar UI, and form workflows for the grid.
+     * @returns {BulkActionGridController|null} The initialised controller.
+     */
     init() {
         if (!this.viewId) return null;
         const viewElement = this.resolveViewElement();
@@ -3476,31 +4244,19 @@ class BulkActionGridController {
         ensureBulkActionControllerLifecycleBinding();
         bulkActionControllerStore.set(this.viewId, this);
         this.rebuildRecordMaps();
-        this.ensureCheckboxes();
+        ensureBulkActionCheckboxes(this.viewId, this.bulkActionConfig.selection, {
+            onSelectionChange: () => this.syncSelectionFromDom()
+        });
         this.renderButtonBar();
         this.restoreSelectionFromBasket();
         this.syncBasketUi();
         this.updateButtonsDisabledState();
 
-        if (!viewElement.dataset.knackBulkActionsBound) {
-            viewElement.addEventListener('change', (event) => {
-                const target = event.target;
-                if (!(target instanceof HTMLInputElement)) return;
-                if (!target.classList.contains(this.options.rowCheckboxClass) && !target.classList.contains(this.options.masterCheckboxClass)) return;
-                this.syncSelectionFromDom();
-            });
-            viewElement.dataset.knackBulkActionsBound = 'true';
-        }
-
         this.actions.filter((action) => action?.targetType === 'form').forEach((action) => {
             registerBulkActionFormReplicateWorkflow({
                 namespace: this.namespace,
                 action,
-                api: this.options.api,
-                notify: this.options.notify,
-                onError: this.options.onError,
-                chosenUpdateEvent: this.options.chosenUpdateEvent,
-                formNoticeClass: this.options.formNoticeClass
+                bulkActionConfig: this.bulkActionConfig
             });
         });
 
@@ -3508,6 +4264,11 @@ class BulkActionGridController {
     }
 }
 
+/**
+ * Replicates a just-submitted bulk form record to the remaining basket items.
+ * @param {Object} [options={}] - Replication options.
+ * @returns {Promise<{failedIds: Array<string>, total: number}>} Replication result summary.
+ */
 async function replicateBulkActionSubmittedRecord({ action, bulkState, record, api = {}, options = {} } = {}) {
     const mode = String(bulkState?.formMode || 'create').toLowerCase() === 'update' ? 'update' : 'create';
     const sourceViewId = knackNavigator.normalizeViewId(bulkState?.sourceViewId);
@@ -3625,6 +4386,7 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         sourceController.syncBasketUi();
     };
 
+    // Prefer batch writes when available so progress can be tracked across queued writes; otherwise fall back to one-record-at-a-time replication.
     const canUseBatchApi = bulkActionHasBatchWriteApi(apiClient, mode);
     const concurrencyInfo = bulkActionResolveApiConcurrency(apiClient, preparedOperations.length);
     bulkActionLog('Starting bulk form replication', {
@@ -3702,11 +4464,18 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
     };
 }
 
-function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', action, api = {}, notify = null, onError = null, chosenUpdateEvent = 'liszt:updated', styles = {}, formNoticeClass = '' } = {}) {
+/**
+ * Registers the event workflow that links a form view back to its source basket.
+ * @param {Object} [options={}] - Workflow registration options.
+ * @returns {void}
+ */
+function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', action, bulkActionConfig } = {}) {
+    const config = createBulkActionConfig({ ...(bulkActionConfig || {}), namespace });
     const formViewId = knackNavigator.normalizeViewId(action?.target);
     if (!formViewId) return;
+    const actionKey = knackValueResolver.toStringSafe(action?.key);
 
-    const workflowKey = `${namespace}::${formViewId}`;
+    const workflowKey = `${namespace}::${formViewId}::${actionKey || 'default'}`;
     if (bulkActionWorkflowRegistry.has(workflowKey)) return;
     bulkActionWorkflowRegistry.add(workflowKey);
 
@@ -3716,10 +4485,15 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
     const anyViewRenderEvent = 'knack-view-render.any';
     const modalClosedEvent = 'KTL.modalClosed';
     const knackModalCloseEvent = 'knack-modal-close';
+    const workflowMatchesState = (bulkState) => {
+        const activeActionKey = knackValueResolver.toStringSafe(bulkState?.actionKey);
+        return !actionKey || !activeActionKey || activeActionKey === actionKey;
+    };
 
     const handleFormClosed = (closedViewId = '', callback = null) => {
         const bulkState = bulkActionReadFormFlowState(sessionKey);
         if (!bulkState) return false;
+        if (!workflowMatchesState(bulkState)) return false;
 
         const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
         const closeContext = {
@@ -3744,9 +4518,10 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
     $(document).on(viewRenderEvent, function (_, view) {
         const bulkState = bulkActionReadFormFlowState(sessionKey);
         if (!bulkState) return;
+        if (!workflowMatchesState(bulkState)) return;
 
         const createdAt = Number(bulkState.createdAt || 0);
-        if (createdAt && Date.now() - createdAt > BULK_ACTION_FORM_FLOW_TTL_MS) {
+        if (createdAt && Date.now() - createdAt > config.constants.formFlowTtlMs) {
             bulkActionClearFormFlowState(sessionKey);
             return;
         }
@@ -3770,11 +4545,11 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
             messages: {
                 ...(action?.messages?.formReplicate || {}),
                 styles: bulkActionMergeStyleMaps(
-                    styles?.formNotice || {},
+                    config.form.styles?.formNotice || {},
                     action?.messages?.formReplicate?.styles || {}
                 )
             },
-            noticeClass: formNoticeClass
+            noticeClass: config.form.noticeClass
         });
 
         if (String(bulkState.formMode || 'create').toLowerCase() === 'update') {
@@ -3805,13 +4580,14 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
             fieldKey: bulkState.recordFieldId,
             value: firstRecordId,
             label: bulkState.firstRecordLabel,
-            updateEvent: chosenUpdateEvent
+            updateEvent: config.form.chosenUpdateEvent
         });
     });
 
     $(document).on(anyViewRenderEvent, function (_, view) {
         const bulkState = bulkActionReadFormFlowState(sessionKey);
         if (!bulkState) return;
+        if (!workflowMatchesState(bulkState)) return;
 
         const sourceViewId = knackNavigator.normalizeViewId(bulkState.sourceViewId);
         const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
@@ -3830,6 +4606,7 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         window.setTimeout(() => {
             const bulkState = bulkActionReadFormFlowState(sessionKey);
             if (!bulkState) return;
+            if (!workflowMatchesState(bulkState)) return;
 
             const sourceViewId = knackNavigator.normalizeViewId(bulkState.sourceViewId);
             const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
@@ -3844,9 +4621,10 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
     $(document).on(formSubmitEvent, async function (_, view, record) {
         const bulkState = bulkActionReadFormFlowState(sessionKey);
         if (!bulkState) return;
+        if (!workflowMatchesState(bulkState)) return;
 
         const createdAt = Number(bulkState.createdAt || 0);
-        if (createdAt && Date.now() - createdAt > BULK_ACTION_FORM_FLOW_TTL_MS) {
+        if (createdAt && Date.now() - createdAt > config.constants.formFlowTtlMs) {
             bulkActionClearFormFlowState(sessionKey);
             return;
         }
@@ -3854,7 +4632,7 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         const stateToken = knackValueResolver.toStringSafe(bulkState.navToken);
         const hashToken = bulkActionGetHashQueryParam('coBulkToken');
         const tokenVerifiedAt = Number(bulkState.tokenVerifiedAt || 0);
-        const tokenVerifiedRecently = tokenVerifiedAt && Date.now() - tokenVerifiedAt < BULK_ACTION_FORM_FLOW_TTL_MS;
+        const tokenVerifiedRecently = tokenVerifiedAt && Date.now() - tokenVerifiedAt < config.constants.formFlowTtlMs;
         if ((!stateToken || !hashToken || stateToken !== hashToken) && !tokenVerifiedRecently) return;
 
         const submitViewId = knackNavigator.normalizeViewId(view?.key);
@@ -3863,11 +4641,13 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
 
         bulkActionClearFormFlowState(sessionKey);
 
-        const resolvedApi = bulkActionResolveReplicationApi(api);
-        const hasCreateApi = typeof resolvedApi.createRecords === 'function' || typeof resolvedApi.createRecord === 'function';
-        const hasUpdateApi = typeof resolvedApi.updateRecords === 'function' || typeof resolvedApi.updateRecord === 'function';
-        if (!hasCreateApi || !hasUpdateApi) {
-            bulkActionNotify('Bulk action API callbacks are missing create/update handlers.', 'error', { notify });
+        const resolvedApi = bulkActionResolveReplicationApi(config.action.api);
+        const mode = String(bulkState.formMode || 'create').toLowerCase() === 'update' ? 'update' : 'create';
+        const hasRequiredApi = mode === 'update'
+            ? (typeof resolvedApi.updateRecords === 'function' || typeof resolvedApi.updateRecord === 'function')
+            : (typeof resolvedApi.createRecords === 'function' || typeof resolvedApi.createRecord === 'function');
+        if (!hasRequiredApi) {
+            bulkActionNotify(`Bulk action API callbacks are missing ${mode} handlers.`, 'error', config.action);
             return;
         }
 
@@ -3883,22 +4663,28 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
                 bulkState: { ...bulkState, namespace },
                 record,
                 api: resolvedApi,
-                options: { notify, onError, namespace, formViewId: submitViewId }
+                options: { ...config.action, namespace, formViewId: submitViewId }
             });
 
             const successCount = Math.max(0, Number(result?.total || 0) - Number(result?.failedIds?.length || 0));
             if (result?.failedIds?.length) {
-                bulkActionNotify(`Completed ${successCount} item(s); ${result.failedIds.length} failed.`, 'warning', { notify });
+                bulkActionNotify(`Completed ${successCount} item(s); ${result.failedIds.length} failed.`, 'warning', config.action);
             } else {
-                bulkActionNotify(`Completed ${successCount} item(s).`, 'success', { notify });
+                bulkActionNotify(`Completed ${successCount} item(s).`, 'success', config.action);
             }
         } catch (error) {
-            bulkActionReportError(error, { targetViewId: submitViewId, sourceViewId: bulkState.sourceViewId }, 'Bulk form submit replicate failed', { onError });
-            bulkActionNotify('Bulk form replication failed.', 'error', { notify });
+            bulkActionReportError(error, { targetViewId: submitViewId, sourceViewId: bulkState.sourceViewId }, 'Bulk form submit replicate failed', config.action);
+            bulkActionNotify('Bulk form replication failed.', 'error', config.action);
         }
     });
 }
 
+/**
+ * Mounts a bulk-action grid controller from parsed keyword context.
+ * @param {Object} context - Parsed keyword context.
+ * @param {Object} [options={}] - Mount options.
+ * @returns {BulkActionGridController|null} Initialised controller.
+ */
 function mountBulkActionGrid(context, options = {}) {
     const viewId = knackNavigator.normalizeViewId(context?.viewId || context?.view?.key);
     const config = context?.config || {};
@@ -3906,37 +4692,28 @@ function mountBulkActionGrid(context, options = {}) {
         return null;
     }
 
+    const bulkActionConfig = createBulkActionConfig(options.bulkActionConfig);
+
     const controller = new BulkActionGridController({
         viewId,
         rowRecords: resolveBulkActionRecords(viewId, context?.data),
         labelFieldIds: config.labelFieldIds,
         actions: config.actions,
         bulkActionsApi: context?.bulkActions || KnackBulkActions,
-        namespace: options.namespace || 'KNACK_BULK',
-        basketTitle: options.basketTitle || 'Basket',
-        emptyBasketText: options.emptyBasketText || 'No items yet. Tick rows to add.',
-        buttonClass: options.buttonClass || 'knackBulkActionButton',
-        buttonBarClass: options.buttonBarClass || 'knackBulkActionBar',
-        rowCheckboxClass: options.rowCheckboxClass || 'knackBulkRowCheckbox',
-        masterCheckboxClass: options.masterCheckboxClass || 'knackBulkMasterCheckbox',
-        selectionScope: options.selectionScope || 'knack-bulk-actions',
-        basketMessages: options.basketMessages || {},
-        styles: options.styles || {},
-        modalClass: options.modalClass || '',
-        formNoticeClass: options.formNoticeClass || '',
-        createButton: options.createButton,
-        getButtonContainer: options.getButtonContainer,
-        addCheckboxes: options.addCheckboxes,
-        notify: options.notify,
-        onError: options.onError,
-        api: options.api || {},
-        basketTtlMs: options.basketTtlMs,
-        chosenUpdateEvent: options.chosenUpdateEvent || 'liszt:updated'
+        bulkActionConfig
     });
 
     return controller.init();
 }
 
+/**
+ * Processes and mounts the bulk-action keyword for a single view.
+ * @param {Object} view - Knack view metadata.
+ * @param {Object} keywords - Parsed keyword object.
+ * @param {*} data - Render data.
+ * @param {Object} [options={}] - Mount options.
+ * @returns {*} Mount result.
+ */
 function mountBulkActionKeyword(view, keywords, data, options = {}) {
     return processBulkActionsKeyword(view, keywords, data, {
         ...options,
@@ -3950,6 +4727,14 @@ function mountBulkActionKeyword(view, keywords, data, options = {}) {
     });
 }
 
+/**
+ * Parses a bulk-actions keyword and returns the processed context.
+ * @param {Object} view - Knack view metadata.
+ * @param {Object} keywords - Parsed keyword object.
+ * @param {*} data - Render data.
+ * @param {Object} [options={}] - Processing options.
+ * @returns {*} Keyword processing result.
+ */
 function processBulkActionsKeyword(view, keywords, data, options = {}) {
     const keywordName = knackValueResolver.toStringSafe(options.keywordName || '_bulk_actions') || '_bulk_actions';
     const viewId = knackNavigator.normalizeViewId(view?.key);
@@ -3991,11 +4776,20 @@ function processBulkActionsKeyword(view, keywords, data, options = {}) {
     return context;
 }
 
+/**
+ * Creates a configured bulk-actions API facade.
+ * @param {Object} [options={}] - Shared bulk-actions configuration.
+ * @returns {Object} Bulk-actions API.
+ */
 function createKnackBulkActions(options = {}) {
     const config = { ...options };
+    const sharedBulkActionConfig = createBulkActionConfig(config.bulkActionConfig);
     const withConfig = (overrides = {}) => ({
         ...config,
-        ...overrides
+        ...overrides,
+        bulkActionConfig: overrides.bulkActionConfig
+            ? mergeBulkActionConfig(sharedBulkActionConfig, overrides.bulkActionConfig)
+            : sharedBulkActionConfig
     });
 
     const api = {
@@ -10105,9 +10899,9 @@ class KnackAPI {
     _extractResponseValueFromRecord(recordObj, fieldKey, requestedValue = undefined) {
         if (!recordObj || typeof recordObj !== 'object') return undefined;
 
-        const normalizedFieldKey = knackValueResolver.normalizeFieldKey(fieldKey);
-        const fieldType = knackValueResolver.getFieldType(normalizedFieldKey);
-        const rawKey = normalizedFieldKey ? `${normalizedFieldKey}_raw` : '';
+        const normalizedFieldId = knackValueResolver.normalizeFieldId(fieldKey);
+        const fieldType = knackValueResolver.getFieldType(normalizedFieldId);
+        const rawKey = normalizedFieldId ? `${normalizedFieldId}_raw` : '';
         const shouldPreferRaw = fieldType === 'date_time'
             || (requestedValue && typeof requestedValue === 'object' && !Array.isArray(requestedValue));
 
@@ -10219,8 +11013,8 @@ class KnackAPI {
     }
 
     _valuesEffectivelyEqualForField(fieldKey, receivedValue, sentValue) {
-        const normalizedFieldKey = knackValueResolver.normalizeFieldKey(fieldKey);
-        const fieldType = knackValueResolver.getFieldType(normalizedFieldKey);
+        const normalizedFieldId = knackValueResolver.normalizeFieldId(fieldKey);
+        const fieldType = knackValueResolver.getFieldType(normalizedFieldId);
 
         if (fieldType === 'date_time') {
             return this._normaliseDateTimeForCompare(receivedValue) === this._normaliseDateTimeForCompare(sentValue);
