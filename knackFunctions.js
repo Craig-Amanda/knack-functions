@@ -1830,6 +1830,7 @@ function bulkActionSyncControllerVisibility() {
         if (!controller.resolveViewElement()) {
             controller.basketModal?.close?.();
             controller.removeExistingUi?.();
+            bulkActionControllerStore.delete(viewId);
         }
     });
 }
@@ -1885,19 +1886,20 @@ function resolveBulkActionRecords(viewId, data) {
     if (Array.isArray(data) && data.length) return data;
 
     const directModels = Knack?.views?.[viewId]?.model?.results_model?.models;
-    if (Array.isArray(directModels) && directModels.length) {
-        return directModels
-            .map((model) => model?.attributes || null)
-            .filter(Boolean);
-    }
+    if (!Array.isArray(directModels) || !directModels.length) return [];
 
-    const byId = Knack?.views?.[viewId]?.model?.results_model?.data?._byId
-        || Knack?.views?.[viewId]?.model?.data?._byId
-        || {};
-
-    return Object.values(byId)
-        .map((record) => record?.attributes || record)
+    return directModels
+        .map((model) => model?.attributes)
         .filter(Boolean);
+}
+
+/**
+ * Returns the record id stored on a bulk-action row checkbox.
+ * @param {HTMLInputElement|Element|null} checkbox - Row checkbox element.
+ * @returns {string} Normalized record id.
+ */
+function bulkActionGetRowCheckboxRecordId(checkbox) {
+    return knackValueResolver.toStringSafe(checkbox?.dataset?.recordId);
 }
 
 /**
@@ -2518,13 +2520,11 @@ async function bulkActionReplicateFallback({ mode = 'create', operations = [], a
         } finally {
             if (!sourceController) continue;
 
-            sourceController.runState = {
-                ...sourceController.runState,
+            sourceController.patchRunState({
                 processed: Math.min(Number(sourceController.runState.total || 0), Number(sourceController.runState.processed || 0) + 1),
                 success: Math.max(0, Number(sourceController.runState.success || 0) + (didFail ? 0 : 1)),
                 failed: Number(sourceController.runState.failed || 0) + (didFail ? 1 : 0)
-            };
-            sourceController.syncBasketUi();
+            });
         }
     }
 
@@ -3750,7 +3750,7 @@ class BulkActionGridController {
         if (!viewElement) return [];
 
         return Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}:checked`))
-            .map((checkbox) => knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id))
+            .map((checkbox) => bulkActionGetRowCheckboxRecordId(checkbox))
             .filter(Boolean);
     }
 
@@ -3765,7 +3765,7 @@ class BulkActionGridController {
         if (!viewElement || !normalizedRecordId) return null;
 
         return Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`)).find((checkbox) => {
-            return knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id) === normalizedRecordId;
+            return bulkActionGetRowCheckboxRecordId(checkbox) === normalizedRecordId;
         }) || null;
     }
 
@@ -3785,6 +3785,51 @@ class BulkActionGridController {
     }
 
     /**
+     * Returns the record ids currently stored in the basket.
+     * @returns {Array<string>} Basket record ids.
+     */
+    getBasketRecordIds() {
+        return this.basketItems.map((item) => item?.recordId).filter(Boolean);
+    }
+
+    /**
+     * Refreshes basket, selection, and toolbar UI from controller state.
+     * @param {Object} [options={}] - Refresh options.
+     * @param {boolean} [options.restoreSelection=false] - Whether checkbox selection should be restored from the basket.
+     * @returns {void}
+     */
+    refreshUi({ restoreSelection = false } = {}) {
+        this.syncBasketUi();
+        if (restoreSelection) {
+            this.restoreSelectionFromBasket();
+        }
+        this.updateButtonsDisabledState();
+    }
+
+    /**
+     * Replaces the current run state and refreshes modal progress.
+     * @param {Object} [nextState={}] - Next run-state object.
+     * @returns {Object} Normalized run state.
+     */
+    replaceRunState(nextState = {}) {
+        this.runState = bulkActionCreateRunState(nextState);
+        this.syncBasketUi();
+        return this.runState;
+    }
+
+    /**
+     * Patches the current run state and refreshes modal progress.
+     * @param {Object} [statePatch={}] - Partial run-state patch.
+     * @returns {Object} Normalized run state.
+     */
+    patchRunState(statePatch = {}) {
+        return this.replaceRunState({
+            ...this.runState,
+            ...(statePatch && typeof statePatch === 'object' ? statePatch : {})
+        });
+    }
+
+    /**
      * Adds records to the basket.
      * @param {Array<string>} [recordIds=[]] - Record ids to add.
      * @returns {Array<Object>} Updated basket items.
@@ -3792,8 +3837,7 @@ class BulkActionGridController {
     addToBasket(recordIds = []) {
         const nextItems = this.basketStore.addItems(this.buildBasketItems(recordIds));
         this.basketItems = nextItems;
-        this.syncBasketUi();
-        this.restoreSelectionFromBasket();
+        this.refreshUi({ restoreSelection: true });
         return nextItems;
     }
 
@@ -3805,9 +3849,7 @@ class BulkActionGridController {
     replaceBasketFromRecordIds(recordIds = []) {
         const nextItems = this.basketStore.setItems(this.buildBasketItems(recordIds));
         this.basketItems = nextItems;
-        this.syncBasketUi();
-        this.restoreSelectionFromBasket();
-        this.updateButtonsDisabledState();
+        this.refreshUi({ restoreSelection: true });
         return nextItems;
     }
 
@@ -3838,9 +3880,7 @@ class BulkActionGridController {
 
         const nextItems = this.basketStore.removeItems(recordIds);
         this.basketItems = nextItems;
-        this.syncBasketUi();
-        this.restoreSelectionFromBasket();
-        this.updateButtonsDisabledState();
+        this.refreshUi({ restoreSelection: true });
         return nextItems;
     }
 
@@ -3853,9 +3893,7 @@ class BulkActionGridController {
         this.activeActionKey = '';
         this.runState = bulkActionCreateRunState();
         this.basketModal.close();
-        this.syncBasketUi();
-        this.restoreSelectionFromBasket();
-        this.updateButtonsDisabledState();
+        this.refreshUi({ restoreSelection: true });
     }
 
     /**
@@ -3928,8 +3966,7 @@ class BulkActionGridController {
         const normalizedActionKey = knackValueResolver.toStringSafe(actionKey);
         this.activeActionKey = normalizedActionKey;
         this.basketStore.setActiveActionKey(normalizedActionKey);
-        this.syncBasketUi();
-        this.updateButtonsDisabledState();
+        this.refreshUi();
     }
 
     /**
@@ -3972,7 +4009,7 @@ class BulkActionGridController {
 
         const selectedIds = new Set(this.basketItems.map((item) => item.recordId));
         viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`).forEach((checkbox) => {
-            const recordId = knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id);
+            const recordId = bulkActionGetRowCheckboxRecordId(checkbox);
             checkbox.checked = selectedIds.has(recordId);
         });
 
@@ -4008,7 +4045,7 @@ class BulkActionGridController {
         if (!viewElement) return;
 
         const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`));
-        const checkedIds = rowCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id)).filter(Boolean);
+        const checkedIds = rowCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => bulkActionGetRowCheckboxRecordId(checkbox)).filter(Boolean);
         this.replaceBasketFromRecordIds(checkedIds);
     }
 
@@ -4020,7 +4057,7 @@ class BulkActionGridController {
         const wrapper = document.querySelector(`[data-knack-bulk-bar="${this.viewId}"]`);
         if (!wrapper) return;
 
-        const hasSelection = this.getSelectedRecordIds().length > 0 || this.basketItems.length > 0;
+        const hasSelection = this.basketItems.length > 0;
         wrapper.querySelectorAll(`.${this.bulkActionConfig.action.buttonClass}`).forEach((button) => {
             button.disabled = !hasSelection;
             button.classList.toggle('is-disabled', !hasSelection);
@@ -4087,14 +4124,8 @@ class BulkActionGridController {
             if (!(button instanceof Element)) return;
             button.dataset.bulkActionKey = action.key;
             button.addEventListener('click', () => {
-                const selectedIds = this.getSelectedRecordIds();
-                if (!selectedIds.length && !this.basketItems.length) {
-                    bulkActionNotify('Select one or more rows first.', 'warning', this.bulkActionConfig.action);
-                    return;
-                }
-
                 this.setActiveActionKey(action.key);
-                this.openBasketAndAdd(selectedIds);
+                this.openBasket();
             });
         });
 
@@ -4117,6 +4148,14 @@ class BulkActionGridController {
             this.addToBasket(recordIds);
         }
 
+        this.openBasket();
+    }
+
+    /**
+     * Opens the basket modal using the current basket contents.
+     * @returns {void}
+     */
+    openBasket() {
         if (!this.basketItems.length) {
             bulkActionNotify('Select one or more rows first.', 'warning', this.bulkActionConfig.action);
             return;
@@ -4132,8 +4171,7 @@ class BulkActionGridController {
      */
     resetFormActionState() {
         this.runState = bulkActionCreateRunState();
-        this.syncBasketUi();
-        this.updateButtonsDisabledState();
+        this.refreshUi();
     }
 
     /**
@@ -4149,7 +4187,7 @@ class BulkActionGridController {
             return;
         }
 
-        const recordIds = this.basketItems.map((item) => item.recordId).filter(Boolean);
+        const recordIds = this.getBasketRecordIds();
         if (!recordIds.length) return;
 
         const firstRecordId = recordIds[0];
@@ -4170,12 +4208,11 @@ class BulkActionGridController {
             activeFormViewId: ''
         });
 
-        this.runState = bulkActionCreateRunState({
+        this.replaceRunState({
             isRunning: true,
             total: recordIds.length,
             completionMessage: 'Waiting for form submission...'
         });
-        this.syncBasketUi();
 
         if (String(action.operation || '').toLowerCase() === 'update') {
             bulkActionNavigateToSceneSlug(sceneSlug, { recordId: firstRecordId, params: { coBulkToken: navToken } });
@@ -4203,8 +4240,7 @@ class BulkActionGridController {
             actions: [action],
             concurrency: 'serial',
             onStateChange: (state) => {
-                this.runState = state;
-                this.syncBasketUi();
+                this.replaceRunState(state);
             }
         });
 
@@ -4219,12 +4255,12 @@ class BulkActionGridController {
 
             const failedItems = (result?.items || []).filter((item) => item?.failureType || item?.failureMessage);
             this.basketItems = this.basketStore.setItems(failedItems);
-            this.runState = result?.state || this.runState;
-            this.syncBasketUi();
-
             if (!failedItems.length) {
                 this.basketModal.close();
             }
+            this.replaceRunState(result?.state || this.runState);
+            this.restoreSelectionFromBasket();
+            this.updateButtonsDisabledState();
         } catch (error) {
             bulkActionReportError(error, { viewId: this.viewId, actionKey: action.key }, 'Bulk batch action failed', this.bulkActionConfig.action);
             bulkActionNotify('Bulk action failed. See console for details.', 'error', this.bulkActionConfig.action);
@@ -4248,9 +4284,7 @@ class BulkActionGridController {
             onSelectionChange: () => this.syncSelectionFromDom()
         });
         this.renderButtonBar();
-        this.restoreSelectionFromBasket();
-        this.syncBasketUi();
-        this.updateButtonsDisabledState();
+        this.refreshUi({ restoreSelection: true });
 
         this.actions.filter((action) => action?.targetType === 'form').forEach((action) => {
             registerBulkActionFormReplicateWorkflow({
@@ -4303,29 +4337,27 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
     const remainingIds = recordIds.filter((recordId) => recordId && recordId !== processedRecordId);
     if (!remainingIds.length) {
         if (sourceController) {
-            sourceController.runState = {
+            sourceController.replaceRunState({
                 isRunning: false,
                 processed: recordIds.length,
                 total: recordIds.length,
                 success: recordIds.length,
                 failed: 0,
                 completionMessage: `Done: ${recordIds.length} ok.`
-            };
-            sourceController.syncBasketUi();
+            });
             sourceController.basketModal.close();
         }
         return { failedIds: [], total: recordIds.length };
     }
 
     if (sourceController) {
-        sourceController.runState = bulkActionCreateRunState({
+        sourceController.replaceRunState({
             isRunning: true,
             processed: processedRecordId ? 1 : 0,
             total: recordIds.length,
             success: processedRecordId ? 1 : 0
         });
         sourceController.clearBasketItemFailures(recordIds);
-        sourceController.syncBasketUi();
     }
 
     const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || getSceneFromViewId(action.target)?.key);
@@ -4347,12 +4379,10 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
     if (preparationFailedIds.length) {
         failedIds.push(...preparationFailedIds);
         if (sourceController) {
-            sourceController.runState = {
-                ...sourceController.runState,
+            sourceController.patchRunState({
                 processed: Math.min(Number(sourceController.runState.total || 0), Number(sourceController.runState.processed || 0) + preparationFailedIds.length),
                 failed: Number(sourceController.runState.failed || 0) + preparationFailedIds.length
-            };
-            sourceController.syncBasketUi();
+            });
         }
     }
 
@@ -4377,13 +4407,11 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
             ? Number(progress.updated || 0)
             : Number(progress.created || 0);
         const batchFailed = Number(progress.failed || 0);
-        sourceController.runState = {
-            ...sourceController.runState,
+        sourceController.patchRunState({
             processed: (processedRecordId ? 1 : 0) + preparationFailedIds.length + batchSuccess + batchFailed,
             success: (processedRecordId ? 1 : 0) + batchSuccess,
             failed: preparationFailedIds.length + batchFailed
-        };
-        sourceController.syncBasketUi();
+        });
     };
 
     // Prefer batch writes when available so progress can be tracked across queued writes; otherwise fall back to one-record-at-a-time replication.
@@ -4436,8 +4464,7 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
 
     if (sourceController) {
         const successCount = Math.max(0, recordIds.length - failedIds.length);
-        sourceController.runState = {
-            ...sourceController.runState,
+        sourceController.patchRunState({
             isRunning: false,
             processed: recordIds.length,
             success: successCount,
@@ -4445,8 +4472,7 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
             completionMessage: failedIds.length
                 ? `Done: ${successCount} ok, ${failedIds.length} failed.`
                 : `Done: ${successCount} ok.`
-        };
-        sourceController.syncBasketUi();
+        });
         if (!failedIds.length) {
             sourceController.basketModal.close();
         }
