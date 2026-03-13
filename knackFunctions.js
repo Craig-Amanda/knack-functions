@@ -4129,7 +4129,7 @@ class BulkActionGridController {
                 }
 
                 this.setActiveActionKey(action.key);
-                this.openBasketAndAdd();
+                this.openBasket();
             });
         });
 
@@ -4152,6 +4152,14 @@ class BulkActionGridController {
             this.addToBasket(recordIds);
         }
 
+        this.openBasket();
+    }
+
+    /**
+     * Opens the basket modal using the current basket contents.
+     * @returns {void}
+     */
+    openBasket() {
         if (!this.basketItems.length) {
             bulkActionNotify('Select one or more rows first.', 'warning', this.bulkActionConfig.action);
             return;
@@ -4255,7 +4263,8 @@ class BulkActionGridController {
                 this.basketModal.close();
             }
             this.replaceRunState(result?.state || this.runState);
-            this.refreshUi({ restoreSelection: true });
+            this.restoreSelectionFromBasket();
+            this.updateButtonsDisabledState();
         } catch (error) {
             bulkActionReportError(error, { viewId: this.viewId, actionKey: action.key }, 'Bulk batch action failed', this.bulkActionConfig.action);
             bulkActionNotify('Bulk action failed. See console for details.', 'error', this.bulkActionConfig.action);
