@@ -1883,22 +1883,22 @@ function bulkActionFindViewRoot(viewId) {
  * @returns {Array<Object>} Resolved row records.
  */
 function resolveBulkActionRecords(viewId, data) {
-    if (Array.isArray(data)) return data;
+    if (Array.isArray(data) && data.length) return data;
 
-    const byId = Knack?.views?.[viewId]?.model?.data?._byId || {};
+    const directModels = Knack?.views?.[viewId]?.model?.results_model?.models;
+    if (Array.isArray(directModels) && directModels.length) {
+        return directModels
+            .map((model) => model?.attributes || null)
+            .filter(Boolean);
+    }
+
+    const byId = Knack?.views?.[viewId]?.model?.results_model?.data?._byId
+        || Knack?.views?.[viewId]?.model?.data?._byId
+        || {};
 
     return Object.values(byId)
-        .map((record) => record?.attributes)
+        .map((record) => record?.attributes || record)
         .filter(Boolean);
-}
-
-/**
- * Returns the record id stored on a bulk-action row checkbox.
- * @param {HTMLInputElement|Element|null} checkbox - Row checkbox element.
- * @returns {string} Normalized record id.
- */
-function bulkActionGetRowCheckboxRecordId(checkbox) {
-    return knackValueResolver.toStringSafe(checkbox?.dataset?.recordId);
 }
 
 /**
@@ -3749,7 +3749,7 @@ class BulkActionGridController {
         if (!viewElement) return [];
 
         return Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}:checked`))
-            .map((checkbox) => bulkActionGetRowCheckboxRecordId(checkbox))
+            .map((checkbox) => knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id))
             .filter(Boolean);
     }
 
@@ -3764,7 +3764,7 @@ class BulkActionGridController {
         if (!viewElement || !normalizedRecordId) return null;
 
         return Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`)).find((checkbox) => {
-            return bulkActionGetRowCheckboxRecordId(checkbox) === normalizedRecordId;
+            return knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id) === normalizedRecordId;
         }) || null;
     }
 
@@ -4008,7 +4008,7 @@ class BulkActionGridController {
 
         const selectedIds = new Set(this.basketItems.map((item) => item.recordId));
         viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`).forEach((checkbox) => {
-            const recordId = bulkActionGetRowCheckboxRecordId(checkbox);
+            const recordId = knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id);
             checkbox.checked = selectedIds.has(recordId);
         });
 
@@ -4044,7 +4044,7 @@ class BulkActionGridController {
         if (!viewElement) return;
 
         const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`));
-        const checkedIds = rowCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => bulkActionGetRowCheckboxRecordId(checkbox)).filter(Boolean);
+        const checkedIds = rowCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => knackValueResolver.toStringSafe(checkbox.dataset.recordId || checkbox.closest('tr[id]')?.id)).filter(Boolean);
         this.replaceBasketFromRecordIds(checkedIds);
     }
 
@@ -4123,6 +4123,11 @@ class BulkActionGridController {
             if (!(button instanceof Element)) return;
             button.dataset.bulkActionKey = action.key;
             button.addEventListener('click', () => {
+                if (!this.basketItems.length) {
+                    bulkActionNotify('Select one or more rows first.', 'warning', this.bulkActionConfig.action);
+                    return;
+                }
+
                 this.setActiveActionKey(action.key);
                 this.openBasket();
             });
