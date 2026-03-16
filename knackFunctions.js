@@ -1883,13 +1883,12 @@ function bulkActionFindViewRoot(viewId) {
  * @returns {Array<Object>} Resolved row records.
  */
 function resolveBulkActionRecords(viewId, data) {
-    if (Array.isArray(data) && data.length) return data;
+    if (Array.isArray(data)) return data;
 
-    const directModels = Knack?.views?.[viewId]?.model?.results_model?.models;
-    if (!Array.isArray(directModels) || !directModels.length) return [];
+    const byId = Knack?.views?.[viewId]?.model?.data?._byId || {};
 
-    return directModels
-        .map((model) => model?.attributes)
+    return Object.values(byId)
+        .map((record) => record?.attributes)
         .filter(Boolean);
 }
 
