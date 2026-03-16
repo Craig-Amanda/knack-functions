@@ -18,6 +18,8 @@ class KnackNavigator {
      */
     constructor() {
         this._viewCache = new Map();
+        this._sceneInfoCache = new Map();
+        this._fieldIdByViewLabelCache = new Map();
         this._fieldMetaCache = new Map();
         this._fieldTypeCache = new Map();
     }
@@ -135,6 +137,99 @@ class KnackNavigator {
     }
 
     /**
+     * Returns normalised field ids declared on a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {Array<string>} View field ids.
+     */
+    getViewFieldIds(viewId) {
+        const viewObject = this.getViewObject(viewId);
+        const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
+
+        return Array.from(new Set(
+            fields
+                .map((field) => this.normalizeFieldId(field?.key || ''))
+                .filter(Boolean)
+        ));
+    }
+
+    /**
+     * Returns scene metadata for a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {{ key: string, slug: string }|null} Scene info or null.
+     */
+    getSceneInfoForView(viewId) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return null;
+        }
+        if (this._sceneInfoCache.has(normalizedViewId)) return this._sceneInfoCache.get(normalizedViewId);
+
+        let fallbackSceneKey = '';
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        const directSceneKey = this.normalizeSceneId(directScene?.key);
+        if (directSceneKey) {
+            const directSceneSlug = String(directScene?.slug || '').trim();
+            if (directSceneSlug) {
+                const sceneInfo = {
+                    key: directSceneKey,
+                    slug: directSceneSlug
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            fallbackSceneKey = directSceneKey;
+        }
+
+        const viewObject = this.getViewObject(normalizedViewId);
+        const sceneKey = this.normalizeSceneId(viewObject?.scene?.key);
+        if (sceneKey) {
+            const viewObjectSceneSlug = String(viewObject?.scene?.slug || '').trim();
+            if (viewObjectSceneSlug) {
+                const sceneInfo = {
+                    key: sceneKey,
+                    slug: viewObjectSceneSlug
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            fallbackSceneKey = fallbackSceneKey || sceneKey;
+        }
+
+        const scenes = Knack?.scenes?.models || [];
+        for (const scene of scenes) {
+            const candidateSceneKey = this.normalizeSceneId(scene?.attributes?.key);
+            const views = scene?.views?.models || [];
+            for (const viewModel of views) {
+                if (viewModel?.attributes?.key !== normalizedViewId) continue;
+
+                const sceneInfo = {
+                    key: candidateSceneKey,
+                    slug: String(scene?.attributes?.slug || '').trim()
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            if (!fallbackSceneKey || candidateSceneKey !== fallbackSceneKey) continue;
+
+            const fallbackSceneSlug = String(scene?.attributes?.slug || '').trim();
+            if (!fallbackSceneSlug) continue;
+
+            const sceneInfo = {
+                key: fallbackSceneKey,
+                slug: fallbackSceneSlug
+            };
+            this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+            return sceneInfo;
+        }
+
+        return null;
+    }
+
+    /**
      * Resolves field metadata from Knack object definitions.
      * @param {string|number} fieldKey - Field id to resolve.
      * @returns {Object|null} Field metadata.
@@ -151,7 +246,7 @@ class KnackNavigator {
             const fields = objModel?.fields?.models || [];
             const match = fields.find((fieldModel) => {
                 const attributes = fieldModel?.attributes || {};
-                return fieldModel?.id === key || attributes?.key === key;
+                return attributes?.key === key;
             });
 
             const attributes = match?.attributes || null;
@@ -188,10 +283,16 @@ class KnackNavigator {
      * @returns {string} Matching field id, or an empty string.
      */
     getFieldIdFromLabel(viewId, fieldLabel) {
+        const normalizedViewId = this.normalizeViewId(viewId);
         const normalizedLabel = String(fieldLabel || '').trim().toLowerCase();
-        if (!normalizedLabel) return '';
+        if (!normalizedViewId || !normalizedLabel) return '';
 
-        const viewObject = this.getViewObject(viewId);
+        const cacheKey = `${normalizedViewId}::${normalizedLabel}`;
+        if (this._fieldIdByViewLabelCache.has(cacheKey)) {
+            return this._fieldIdByViewLabelCache.get(cacheKey);
+        }
+
+        const viewObject = this.getViewObject(normalizedViewId);
         const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
         const match = fields.find((field) => {
             const fieldName = String(field?.name || '').trim().toLowerCase();
@@ -199,7 +300,9 @@ class KnackNavigator {
             return fieldName === normalizedLabel || fieldLabelText === normalizedLabel;
         });
 
-        return this.normalizeFieldId(match?.key || match?.id || '');
+        const resolvedFieldId = this.normalizeFieldId(match?.key || '');
+        this._fieldIdByViewLabelCache.set(cacheKey, resolvedFieldId);
+        return resolvedFieldId;
     }
 }
 
@@ -1027,11 +1130,37 @@ function classifyBulkActionFailure(error) {
 /**
  * Wraps storage access with safe get/set/remove guards.
  * @param {Storage|null} storage - Storage provider, typically sessionStorage.
+ * @param {Object} [options={}] - Adapter options.
  * @returns {{get: Function, set: Function, remove: Function}} Safe storage adapter.
  */
-function createBulkActionStorageAdapter(storage) {
+function createBulkActionStorageAdapter(storage, options = {}) {
+    const {
+        preferKtl = true,
+        session = false,
+        noUserId = false,
+        secure = false
+    } = options;
+
+    const ktlStorage = preferKtl
+        && typeof globalThis !== 'undefined'
+        && globalThis.ktl?.storage
+        && typeof globalThis.ktl.storage.lsGetItem === 'function'
+        && typeof globalThis.ktl.storage.lsSetItem === 'function'
+        && typeof globalThis.ktl.storage.lsRemoveItem === 'function'
+        ? globalThis.ktl.storage
+        : null;
+
     return {
         get(key) {
+            if (ktlStorage) {
+                try {
+                    const value = ktlStorage.lsGetItem(key, noUserId, session, secure);
+                    return value === '' ? null : value;
+                } catch (_) {
+                    return null;
+                }
+            }
+
             if (!storage || typeof storage.getItem !== 'function') return null;
             try {
                 return storage.getItem(key);
@@ -1040,6 +1169,15 @@ function createBulkActionStorageAdapter(storage) {
             }
         },
         set(key, value) {
+            if (ktlStorage) {
+                try {
+                    ktlStorage.lsSetItem(key, value, noUserId, session, secure);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            }
+
             if (!storage || typeof storage.setItem !== 'function') return false;
             try {
                 storage.setItem(key, value);
@@ -1049,6 +1187,15 @@ function createBulkActionStorageAdapter(storage) {
             }
         },
         remove(key) {
+            if (ktlStorage) {
+                try {
+                    ktlStorage.lsRemoveItem(key, noUserId, session, secure);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            }
+
             if (!storage || typeof storage.removeItem !== 'function') return false;
             try {
                 storage.removeItem(key);
@@ -1058,6 +1205,18 @@ function createBulkActionStorageAdapter(storage) {
             }
         }
     };
+}
+
+/**
+ * Returns the session-scoped storage adapter used by bulk-action workflows.
+ * Prefers classic KTL storage when available and falls back to raw sessionStorage.
+ * @returns {{get: Function, set: Function, remove: Function}} Session storage adapter.
+ */
+function createBulkActionSessionStorageAdapter() {
+    return createBulkActionStorageAdapter(
+        typeof sessionStorage !== 'undefined' ? sessionStorage : null,
+        { preferKtl: true, session: true }
+    );
 }
 
 /**
@@ -1472,7 +1631,7 @@ function createBulkActionBasketStore(options = {}) {
         storage = typeof sessionStorage !== 'undefined' ? sessionStorage : null
     } = options;
 
-    const adapter = createBulkActionStorageAdapter(storage);
+    const adapter = createBulkActionStorageAdapter(storage, { preferKtl: true, session: true });
     const memory = {
         items: null,
         storedAt: 0,
@@ -1877,23 +2036,25 @@ function bulkActionFindViewRoot(viewId) {
 }
 
 /**
- * Resolves the current record collection for a grid view render.
- * @param {string} viewId - Source view id.
- * @param {*} data - Knack view render payload.
- * @returns {Array<Object>} Resolved row records.
- */
-function resolveBulkActionRecords(viewId, data) {
-    if (Array.isArray(data)) return data;
-    return [];
-}
-
-/**
  * Returns the record id stored on a bulk-action row checkbox.
  * @param {HTMLInputElement|Element|null} checkbox - Row checkbox element.
  * @returns {string} Normalized record id.
  */
 function bulkActionGetRowCheckboxRecordId(checkbox) {
-    return knackValueResolver.toStringSafe(checkbox?.dataset?.recordId);
+    const normalizedCheckbox = checkbox instanceof Element ? checkbox : null;
+    if (!normalizedCheckbox) return '';
+
+    const recordId = knackValueResolver.toStringSafe(
+        normalizedCheckbox.dataset?.recordId
+        || normalizedCheckbox.closest('tr')?.id
+        || normalizedCheckbox.closest('[data-record-id]')?.getAttribute('data-record-id')
+    );
+
+    if (recordId && !normalizedCheckbox.dataset?.recordId) {
+        normalizedCheckbox.dataset.recordId = recordId;
+    }
+
+    return recordId;
 }
 
 /**
@@ -1917,10 +2078,12 @@ function bulkActionBuildFormFlowSessionKey(namespace, formViewId) {
  */
 function bulkActionReadFormFlowState(sessionKey) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
-    if (!normalizedKey || typeof sessionStorage === 'undefined') return null;
+    if (!normalizedKey) return null;
+
+    const adapter = createBulkActionSessionStorageAdapter();
 
     try {
-        const raw = sessionStorage.getItem(normalizedKey);
+        const raw = adapter.get(normalizedKey);
         if (!raw) return null;
         const parsed = JSON.parse(raw);
         return parsed && typeof parsed === 'object' ? parsed : null;
@@ -1937,11 +2100,11 @@ function bulkActionReadFormFlowState(sessionKey) {
  */
 function bulkActionWriteFormFlowState(sessionKey, state) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
-    if (!normalizedKey || typeof sessionStorage === 'undefined') return;
+    if (!normalizedKey) return;
 
-    try {
-        sessionStorage.setItem(normalizedKey, JSON.stringify(state || {}));
-    } catch (_) {}
+    const adapter = createBulkActionSessionStorageAdapter();
+
+    adapter.set(normalizedKey, JSON.stringify(state || {}));
 }
 
 /**
@@ -1974,11 +2137,11 @@ function bulkActionMergeFormFlowState(sessionKey, statePatch = {}, fallbackState
  */
 function bulkActionClearFormFlowState(sessionKey) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
-    if (!normalizedKey || typeof sessionStorage === 'undefined') return;
+    if (!normalizedKey) return;
 
-    try {
-        sessionStorage.removeItem(normalizedKey);
-    } catch (_) {}
+    const adapter = createBulkActionSessionStorageAdapter();
+
+    adapter.remove(normalizedKey);
 }
 
 /**
@@ -2026,22 +2189,6 @@ function handleModalClosed({ activeViewId = '', closedViewId = '', callback = nu
 }
 
 /**
- * Parses the current hash into path and query components.
- * @returns {{raw: string, path: string, query: string}} Hash parts.
- */
-function bulkActionParseHash() {
-    const hash = knackValueResolver.toStringSafe(window.location.hash);
-    const withoutHash = hash.startsWith('#') ? hash.slice(1) : hash;
-    const [pathPart, queryPart = ''] = withoutHash.split('?');
-
-    return {
-        raw: hash,
-        path: knackValueResolver.toStringSafe(pathPart),
-        query: knackValueResolver.toStringSafe(queryPart)
-    };
-}
-
-/**
  * Reads a query-string parameter from the current location hash.
  * @param {string} name - Query-string parameter name.
  * @returns {string} Parameter value, or an empty string.
@@ -2050,7 +2197,8 @@ function bulkActionGetHashQueryParam(name) {
     const key = knackValueResolver.toStringSafe(name);
     if (!key) return '';
 
-    const { query } = bulkActionParseHash();
+    const hash = knackValueResolver.toStringSafe(window.location.hash);
+    const query = hash.includes('?') ? knackValueResolver.toStringSafe(hash.split('?').slice(1).join('?')) : '';
     if (!query) return '';
 
     const params = new URLSearchParams(query);
@@ -2105,7 +2253,17 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
 function bulkActionNavigateToSceneSlug(sceneSlug, { recordId = '', params = {} } = {}) {
     const targetHash = bulkActionBuildHash(sceneSlug, { recordId, params });
     if (!targetHash) return;
+
+    const canUseRouterNavigate = typeof Knack?.router?.navigate === 'function';
+    const routerTarget = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
+
+    if (canUseRouterNavigate) {
+        Knack.router.navigate(routerTarget, true);
+        return;
+    }
+
     if (window.location.hash === targetHash) return;
+
     window.location.hash = targetHash;
 }
 
@@ -2203,16 +2361,20 @@ function bulkActionRenderFormNotice({ viewElement, bulkState, messages = {}, not
 /**
  * Resolves the DOM element, metadata object, and id for a view reference.
  * @param {*} viewRef - View id, key, element, or view object.
- * @returns {{viewElement: Element|null, viewObject: Object|null, viewId: string}} View context.
+ * @returns {{viewElement: Element|null, viewId: string}} View context.
  */
 function bulkActionResolveViewContext(viewRef) {
     const viewElement = bulkActionResolveElement(viewRef);
-    const viewId = knackNavigator.normalizeViewId(viewElement?.id || viewRef?.key || viewRef);
-    const viewObject = viewElement || !viewId ? null : knackNavigator.getViewObject(viewId);
+    const viewId = viewElement instanceof Element
+        ? knackNavigator.normalizeViewId(viewElement.id)
+        : knackNavigator.normalizeViewId(
+            typeof viewRef === 'string' || typeof viewRef === 'number'
+                ? viewRef
+                : viewRef?.key
+        );
 
     return {
         viewElement: viewElement || bulkActionFindViewRoot(viewId),
-        viewObject,
         viewId
     };
 }
@@ -2531,12 +2693,11 @@ async function bulkActionReplicateFallback({ mode = 'create', operations = [], a
  * @returns {Array<string>} Form field ids.
  */
 function bulkActionGetFormFieldKeys(viewRef) {
-    const { viewElement, viewObject } = bulkActionResolveViewContext(viewRef);
+    const { viewElement, viewId } = bulkActionResolveViewContext(viewRef);
+    const viewFieldIds = knackNavigator.getViewFieldIds(viewId);
 
-    const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
-
-    if (fields.length) {
-        return bulkActionNormalizeFieldKeys(fields.map((field) => field?.key || ''));
+    if (viewFieldIds.length) {
+        return viewFieldIds;
     }
 
     if (!viewElement) return [];
@@ -3640,6 +3801,14 @@ function ensureBulkActionCheckboxes(viewId, selectionConfig, handlers = {}) {
             }
         },
     });
+
+    const viewElement = bulkActionFindViewRoot(viewId);
+    const rowCheckboxClass = knackValueResolver.toStringSafe(selectionConfig?.rowCheckboxClass);
+    if (!viewElement || !rowCheckboxClass) return;
+
+    viewElement.querySelectorAll(`tbody .${rowCheckboxClass}`).forEach((checkbox) => {
+        bulkActionGetRowCheckboxRecordId(checkbox);
+    });
 }
 
 /**
@@ -4118,8 +4287,14 @@ class BulkActionGridController {
             if (!(button instanceof Element)) return;
             button.dataset.bulkActionKey = action.key;
             button.addEventListener('click', () => {
+                const selectedIds = this.getSelectedRecordIds();
+                if (!selectedIds.length && !this.basketItems.length) {
+                    bulkActionNotify('Select one or more rows first.', 'warning', this.bulkActionConfig.action);
+                    return;
+                }
+
                 this.setActiveActionKey(action.key);
-                this.openBasket();
+                this.openBasketAndAdd(selectedIds);
             });
         });
 
@@ -4174,7 +4349,7 @@ class BulkActionGridController {
      * @returns {Promise<void>}
      */
     async startFormAction(action) {
-        const sceneInfo = getSceneFromViewId(action?.target);
+        const sceneInfo = knackNavigator.getSceneInfoForView(action?.target);
         const sceneSlug = knackValueResolver.toStringSafe(sceneInfo?.slug);
         if (!sceneSlug) {
             bulkActionNotify('Bulk action could not resolve the target form route.', 'error', this.bulkActionConfig.action);
@@ -4354,7 +4529,7 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         sourceController.clearBasketItemFailures(recordIds);
     }
 
-    const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || getSceneFromViewId(action.target)?.key);
+    const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || knackNavigator.getSceneInfoForView(action?.target)?.key);
     const apiViewId = knackNavigator.normalizeViewId(action?.target);
     const failedIds = [];
     const { preparedOperations, failedIds: preparationFailedIds } = await bulkActionPrepareReplicateOperations({
@@ -4562,13 +4737,7 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         bulkActionRenderFormNotice({
             viewElement,
             bulkState,
-            messages: {
-                ...(action?.messages?.formReplicate || {}),
-                styles: bulkActionMergeStyleMaps(
-                    config.form.styles?.formNotice || {},
-                    action?.messages?.formReplicate?.styles || {}
-                )
-            },
+            messages: action?.messages?.formReplicate || {},
             noticeClass: config.form.noticeClass
         });
 
@@ -4673,7 +4842,7 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
 
         const actionWithApi = {
             ...action,
-            sceneId: view?.scene?.key || getSceneFromViewId(submitViewId)?.key || '',
+            sceneId: knackNavigator.getSceneInfoForView(submitViewId)?.key || '',
             bulkActionsApi: KnackBulkActions
         };
 
@@ -4706,8 +4875,8 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
  * @returns {BulkActionGridController|null} Initialised controller.
  */
 function mountBulkActionGrid(context, options = {}) {
-    const viewId = knackNavigator.normalizeViewId(context?.viewId || context?.view?.key);
-    const config = context?.config || {};
+    const viewId = knackNavigator.normalizeViewId(context?.viewId);
+    const config = bulkActionObjectOrEmpty(context?.config);
     if (!viewId || !Array.isArray(config?.actions) || !config.actions.length || !Array.isArray(config?.labelFieldIds) || !config.labelFieldIds.length) {
         return null;
     }
@@ -4716,7 +4885,7 @@ function mountBulkActionGrid(context, options = {}) {
 
     const controller = new BulkActionGridController({
         viewId,
-        rowRecords: resolveBulkActionRecords(viewId, context?.data),
+        rowRecords: Array.isArray(context?.data) ? context.data : [],
         labelFieldIds: config.labelFieldIds,
         actions: config.actions,
         bulkActionsApi: context?.bulkActions || KnackBulkActions,
