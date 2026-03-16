@@ -1135,7 +1135,7 @@ function classifyBulkActionFailure(error) {
  */
 function createBulkActionStorageAdapter(storage, options = {}) {
     const {
-        preferKtl = false,
+        preferKtl = true,
         session = false,
         noUserId = false,
         secure = false
