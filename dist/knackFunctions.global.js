@@ -672,6 +672,10 @@ class KnackValueResolver {
             return this.toNumberValue(sourceValue);
         }
 
+        if (fieldType === 'date_time') {
+            return this.toDateTimeRequestValue(rawValue, displayValue);
+        }
+
         if (this.isStructuredFieldType(fieldType)) {
             const structuredValue = this.toStructuredValue(sourceValue, displayValue);
             return structuredValue === undefined ? undefined : structuredValue;
@@ -683,6 +687,137 @@ class KnackValueResolver {
         }
 
         return sourceValue;
+    }
+
+    /**
+     * Normalizes a Knack date/time raw or display value into an API-safe request value.
+     * Prefers formatted time strings and converts Knack raw minute counts when needed.
+     * @param {*} rawValue - `_raw` value from a Knack record.
+     * @param {*} displayValue - Display value from a Knack record.
+     * @returns {string|undefined} Date/time request string when recognized.
+     */
+    toDateTimeRequestValue(rawValue, displayValue) {
+        return this._normalizeDateTimeRequestValue(rawValue)
+            ?? this._normalizeDateTimeRequestValue(displayValue);
+    }
+
+    /**
+     * Converts a primitive or object-based date/time value into a normalized request string.
+     * @param {*} value - Source date/time value.
+     * @returns {string|undefined} Normalized request value.
+     * @private
+     */
+    _normalizeDateTimeRequestValue(value) {
+        if (value === undefined || value === null || value === '') return undefined;
+
+        if (typeof value === 'number') {
+            return this._normalizeDateTimeTimeSegment(value);
+        }
+
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (!trimmed) return undefined;
+
+            if (/^\d+$/.test(trimmed)) {
+                return this._normalizeDateTimeTimeSegment(trimmed) || trimmed;
+            }
+
+            return trimmed;
+        }
+
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return undefined;
+        }
+
+        if (value.from || value.to) {
+            return this.toDisplayString(value) || undefined;
+        }
+
+        const dateValue = this.toStringSafe(value.date_formatted || value.date || value.iso_date || value.date_time);
+        const timeValue = this._normalizeDateTimeTimeSegment(
+            value.time_formatted
+            || value.time
+            || this._buildTimeFromClockParts(value.hours, value.minutes, value.am_pm)
+            || value.datetime_formatted
+        );
+
+        if (dateValue && timeValue) return `${dateValue} ${timeValue}`.trim();
+        if (dateValue) return dateValue;
+        if (timeValue) return timeValue;
+
+        return this.toDisplayString(value) || undefined;
+    }
+
+    /**
+     * Converts a Knack time fragment into `HH:mm` when possible.
+     * Supports formatted time strings and raw minute counts.
+     * @param {*} value - Time fragment.
+     * @returns {string} Normalized time or an empty string.
+     * @private
+     */
+    _normalizeDateTimeTimeSegment(value) {
+        if (value === undefined || value === null || value === '') return '';
+
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value < 1440) {
+            const hours = Math.floor(value / 60);
+            const minutes = value % 60;
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+        }
+
+        const normalized = this.toStringSafe(value);
+        if (!normalized) return '';
+
+        if (/^\d+$/.test(normalized)) {
+            const totalMinutes = Number(normalized);
+            if (Number.isFinite(totalMinutes) && totalMinutes >= 0 && totalMinutes < 1440) {
+                const hours = Math.floor(totalMinutes / 60);
+                const minutes = totalMinutes % 60;
+                return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+            }
+        }
+
+        const amPmMatch = normalized.match(/^(\d{1,2}):(\d{2})\s*([AP]M)$/i);
+        if (amPmMatch) {
+            return this._buildTimeFromClockParts(amPmMatch[1], amPmMatch[2], amPmMatch[3]);
+        }
+
+        const twentyFourHourMatch = normalized.match(/^(\d{1,2}):(\d{2})$/);
+        if (twentyFourHourMatch) {
+            const hours = Number(twentyFourHourMatch[1]);
+            const minutes = Number(twentyFourHourMatch[2]);
+            if (Number.isFinite(hours) && Number.isFinite(minutes) && hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+                return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+            }
+        }
+
+        return normalized;
+    }
+
+    /**
+     * Builds a 24-hour time string from clock parts.
+     * @param {*} hoursValue - Hour component.
+     * @param {*} minutesValue - Minute component.
+     * @param {*} amPmValue - AM/PM marker.
+     * @returns {string} 24-hour time or an empty string.
+     * @private
+     */
+    _buildTimeFromClockParts(hoursValue, minutesValue, amPmValue) {
+        const hoursText = this.toStringSafe(hoursValue);
+        const minutesText = this.toStringSafe(minutesValue);
+        if (!hoursText && !minutesText) return '';
+
+        let hours = Number(hoursText || '0');
+        const minutes = Number(minutesText || '0');
+        if (!Number.isFinite(hours) || !Number.isFinite(minutes) || minutes < 0 || minutes > 59) {
+            return '';
+        }
+
+        const amPm = this.toStringSafe(amPmValue).toUpperCase();
+        if (amPm === 'PM' && hours < 12) hours += 12;
+        if (amPm === 'AM' && hours === 12) hours = 0;
+        if (hours < 0 || hours > 23) return '';
+
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
     }
 
     /**
