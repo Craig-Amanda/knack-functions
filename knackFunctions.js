@@ -18,6 +18,8 @@ class KnackNavigator {
      */
     constructor() {
         this._viewCache = new Map();
+        this._sceneInfoCache = new Map();
+        this._fieldIdByViewLabelCache = new Map();
         this._fieldMetaCache = new Map();
         this._fieldTypeCache = new Map();
     }
@@ -156,15 +158,75 @@ class KnackNavigator {
      * @returns {{ key: string, slug: string }|null} Scene info or null.
      */
     getSceneInfoForView(viewId) {
-        const viewObject = this.getViewObject(viewId);
-        const sceneKey = this.normalizeSceneId(viewObject?.scene?.key);
-        if (!sceneKey) return null;
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return null;
+        }
+        if (this._sceneInfoCache.has(normalizedViewId)) return this._sceneInfoCache.get(normalizedViewId);
 
-        const sceneSlug = String(viewObject?.scene?.slug || '').trim();
-        return {
-            key: sceneKey,
-            slug: sceneSlug
-        };
+        let fallbackSceneKey = '';
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        const directSceneKey = this.normalizeSceneId(directScene?.key);
+        if (directSceneKey) {
+            const directSceneSlug = String(directScene?.slug || '').trim();
+            if (directSceneSlug) {
+                const sceneInfo = {
+                    key: directSceneKey,
+                    slug: directSceneSlug
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            fallbackSceneKey = directSceneKey;
+        }
+
+        const viewObject = this.getViewObject(normalizedViewId);
+        const sceneKey = this.normalizeSceneId(viewObject?.scene?.key);
+        if (sceneKey) {
+            const viewObjectSceneSlug = String(viewObject?.scene?.slug || '').trim();
+            if (viewObjectSceneSlug) {
+                const sceneInfo = {
+                    key: sceneKey,
+                    slug: viewObjectSceneSlug
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            fallbackSceneKey = fallbackSceneKey || sceneKey;
+        }
+
+        const scenes = Knack?.scenes?.models || [];
+        for (const scene of scenes) {
+            const candidateSceneKey = this.normalizeSceneId(scene?.attributes?.key);
+            const views = scene?.views?.models || [];
+            for (const viewModel of views) {
+                if (viewModel?.attributes?.key !== normalizedViewId) continue;
+
+                const sceneInfo = {
+                    key: candidateSceneKey,
+                    slug: String(scene?.attributes?.slug || '').trim()
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            if (!fallbackSceneKey || candidateSceneKey !== fallbackSceneKey) continue;
+
+            const fallbackSceneSlug = String(scene?.attributes?.slug || '').trim();
+            if (!fallbackSceneSlug) continue;
+
+            const sceneInfo = {
+                key: fallbackSceneKey,
+                slug: fallbackSceneSlug
+            };
+            this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+            return sceneInfo;
+        }
+
+        return null;
     }
 
     /**
@@ -221,10 +283,16 @@ class KnackNavigator {
      * @returns {string} Matching field id, or an empty string.
      */
     getFieldIdFromLabel(viewId, fieldLabel) {
+        const normalizedViewId = this.normalizeViewId(viewId);
         const normalizedLabel = String(fieldLabel || '').trim().toLowerCase();
-        if (!normalizedLabel) return '';
+        if (!normalizedViewId || !normalizedLabel) return '';
 
-        const viewObject = this.getViewObject(viewId);
+        const cacheKey = `${normalizedViewId}::${normalizedLabel}`;
+        if (this._fieldIdByViewLabelCache.has(cacheKey)) {
+            return this._fieldIdByViewLabelCache.get(cacheKey);
+        }
+
+        const viewObject = this.getViewObject(normalizedViewId);
         const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
         const match = fields.find((field) => {
             const fieldName = String(field?.name || '').trim().toLowerCase();
@@ -232,7 +300,9 @@ class KnackNavigator {
             return fieldName === normalizedLabel || fieldLabelText === normalizedLabel;
         });
 
-        return this.normalizeFieldId(match?.key || '');
+        const resolvedFieldId = this.normalizeFieldId(match?.key || '');
+        this._fieldIdByViewLabelCache.set(cacheKey, resolvedFieldId);
+        return resolvedFieldId;
     }
 }
 
@@ -1060,11 +1130,37 @@ function classifyBulkActionFailure(error) {
 /**
  * Wraps storage access with safe get/set/remove guards.
  * @param {Storage|null} storage - Storage provider, typically sessionStorage.
+ * @param {Object} [options={}] - Adapter options.
  * @returns {{get: Function, set: Function, remove: Function}} Safe storage adapter.
  */
-function createBulkActionStorageAdapter(storage) {
+function createBulkActionStorageAdapter(storage, options = {}) {
+    const {
+        preferKtl = false,
+        session = false,
+        noUserId = false,
+        secure = false
+    } = options;
+
+    const ktlStorage = preferKtl
+        && typeof globalThis !== 'undefined'
+        && globalThis.ktl?.storage
+        && typeof globalThis.ktl.storage.lsGetItem === 'function'
+        && typeof globalThis.ktl.storage.lsSetItem === 'function'
+        && typeof globalThis.ktl.storage.lsRemoveItem === 'function'
+        ? globalThis.ktl.storage
+        : null;
+
     return {
         get(key) {
+            if (ktlStorage) {
+                try {
+                    const value = ktlStorage.lsGetItem(key, noUserId, session, secure);
+                    return value === '' ? null : value;
+                } catch (_) {
+                    return null;
+                }
+            }
+
             if (!storage || typeof storage.getItem !== 'function') return null;
             try {
                 return storage.getItem(key);
@@ -1073,6 +1169,15 @@ function createBulkActionStorageAdapter(storage) {
             }
         },
         set(key, value) {
+            if (ktlStorage) {
+                try {
+                    ktlStorage.lsSetItem(key, value, noUserId, session, secure);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            }
+
             if (!storage || typeof storage.setItem !== 'function') return false;
             try {
                 storage.setItem(key, value);
@@ -1082,6 +1187,15 @@ function createBulkActionStorageAdapter(storage) {
             }
         },
         remove(key) {
+            if (ktlStorage) {
+                try {
+                    ktlStorage.lsRemoveItem(key, noUserId, session, secure);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            }
+
             if (!storage || typeof storage.removeItem !== 'function') return false;
             try {
                 storage.removeItem(key);
@@ -1091,6 +1205,18 @@ function createBulkActionStorageAdapter(storage) {
             }
         }
     };
+}
+
+/**
+ * Returns the session-scoped storage adapter used by bulk-action workflows.
+ * Prefers classic KTL storage when available and falls back to raw sessionStorage.
+ * @returns {{get: Function, set: Function, remove: Function}} Session storage adapter.
+ */
+function createBulkActionSessionStorageAdapter() {
+    return createBulkActionStorageAdapter(
+        typeof sessionStorage !== 'undefined' ? sessionStorage : null,
+        { preferKtl: true, session: true }
+    );
 }
 
 /**
@@ -1505,7 +1631,7 @@ function createBulkActionBasketStore(options = {}) {
         storage = typeof sessionStorage !== 'undefined' ? sessionStorage : null
     } = options;
 
-    const adapter = createBulkActionStorageAdapter(storage);
+    const adapter = createBulkActionStorageAdapter(storage, { preferKtl: true, session: true });
     const memory = {
         items: null,
         storedAt: 0,
@@ -1915,7 +2041,20 @@ function bulkActionFindViewRoot(viewId) {
  * @returns {string} Normalized record id.
  */
 function bulkActionGetRowCheckboxRecordId(checkbox) {
-    return knackValueResolver.toStringSafe(checkbox?.dataset?.recordId);
+    const normalizedCheckbox = checkbox instanceof Element ? checkbox : null;
+    if (!normalizedCheckbox) return '';
+
+    const recordId = knackValueResolver.toStringSafe(
+        normalizedCheckbox.dataset?.recordId
+        || normalizedCheckbox.closest('tr')?.id
+        || normalizedCheckbox.closest('[data-record-id]')?.getAttribute('data-record-id')
+    );
+
+    if (recordId && !normalizedCheckbox.dataset?.recordId) {
+        normalizedCheckbox.dataset.recordId = recordId;
+    }
+
+    return recordId;
 }
 
 /**
@@ -1939,10 +2078,12 @@ function bulkActionBuildFormFlowSessionKey(namespace, formViewId) {
  */
 function bulkActionReadFormFlowState(sessionKey) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
-    if (!normalizedKey || typeof sessionStorage === 'undefined') return null;
+    if (!normalizedKey) return null;
+
+    const adapter = createBulkActionSessionStorageAdapter();
 
     try {
-        const raw = sessionStorage.getItem(normalizedKey);
+        const raw = adapter.get(normalizedKey);
         if (!raw) return null;
         const parsed = JSON.parse(raw);
         return parsed && typeof parsed === 'object' ? parsed : null;
@@ -1959,11 +2100,11 @@ function bulkActionReadFormFlowState(sessionKey) {
  */
 function bulkActionWriteFormFlowState(sessionKey, state) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
-    if (!normalizedKey || typeof sessionStorage === 'undefined') return;
+    if (!normalizedKey) return;
 
-    try {
-        sessionStorage.setItem(normalizedKey, JSON.stringify(state || {}));
-    } catch (_) {}
+    const adapter = createBulkActionSessionStorageAdapter();
+
+    adapter.set(normalizedKey, JSON.stringify(state || {}));
 }
 
 /**
@@ -1996,11 +2137,11 @@ function bulkActionMergeFormFlowState(sessionKey, statePatch = {}, fallbackState
  */
 function bulkActionClearFormFlowState(sessionKey) {
     const normalizedKey = knackValueResolver.toStringSafe(sessionKey);
-    if (!normalizedKey || typeof sessionStorage === 'undefined') return;
+    if (!normalizedKey) return;
 
-    try {
-        sessionStorage.removeItem(normalizedKey);
-    } catch (_) {}
+    const adapter = createBulkActionSessionStorageAdapter();
+
+    adapter.remove(normalizedKey);
 }
 
 /**
@@ -2112,7 +2253,17 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
 function bulkActionNavigateToSceneSlug(sceneSlug, { recordId = '', params = {} } = {}) {
     const targetHash = bulkActionBuildHash(sceneSlug, { recordId, params });
     if (!targetHash) return;
+
+    const canUseRouterNavigate = typeof Knack?.router?.navigate === 'function';
+    const routerTarget = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
+
+    if (canUseRouterNavigate) {
+        Knack.router.navigate(routerTarget, true);
+        return;
+    }
+
     if (window.location.hash === targetHash) return;
+
     window.location.hash = targetHash;
 }
 
@@ -2216,7 +2367,11 @@ function bulkActionResolveViewContext(viewRef) {
     const viewElement = bulkActionResolveElement(viewRef);
     const viewId = viewElement instanceof Element
         ? knackNavigator.normalizeViewId(viewElement.id)
-        : knackNavigator.normalizeViewId(viewRef?.key);
+        : knackNavigator.normalizeViewId(
+            typeof viewRef === 'string' || typeof viewRef === 'number'
+                ? viewRef
+                : viewRef?.key
+        );
 
     return {
         viewElement: viewElement || bulkActionFindViewRoot(viewId),
@@ -3646,6 +3801,14 @@ function ensureBulkActionCheckboxes(viewId, selectionConfig, handlers = {}) {
             }
         },
     });
+
+    const viewElement = bulkActionFindViewRoot(viewId);
+    const rowCheckboxClass = knackValueResolver.toStringSafe(selectionConfig?.rowCheckboxClass);
+    if (!viewElement || !rowCheckboxClass) return;
+
+    viewElement.querySelectorAll(`tbody .${rowCheckboxClass}`).forEach((checkbox) => {
+        bulkActionGetRowCheckboxRecordId(checkbox);
+    });
 }
 
 /**
@@ -4124,8 +4287,14 @@ class BulkActionGridController {
             if (!(button instanceof Element)) return;
             button.dataset.bulkActionKey = action.key;
             button.addEventListener('click', () => {
+                const selectedIds = this.getSelectedRecordIds();
+                if (!selectedIds.length && !this.basketItems.length) {
+                    bulkActionNotify('Select one or more rows first.', 'warning', this.bulkActionConfig.action);
+                    return;
+                }
+
                 this.setActiveActionKey(action.key);
-                this.openBasket();
+                this.openBasketAndAdd(selectedIds);
             });
         });
 
@@ -4568,13 +4737,7 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         bulkActionRenderFormNotice({
             viewElement,
             bulkState,
-            messages: {
-                ...(action?.messages?.formReplicate || {}),
-                styles: bulkActionMergeStyleMaps(
-                    config.form.styles?.formNotice || {},
-                    action?.messages?.formReplicate?.styles || {}
-                )
-            },
+            messages: action?.messages?.formReplicate || {},
             noticeClass: config.form.noticeClass
         });
 
