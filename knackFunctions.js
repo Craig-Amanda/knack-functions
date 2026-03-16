@@ -1884,12 +1884,7 @@ function bulkActionFindViewRoot(viewId) {
  */
 function resolveBulkActionRecords(viewId, data) {
     if (Array.isArray(data)) return data;
-
-    const byId = Knack?.views?.[viewId]?.model?.data?._byId || {};
-
-    return Object.values(byId)
-        .map((record) => record?.attributes)
-        .filter(Boolean);
+    return [];
 }
 
 /**
