@@ -135,6 +135,39 @@ class KnackNavigator {
     }
 
     /**
+     * Returns normalised field ids declared on a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {Array<string>} View field ids.
+     */
+    getViewFieldIds(viewId) {
+        const viewObject = this.getViewObject(viewId);
+        const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
+
+        return Array.from(new Set(
+            fields
+                .map((field) => this.normalizeFieldId(field?.key || ''))
+                .filter(Boolean)
+        ));
+    }
+
+    /**
+     * Returns scene metadata for a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {{ key: string, slug: string }|null} Scene info or null.
+     */
+    getSceneInfoForView(viewId) {
+        const viewObject = this.getViewObject(viewId);
+        const sceneKey = this.normalizeSceneId(viewObject?.scene?.key);
+        if (!sceneKey) return null;
+
+        const sceneSlug = String(viewObject?.scene?.slug || '').trim();
+        return {
+            key: sceneKey,
+            slug: sceneSlug
+        };
+    }
+
+    /**
      * Resolves field metadata from Knack object definitions.
      * @param {string|number} fieldKey - Field id to resolve.
      * @returns {Object|null} Field metadata.
@@ -151,7 +184,7 @@ class KnackNavigator {
             const fields = objModel?.fields?.models || [];
             const match = fields.find((fieldModel) => {
                 const attributes = fieldModel?.attributes || {};
-                return fieldModel?.id === key || attributes?.key === key;
+                return attributes?.key === key;
             });
 
             const attributes = match?.attributes || null;
@@ -199,7 +232,7 @@ class KnackNavigator {
             return fieldName === normalizedLabel || fieldLabelText === normalizedLabel;
         });
 
-        return this.normalizeFieldId(match?.key || match?.id || '');
+        return this.normalizeFieldId(match?.key || '');
     }
 }
 
@@ -1877,17 +1910,6 @@ function bulkActionFindViewRoot(viewId) {
 }
 
 /**
- * Resolves the current record collection for a grid view render.
- * @param {string} viewId - Source view id.
- * @param {*} data - Knack view render payload.
- * @returns {Array<Object>} Resolved row records.
- */
-function resolveBulkActionRecords(viewId, data) {
-    if (Array.isArray(data)) return data;
-    return [];
-}
-
-/**
  * Returns the record id stored on a bulk-action row checkbox.
  * @param {HTMLInputElement|Element|null} checkbox - Row checkbox element.
  * @returns {string} Normalized record id.
@@ -2026,22 +2048,6 @@ function handleModalClosed({ activeViewId = '', closedViewId = '', callback = nu
 }
 
 /**
- * Parses the current hash into path and query components.
- * @returns {{raw: string, path: string, query: string}} Hash parts.
- */
-function bulkActionParseHash() {
-    const hash = knackValueResolver.toStringSafe(window.location.hash);
-    const withoutHash = hash.startsWith('#') ? hash.slice(1) : hash;
-    const [pathPart, queryPart = ''] = withoutHash.split('?');
-
-    return {
-        raw: hash,
-        path: knackValueResolver.toStringSafe(pathPart),
-        query: knackValueResolver.toStringSafe(queryPart)
-    };
-}
-
-/**
  * Reads a query-string parameter from the current location hash.
  * @param {string} name - Query-string parameter name.
  * @returns {string} Parameter value, or an empty string.
@@ -2050,7 +2056,8 @@ function bulkActionGetHashQueryParam(name) {
     const key = knackValueResolver.toStringSafe(name);
     if (!key) return '';
 
-    const { query } = bulkActionParseHash();
+    const hash = knackValueResolver.toStringSafe(window.location.hash);
+    const query = hash.includes('?') ? knackValueResolver.toStringSafe(hash.split('?').slice(1).join('?')) : '';
     if (!query) return '';
 
     const params = new URLSearchParams(query);
@@ -2203,16 +2210,16 @@ function bulkActionRenderFormNotice({ viewElement, bulkState, messages = {}, not
 /**
  * Resolves the DOM element, metadata object, and id for a view reference.
  * @param {*} viewRef - View id, key, element, or view object.
- * @returns {{viewElement: Element|null, viewObject: Object|null, viewId: string}} View context.
+ * @returns {{viewElement: Element|null, viewId: string}} View context.
  */
 function bulkActionResolveViewContext(viewRef) {
     const viewElement = bulkActionResolveElement(viewRef);
-    const viewId = knackNavigator.normalizeViewId(viewElement?.id || viewRef?.key || viewRef);
-    const viewObject = viewElement || !viewId ? null : knackNavigator.getViewObject(viewId);
+    const viewId = viewElement instanceof Element
+        ? knackNavigator.normalizeViewId(viewElement.id)
+        : knackNavigator.normalizeViewId(viewRef?.key);
 
     return {
         viewElement: viewElement || bulkActionFindViewRoot(viewId),
-        viewObject,
         viewId
     };
 }
@@ -2531,12 +2538,11 @@ async function bulkActionReplicateFallback({ mode = 'create', operations = [], a
  * @returns {Array<string>} Form field ids.
  */
 function bulkActionGetFormFieldKeys(viewRef) {
-    const { viewElement, viewObject } = bulkActionResolveViewContext(viewRef);
+    const { viewElement, viewId } = bulkActionResolveViewContext(viewRef);
+    const viewFieldIds = knackNavigator.getViewFieldIds(viewId);
 
-    const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
-
-    if (fields.length) {
-        return bulkActionNormalizeFieldKeys(fields.map((field) => field?.key || ''));
+    if (viewFieldIds.length) {
+        return viewFieldIds;
     }
 
     if (!viewElement) return [];
@@ -4174,7 +4180,7 @@ class BulkActionGridController {
      * @returns {Promise<void>}
      */
     async startFormAction(action) {
-        const sceneInfo = getSceneFromViewId(action?.target);
+        const sceneInfo = knackNavigator.getSceneInfoForView(action?.target);
         const sceneSlug = knackValueResolver.toStringSafe(sceneInfo?.slug);
         if (!sceneSlug) {
             bulkActionNotify('Bulk action could not resolve the target form route.', 'error', this.bulkActionConfig.action);
@@ -4354,7 +4360,7 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         sourceController.clearBasketItemFailures(recordIds);
     }
 
-    const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || getSceneFromViewId(action.target)?.key);
+    const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || knackNavigator.getSceneInfoForView(action?.target)?.key);
     const apiViewId = knackNavigator.normalizeViewId(action?.target);
     const failedIds = [];
     const { preparedOperations, failedIds: preparationFailedIds } = await bulkActionPrepareReplicateOperations({
@@ -4673,7 +4679,7 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
 
         const actionWithApi = {
             ...action,
-            sceneId: view?.scene?.key || getSceneFromViewId(submitViewId)?.key || '',
+            sceneId: knackNavigator.getSceneInfoForView(submitViewId)?.key || '',
             bulkActionsApi: KnackBulkActions
         };
 
@@ -4706,8 +4712,8 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
  * @returns {BulkActionGridController|null} Initialised controller.
  */
 function mountBulkActionGrid(context, options = {}) {
-    const viewId = knackNavigator.normalizeViewId(context?.viewId || context?.view?.key);
-    const config = context?.config || {};
+    const viewId = knackNavigator.normalizeViewId(context?.viewId);
+    const config = bulkActionObjectOrEmpty(context?.config);
     if (!viewId || !Array.isArray(config?.actions) || !config.actions.length || !Array.isArray(config?.labelFieldIds) || !config.labelFieldIds.length) {
         return null;
     }
@@ -4716,7 +4722,7 @@ function mountBulkActionGrid(context, options = {}) {
 
     const controller = new BulkActionGridController({
         viewId,
-        rowRecords: resolveBulkActionRecords(viewId, context?.data),
+        rowRecords: Array.isArray(context?.data) ? context.data : [],
         labelFieldIds: config.labelFieldIds,
         actions: config.actions,
         bulkActionsApi: context?.bulkActions || KnackBulkActions,
