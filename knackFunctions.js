@@ -12005,12 +12005,38 @@ function findElementByText(text, root = document, filter = {}) {
 /**
  * Gets the selected radio value for a given Knack field ID.
  * @param {string|number} fieldId - Knack field ID
+ * @param {ParentNode} [root=document] - Optional root element to scope the lookup.
  * @returns {string} The trimmed value of the selected radio input, or an empty string if none selected*/
-function getSelectedRadioValue(fieldId) {
+function getSelectedRadioValue(fieldId, root = document) {
     const containerId = `kn-input-field_${fieldId}`;
-    const container = document.getElementById(containerId);
+    const container = root?.querySelector ? root.querySelector(`#${containerId}`) : document.getElementById(containerId);
     const checked = container?.querySelector('input[type="radio"]:checked');
     return checked?.value?.trim() || '';
+}
+
+/**
+ * Gets the selected value/s for a Knack select field.
+ * Returns a string for single selects and an array of strings for multi-selects.
+ * @param {string|number} fieldId - Knack field ID
+ * @param {ParentNode} [root=document] - Optional root element to scope the lookup.
+ * @returns {string|string[]} The selected option value(s).
+ */
+function getSelectedValue(fieldId, root = document) {
+    const containerId = `kn-input-field_${fieldId}`;
+    const container = root?.querySelector ? root.querySelector(`#${containerId}`) : document.getElementById(containerId);
+    const selectEl = container?.querySelector('select');
+
+    if (!selectEl) {
+        return '';
+    }
+
+    if (selectEl.multiple) {
+        return Array.from(selectEl.selectedOptions || []).map(function (option) {
+            return option.value.trim();
+        }).filter(Boolean);
+    }
+
+    return selectEl.value?.trim() || '';
 }
 
 /** Replace text in given selector or td (using field ID) with that passed in when regex matched
