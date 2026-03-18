@@ -2324,6 +2324,53 @@ function handleModalClosed({ activeViewId = '', closedViewId = '', callback = nu
 }
 
 /**
+ * Closes the active Knack modal when one is open and waits briefly for the close lifecycle to finish.
+ * @returns {Promise<boolean>} True when a modal close was attempted.
+ */
+function bulkActionCloseModalIfOpen() {
+    const modalElement = document.querySelector('.kn-modal');
+    const closeButton = document.querySelector('button.close-modal, .close-modal');
+    const modalActive = Boolean(modalElement || closeButton || Knack?.router?.scene_view?.model?.attributes?.modal);
+    if (!modalActive) return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+        let settled = false;
+        const eventNamespace = '.knackBulkActionsClose';
+
+        const finish = (closed) => {
+            if (settled) return;
+            settled = true;
+            if (typeof window.jQuery === 'function') {
+                window.jQuery(document).off(`knack-modal-close${eventNamespace}`);
+            }
+            resolve(closed);
+        };
+
+        if (typeof window.jQuery === 'function') {
+            window.jQuery(document).one(`knack-modal-close${eventNamespace}`, function () {
+                window.setTimeout(() => finish(true), 0);
+            });
+        }
+
+        window.setTimeout(() => finish(false), 400);
+
+        try {
+            if (typeof Knack?.closeModal === 'function') {
+                Knack.closeModal();
+                return;
+            }
+
+            if (closeButton && typeof closeButton.click === 'function') {
+                closeButton.click();
+                return;
+            }
+        } catch (_) {}
+
+        finish(false);
+    });
+}
+
+/**
  * Reads a query-string parameter from the current location hash.
  * @param {string} name - Query-string parameter name.
  * @returns {string} Parameter value, or an empty string.
@@ -2338,6 +2385,42 @@ function bulkActionGetHashQueryParam(name) {
 
     const params = new URLSearchParams(query);
     return knackValueResolver.toStringSafe(params.get(key));
+}
+
+/**
+ * Captures the current location hash path and query before modal navigation mutates it.
+ * @returns {{path: string, query: string}} Current hash state.
+ */
+function bulkActionGetCurrentHashState() {
+    const currentHash = knackValueResolver.toStringSafe(window.location.hash);
+    const path = knackValueResolver.toStringSafe(currentHash.split('?')[0]) || '#';
+    const query = currentHash.includes('?') ? knackValueResolver.toStringSafe(currentHash.split('?').slice(1).join('?')) : '';
+    return { path, query };
+}
+
+/**
+ * Restores a previously captured scene hash/query without forcing a full scene rerender.
+ * @param {Object} [options={}] - Hash restore options.
+ * @returns {boolean} True when a target hash was available.
+ */
+function bulkActionRestoreHashState({ path = '', query = '' } = {}) {
+    const normalizedPath = knackValueResolver.toStringSafe(path).replace(/^#?/, '#');
+    if (!normalizedPath || normalizedPath === '#') return false;
+
+    const normalizedQuery = knackValueResolver.toStringSafe(query).replace(/^\?/, '');
+    const targetHash = `${normalizedPath}${normalizedQuery ? `?${normalizedQuery}` : ''}`;
+
+    if (window.location.hash === targetHash) return true;
+
+    const routerTarget = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
+    if (typeof Knack?.router?.navigate === 'function') {
+        Knack.router.navigate(routerTarget, false);
+        Knack.setHashVars?.();
+        return true;
+    }
+
+    window.location.hash = targetHash;
+    return true;
 }
 
 /**
@@ -2367,7 +2450,8 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
     const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
     const currentHash = knackValueResolver.toStringSafe(window.location.hash);
     const currentPath = knackValueResolver.toStringSafe(currentHash.split('?')[0]).replace(/^#/, '').replace(/\/+$/, '');
-    const queryParams = new URLSearchParams();
+    const currentQuery = currentHash.includes('?') ? knackValueResolver.toStringSafe(currentHash.split('?').slice(1).join('?')) : '';
+    const queryParams = new URLSearchParams(currentQuery);
     const targetPath = [currentPath, slug, normalizedRecordId].filter(Boolean).join('/');
 
     Object.entries(params && typeof params === 'object' ? params : {}).forEach(([key, value]) => {
@@ -4500,6 +4584,7 @@ class BulkActionGridController {
         const firstItem = this.basketItems.find((item) => item.recordId === firstRecordId) || null;
         const sessionKey = bulkActionBuildFormFlowSessionKey(this.namespace, action.target);
         const navToken = bulkActionMakeToken();
+        const sourceHashState = bulkActionGetCurrentHashState();
 
         bulkActionWriteFormFlowState(sessionKey, {
             sourceViewId: this.viewId,
@@ -4510,6 +4595,8 @@ class BulkActionGridController {
             formMode: String(action.operation || 'create').toLowerCase() === 'update' ? 'update' : 'create',
             sceneSlug,
             navToken,
+            sourceHashPath: sourceHashState.path,
+            sourceHashQuery: sourceHashState.query,
             createdAt: Date.now(),
             activeFormViewId: ''
         });
@@ -4784,6 +4871,12 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         }
     }
 
+    await bulkActionCloseModalIfOpen();
+    bulkActionRestoreHashState({
+        path: bulkState?.sourceHashPath,
+        query: bulkState?.sourceHashQuery
+    });
+
     if (typeof apiClient.refreshView === 'function' && document.getElementById(sourceViewId)) {
         try {
             await apiClient.refreshView(sourceViewId);
@@ -4984,6 +5077,8 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         };
 
         try {
+            await bulkActionCloseModalIfOpen();
+
             const result = await replicateBulkActionSubmittedRecord({
                 action: actionWithApi,
                 bulkState: { ...bulkState, namespace },
@@ -11134,9 +11229,12 @@ class KnackAPI {
                     }
                 }
 
-                // Search views: skip fetch/render, just use renderResults
+                // Search views: follow the fuller KTL refresh path so the search form and results stay in sync.
                 if (viewType === 'search') {
                     if (typeof view.renderResults === 'function') {
+                        view.model.trigger?.('change');
+                        view.renderForm?.();
+                        view.renderView?.();
                         view.renderResults();
                         this._log('Search view refreshed via renderResults', viewId);
                         return resolve();
