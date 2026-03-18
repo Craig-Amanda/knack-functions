@@ -2365,8 +2365,11 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
     if (!slug) return '';
 
     const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
-    const recordPath = normalizedRecordId ? `/${normalizedRecordId}` : '';
-    const queryParams = new URLSearchParams();
+    const currentHash = knackValueResolver.toStringSafe(window.location.hash);
+    const currentPath = knackValueResolver.toStringSafe(currentHash.split('?')[0]).replace(/^#/, '').replace(/\/+$/, '');
+    const currentQuery = currentHash.includes('?') ? knackValueResolver.toStringSafe(currentHash.split('?').slice(1).join('?')) : '';
+    const queryParams = new URLSearchParams(currentQuery);
+    const targetPath = [currentPath, slug, normalizedRecordId].filter(Boolean).join('/');
 
     Object.entries(params && typeof params === 'object' ? params : {}).forEach(([key, value]) => {
         const paramKey = knackValueResolver.toStringSafe(key);
@@ -2376,7 +2379,7 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
     });
 
     const query = String(queryParams.toString() || '').trim();
-    return `#${slug}${recordPath}${query ? `?${query}` : ''}`;
+    return `#${targetPath}${query ? `?${query}` : ''}`;
 }
 
 /**
@@ -11120,7 +11123,7 @@ class KnackAPI {
                 }
 
                 // Calendar views: use renderRecords()
-                                if (viewType === 'calendar') {
+                if (viewType === 'calendar') {
                     if (typeof view.renderRecords === 'function') {
                         view.renderRecords();
                         Knack.hideSpinner?.();
