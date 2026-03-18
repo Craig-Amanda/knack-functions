@@ -2367,8 +2367,7 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
     const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
     const currentHash = knackValueResolver.toStringSafe(window.location.hash);
     const currentPath = knackValueResolver.toStringSafe(currentHash.split('?')[0]).replace(/^#/, '').replace(/\/+$/, '');
-    const currentQuery = currentHash.includes('?') ? knackValueResolver.toStringSafe(currentHash.split('?').slice(1).join('?')) : '';
-    const queryParams = new URLSearchParams(currentQuery);
+    const queryParams = new URLSearchParams();
     const targetPath = [currentPath, slug, normalizedRecordId].filter(Boolean).join('/');
 
     Object.entries(params && typeof params === 'object' ? params : {}).forEach(([key, value]) => {
