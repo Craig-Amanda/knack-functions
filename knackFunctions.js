@@ -2324,6 +2324,53 @@ function handleModalClosed({ activeViewId = '', closedViewId = '', callback = nu
 }
 
 /**
+ * Closes the active Knack modal when one is open and waits briefly for the close lifecycle to finish.
+ * @returns {Promise<boolean>} True when a modal close was attempted.
+ */
+function bulkActionCloseModalIfOpen() {
+    const modalElement = document.querySelector('.kn-modal');
+    const closeButton = document.querySelector('button.close-modal, .close-modal');
+    const modalActive = Boolean(modalElement || closeButton || Knack?.router?.scene_view?.model?.attributes?.modal);
+    if (!modalActive) return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+        let settled = false;
+        const eventNamespace = '.knackBulkActionsClose';
+
+        const finish = (closed) => {
+            if (settled) return;
+            settled = true;
+            if (typeof window.jQuery === 'function') {
+                window.jQuery(document).off(`knack-modal-close${eventNamespace}`);
+            }
+            resolve(closed);
+        };
+
+        if (typeof window.jQuery === 'function') {
+            window.jQuery(document).one(`knack-modal-close${eventNamespace}`, function () {
+                window.setTimeout(() => finish(true), 0);
+            });
+        }
+
+        window.setTimeout(() => finish(false), 400);
+
+        try {
+            if (typeof Knack?.closeModal === 'function') {
+                Knack.closeModal();
+                return;
+            }
+
+            if (closeButton && typeof closeButton.click === 'function') {
+                closeButton.click();
+                return;
+            }
+        } catch (_) {}
+
+        finish(false);
+    });
+}
+
+/**
  * Reads a query-string parameter from the current location hash.
  * @param {string} name - Query-string parameter name.
  * @returns {string} Parameter value, or an empty string.
@@ -2338,6 +2385,42 @@ function bulkActionGetHashQueryParam(name) {
 
     const params = new URLSearchParams(query);
     return knackValueResolver.toStringSafe(params.get(key));
+}
+
+/**
+ * Captures the current location hash path and query before modal navigation mutates it.
+ * @returns {{path: string, query: string}} Current hash state.
+ */
+function bulkActionGetCurrentHashState() {
+    const currentHash = knackValueResolver.toStringSafe(window.location.hash);
+    const path = knackValueResolver.toStringSafe(currentHash.split('?')[0]) || '#';
+    const query = currentHash.includes('?') ? knackValueResolver.toStringSafe(currentHash.split('?').slice(1).join('?')) : '';
+    return { path, query };
+}
+
+/**
+ * Restores a previously captured scene hash/query without forcing a full scene rerender.
+ * @param {Object} [options={}] - Hash restore options.
+ * @returns {boolean} True when a target hash was available.
+ */
+function bulkActionRestoreHashState({ path = '', query = '' } = {}) {
+    const normalizedPath = knackValueResolver.toStringSafe(path).replace(/^#?/, '#');
+    if (!normalizedPath || normalizedPath === '#') return false;
+
+    const normalizedQuery = knackValueResolver.toStringSafe(query).replace(/^\?/, '');
+    const targetHash = `${normalizedPath}${normalizedQuery ? `?${normalizedQuery}` : ''}`;
+
+    if (window.location.hash === targetHash) return true;
+
+    const routerTarget = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
+    if (typeof Knack?.router?.navigate === 'function') {
+        Knack.router.navigate(routerTarget, false);
+        Knack.setHashVars?.();
+        return true;
+    }
+
+    window.location.hash = targetHash;
+    return true;
 }
 
 /**
@@ -2365,8 +2448,11 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
     if (!slug) return '';
 
     const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
-    const recordPath = normalizedRecordId ? `/${normalizedRecordId}` : '';
-    const queryParams = new URLSearchParams();
+    const currentHash = knackValueResolver.toStringSafe(window.location.hash);
+    const currentPath = knackValueResolver.toStringSafe(currentHash.split('?')[0]).replace(/^#/, '').replace(/\/+$/, '');
+    const currentQuery = currentHash.includes('?') ? knackValueResolver.toStringSafe(currentHash.split('?').slice(1).join('?')) : '';
+    const queryParams = new URLSearchParams(currentQuery);
+    const targetPath = [currentPath, slug, normalizedRecordId].filter(Boolean).join('/');
 
     Object.entries(params && typeof params === 'object' ? params : {}).forEach(([key, value]) => {
         const paramKey = knackValueResolver.toStringSafe(key);
@@ -2376,7 +2462,7 @@ function bulkActionBuildHash(sceneSlug, { recordId = '', params = {} } = {}) {
     });
 
     const query = String(queryParams.toString() || '').trim();
-    return `#${slug}${recordPath}${query ? `?${query}` : ''}`;
+    return `#${targetPath}${query ? `?${query}` : ''}`;
 }
 
 /**
@@ -2546,29 +2632,6 @@ function bulkActionObjectOrEmpty(value) {
 }
 
 /**
- * Captures the current visible and empty-field form payload for update replication.
- * @param {Object} [options={}] - Capture options.
- * @returns {void}
- */
-function bulkActionCaptureEmptyFieldPayload({ sessionKey, viewElement, activeFormViewId = '' } = {}) {
-    if (!(viewElement instanceof Element)) return;
-
-    const latestState = bulkActionReadFormFlowState(sessionKey);
-    if (!latestState) return;
-    if (String(latestState.formMode || 'create').toLowerCase() !== 'update') return;
-
-    const includeFieldKeys = bulkActionGetFormFieldKeys(viewElement);
-    const submittedFieldPayload = bulkActionBuildVisibleFormRequestPayload(viewElement, includeFieldKeys, { includeEmpty: true });
-    const emptyFieldPayload = bulkActionBuildVisibleEmptyFieldPayload(viewElement, includeFieldKeys);
-    bulkActionMergeFormFlowState(sessionKey, {
-        activeFormViewId: knackNavigator.normalizeViewId(activeFormViewId) || latestState.activeFormViewId || '',
-        submittedFieldPayload,
-        emptyFieldPayload,
-        emptyFieldPayloadCapturedAt: Date.now()
-    }, latestState);
-}
-
-/**
  * Creates the initial run-state object used by basket progress UI.
  * @param {Object} [overrides={}] - Optional state overrides.
  * @returns {Object} Run-state object.
@@ -2664,31 +2727,6 @@ function bulkActionHasBatchWriteApi(api = {}, mode = 'update') {
     return mode === 'update'
         ? typeof api?.updateRecords === 'function'
         : typeof api?.createRecords === 'function';
-}
-
-/**
- * Resolves write concurrency metadata for progress reporting and logging.
- * @param {Object} [api={}] - API client.
- * @param {number} [total=0] - Total queued writes.
- * @returns {{configured: number, atOnce: number, queueActive: number, queuedWrites: number, total: number}} Concurrency metadata.
- */
-function bulkActionResolveApiConcurrency(api = {}, total = 0) {
-    const normalizedTotal = Math.max(0, Number(total || 0));
-    const queue = api?._writeQueue || {};
-    const configured = queue.current === Infinity
-        ? Infinity
-        : Math.max(1, Math.floor(queue.current || api?.options?.writeConcurrency || 1));
-    const atOnce = configured === Infinity
-        ? normalizedTotal
-        : Math.max(1, Math.min(normalizedTotal, configured));
-
-    return {
-        configured,
-        atOnce,
-        queueActive: Math.max(0, Number(queue.active || 0)),
-        queuedWrites: Array.isArray(queue.queue) ? queue.queue.length : 0,
-        total: normalizedTotal
-    };
 }
 
 /**
@@ -2828,19 +2866,46 @@ async function bulkActionReplicateFallback({ mode = 'create', operations = [], a
  * @returns {Array<string>} Form field ids.
  */
 function bulkActionGetFormFieldKeys(viewRef) {
-    const { viewElement, viewId } = bulkActionResolveViewContext(viewRef);
-    const viewFieldIds = knackNavigator.getViewFieldIds(viewId);
-
-    if (viewFieldIds.length) {
-        return viewFieldIds;
-    }
-
+    const { viewElement } = bulkActionResolveViewContext(viewRef);
     if (!viewElement) return [];
 
-    return bulkActionNormalizeFieldKeys(
-        Array.from(viewElement.querySelectorAll(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.formField))
-            .map((element) => String(element.id || '').replace(/^kn-input-/, ''))
-    );
+    const visibleFieldIds = Array.from(viewElement.querySelectorAll(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.formField))
+        .filter((element) => bulkActionIsVisibleFormField(element))
+        .map((element) => String(element.id || '').replace(/^kn-input-/, ''));
+
+    return bulkActionNormalizeFieldKeys(visibleFieldIds);
+}
+
+/**
+ * Returns true when an element or one of its descendants has a visible rendered box.
+ * @param {Element} element - DOM element to inspect.
+ * @returns {boolean} Whether the element can be seen by the user.
+ */
+function bulkActionElementHasVisibleBox(element) {
+    if (!(element instanceof Element)) return false;
+
+    const candidates = [
+        element,
+        ...Array.from(element.querySelectorAll('*'))
+    ];
+
+    return candidates.some((candidate) => {
+        if (!(candidate instanceof Element)) return false;
+        if (candidate.hidden) return false;
+        if (candidate.closest(`.${CLASS_HIDDEN}, .${CLASS_DISPLAY_NONE}, [hidden], [aria-hidden="true"]`)) return false;
+
+        const computedStyle = window.getComputedStyle ? window.getComputedStyle(candidate) : null;
+        if (computedStyle) {
+            if (computedStyle.display === 'none' || computedStyle.visibility === 'hidden' || computedStyle.opacity === '0') {
+                return false;
+            }
+        }
+
+        const rects = candidate.getClientRects();
+        if (!rects.length) return false;
+
+        return Array.from(rects).some((rect) => rect.width > 0 && rect.height > 0);
+    });
 }
 
 /**
@@ -2859,76 +2924,7 @@ function bulkActionIsVisibleFormField(element) {
         return false;
     }
 
-    return resolvedElement.getClientRects().length > 0;
-}
-
-/**
- * Returns true when a field wrapper contains a writable control.
- * @param {Element} fieldWrapper - Form field wrapper element.
- * @returns {boolean} Whether the field contains a writable control.
- */
-function bulkActionHasWritableFormControl(fieldWrapper) {
-    if (!(fieldWrapper instanceof Element)) return false;
-
-    return Boolean(fieldWrapper.querySelector(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.writableControl));
-}
-
-/**
- * Returns true when all writable controls in a field are empty.
- * @param {Element} fieldWrapper - Form field wrapper.
- * @param {string} [fieldType=''] - Knack field type.
- * @returns {boolean} Whether the field is empty.
- */
-function bulkActionIsFormFieldEmpty(fieldWrapper, fieldType = '') {
-    if (!(fieldWrapper instanceof Element)) return false;
-
-    let sawWritableControl = false;
-
-    const radioInputs = Array.from(fieldWrapper.querySelectorAll('input[type="radio"]:not([disabled])'));
-    if (radioInputs.length) {
-        sawWritableControl = true;
-        return !radioInputs.some((input) => input.checked);
-    }
-
-    const checkboxInputs = Array.from(fieldWrapper.querySelectorAll('input[type="checkbox"]:not([disabled])'));
-    if (checkboxInputs.length) {
-        sawWritableControl = true;
-        if (String(fieldType || '').trim().toLowerCase() === 'boolean' && checkboxInputs.length === 1) {
-            return !checkboxInputs[0].checked;
-        }
-        return !checkboxInputs.some((input) => input.checked);
-    }
-
-    const selectInputs = Array.from(fieldWrapper.querySelectorAll('select:not([disabled])'));
-    if (selectInputs.length) {
-        sawWritableControl = true;
-        const hasSelectedValue = selectInputs.some((select) => {
-            if (select.multiple) {
-                return Array.from(select.selectedOptions || []).some((option) => knackValueResolver.toStringSafe(option?.value).trim());
-            }
-            return knackValueResolver.toStringSafe(select.value).trim() !== '';
-        });
-        if (hasSelectedValue) return false;
-    }
-
-    const textInputs = Array.from(fieldWrapper.querySelectorAll(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.textInput));
-    if (textInputs.length) {
-        sawWritableControl = true;
-        if (textInputs.some((input) => knackValueResolver.toStringSafe(input.value).trim() !== '')) {
-            return false;
-        }
-    }
-
-    const richTextInput = fieldWrapper.querySelector(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.richText);
-    if (richTextInput instanceof Element) {
-        sawWritableControl = true;
-        if (knackValueResolver.toStringSafe(richTextInput.textContent).trim() !== '') {
-            return false;
-        }
-    }
-
-    // Distinguish between fields that are genuinely empty and wrappers that never exposed a writable control in the first place.
-    return sawWritableControl;
+    return bulkActionElementHasVisibleBox(resolvedElement);
 }
 
 /**
@@ -2959,150 +2955,29 @@ function bulkActionGetEmptyRequestValue(fieldWrapper, fieldType = '') {
 }
 
 /**
- * Builds the structured request value expected by Knack date-time fields.
- * @param {Element} fieldWrapper - Date-time field wrapper.
- * @returns {string|Object} Date-time request value.
- */
-function bulkActionBuildDateTimeRequestValue(fieldWrapper) {
-    const parts = getDateTimeParts(fieldWrapper);
-    const hasDate = knackValueResolver.toStringSafe(parts?.date);
-    const hasTime = knackValueResolver.toStringSafe(parts?.time);
-    if (!hasDate && !hasTime) return '';
-
-    const parsed = parseDateTimeParts(parts);
-    if (!parsed) {
-        return hasDate && hasTime ? `${hasDate} ${hasTime}`.trim() : (hasDate || hasTime);
-    }
-
-    const hours24 = parsed.getHours();
-    const minutes = String(parsed.getMinutes()).padStart(2, '0');
-    const amPm = hours24 >= 12 ? 'PM' : 'AM';
-    const hours12 = String((hours24 % 12) || 12).padStart(2, '0');
-
-    return {
-        date: parts.date,
-        date_formatted: parts.date,
-        hours: hours12,
-        minutes,
-        am_pm: amPm,
-        time: `${hours12}:${minutes} ${amPm}`
-    };
-}
-
-/**
- * Reads the current request-ready value from a visible form field.
- * @param {Element} fieldWrapper - Form field wrapper.
- * @param {string} [fieldType=''] - Knack field type.
- * @returns {*} Request-ready field value.
- */
-function bulkActionReadFormFieldRequestValue(fieldWrapper, fieldType = '') {
-    if (!(fieldWrapper instanceof Element)) return undefined;
-
-    const normalizedFieldType = String(fieldType || '').trim().toLowerCase();
-
-    if (normalizedFieldType === 'date_time') {
-        return bulkActionBuildDateTimeRequestValue(fieldWrapper);
-    }
-
-    const radioInputs = Array.from(fieldWrapper.querySelectorAll('input[type="radio"]:not([disabled])'));
-    if (radioInputs.length) {
-        const checked = radioInputs.find((input) => input.checked);
-        return checked ? checked.value : '';
-    }
-
-    const checkboxInputs = Array.from(fieldWrapper.querySelectorAll('input[type="checkbox"]:not([disabled])'));
-    if (checkboxInputs.length) {
-        if (normalizedFieldType === 'boolean' && checkboxInputs.length === 1) {
-            return checkboxInputs[0].checked;
-        }
-
-        const checkedValues = checkboxInputs.filter((input) => input.checked).map((input) => input.value).filter((value) => value !== '');
-        return checkboxInputs.length > 1 ? checkedValues : (checkedValues[0] || '');
-    }
-
-    const selectInput = fieldWrapper.querySelector('select:not([disabled])');
-    if (selectInput instanceof HTMLSelectElement) {
-        if (selectInput.multiple) {
-            return Array.from(selectInput.selectedOptions || []).map((option) => option.value).filter((value) => knackValueResolver.toStringSafe(value) !== '');
-        }
-        return selectInput.value;
-    }
-
-    const textInput = fieldWrapper.querySelector(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.textInput);
-    if (textInput instanceof HTMLInputElement || textInput instanceof HTMLTextAreaElement) {
-        return textInput.value;
-    }
-
-    const richTextInput = fieldWrapper.querySelector(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.richText);
-    if (richTextInput instanceof HTMLElement) {
-        return richTextInput.innerHTML || richTextInput.textContent || '';
-    }
-
-    return undefined;
-}
-
-/**
- * Builds a request payload from the visible fields in a form.
- * @param {*} viewRef - View id, key, element, or view object.
- * @param {Array<string|number>} [includeFieldKeys=[]] - Field ids to include.
+ * Builds an update payload from the knack-form-submit record for the visible form fields.
+ * Visible fields missing from the submit payload are written as explicit empty values.
  * @param {Object} [options={}] - Payload options.
- * @returns {Object} Request payload.
+ * @returns {Object} Request payload built from the submit event record.
  */
-function bulkActionBuildVisibleFormRequestPayload(viewRef, includeFieldKeys = [], { includeEmpty = false } = {}) {
-    const { viewElement } = bulkActionResolveViewContext(viewRef);
+function bulkActionBuildSubmitEventRecordPayload({ record = null, includeFieldKeys = [], formViewRef = null } = {}) {
     const normalizedFieldKeys = bulkActionNormalizeFieldKeys(includeFieldKeys);
+    if (!record || typeof record !== 'object' || !normalizedFieldKeys.length) return {};
 
-    if (!viewElement || !normalizedFieldKeys.length) return {};
+    const { viewElement } = bulkActionResolveViewContext(formViewRef);
 
     return normalizedFieldKeys.reduce((payload, fieldKey) => {
-        const fieldWrapper = knackNavigator.getFieldWrapper(viewElement, fieldKey);
         const fieldType = knackValueResolver.getFieldType(fieldKey);
+        const requestValue = knackValueResolver.resolve(record, fieldKey, { mode: 'request', fallback: undefined });
 
-        if (!fieldWrapper || !bulkActionIsVisibleFormField(fieldWrapper) || !bulkActionHasWritableFormControl(fieldWrapper)) {
+        if (requestValue !== undefined) {
+            payload[fieldKey] = requestValue;
             return payload;
         }
 
-        const requestValue = bulkActionReadFormFieldRequestValue(fieldWrapper, fieldType);
-        if (requestValue === undefined) {
-            return payload;
-        }
-
-        const isEmptyString = typeof requestValue === 'string' && requestValue === '';
-        const isEmptyArray = Array.isArray(requestValue) && requestValue.length === 0;
-        if (!includeEmpty && (isEmptyString || isEmptyArray)) {
-            return payload;
-        }
-
-        payload[fieldKey] = requestValue;
-        return payload;
-    }, {});
-}
-
-/**
- * Builds a payload of visible fields that are currently empty.
- * @param {*} viewRef - View id, key, element, or view object.
- * @param {Array<string|number>} [includeFieldKeys=[]] - Field ids to inspect.
- * @returns {Object} Empty-field payload.
- */
-function bulkActionBuildVisibleEmptyFieldPayload(viewRef, includeFieldKeys = []) {
-    const { viewElement } = bulkActionResolveViewContext(viewRef);
-    const normalizedFieldKeys = bulkActionNormalizeFieldKeys(includeFieldKeys);
-
-    if (!viewElement || !normalizedFieldKeys.length) return {};
-
-    return normalizedFieldKeys.reduce((payload, fieldKey) => {
-        const fieldWrapper = knackNavigator.getFieldWrapper(viewElement, fieldKey);
-        const fieldType = knackValueResolver.getFieldType(fieldKey);
-
-        if (!fieldWrapper || !bulkActionIsVisibleFormField(fieldWrapper) || !bulkActionHasWritableFormControl(fieldWrapper)) {
-            return payload;
-        }
-
-        if (!bulkActionIsFormFieldEmpty(fieldWrapper, fieldType)) {
-            return payload;
-        }
-
+        const fieldWrapper = viewElement ? knackNavigator.getFieldWrapper(viewElement, fieldKey) : null;
         payload[fieldKey] = bulkActionGetEmptyRequestValue(fieldWrapper, fieldType);
+
         return payload;
     }, {});
 }
@@ -3125,30 +3000,17 @@ function bulkActionBuildDynamicRequestPayload(record, { excludeFieldKeys = [], i
  * @param {Object} [options={}] - Replication payload options.
  * @returns {Object} Base replication payload.
  */
-function bulkActionBuildReplicateBasePayload({ mode = 'create', bulkState = {}, formViewRef = null, record = null, includeFieldKeys = [], excludeFieldKeys = [] } = {}) {
+function bulkActionBuildReplicateBasePayload({ mode = 'create', formViewRef = null, record = null, includeFieldKeys = [], excludeFieldKeys = [] } = {}) {
     const dynamicPayload = bulkActionBuildDynamicRequestPayload(record, { includeFieldKeys, excludeFieldKeys });
     if (mode !== 'update') {
         return dynamicPayload;
     }
 
-    const submittedFieldPayload = {
-        ...bulkActionObjectOrEmpty(bulkState?.submittedFieldPayload),
-        ...bulkActionBuildVisibleFormRequestPayload(formViewRef, includeFieldKeys, { includeEmpty: true })
-    };
-    const emptyFieldPayload = {
-        ...bulkActionObjectOrEmpty(bulkState?.emptyFieldPayload),
-        ...bulkActionBuildVisibleEmptyFieldPayload(formViewRef, includeFieldKeys)
-    };
-
-    return Object.keys(submittedFieldPayload).length
-        ? {
-            ...submittedFieldPayload,
-            ...emptyFieldPayload
-        }
-        : {
-            ...dynamicPayload,
-            ...emptyFieldPayload
-        };
+    return bulkActionBuildSubmitEventRecordPayload({
+        record,
+        includeFieldKeys,
+        formViewRef
+    });
 }
 
 /**
@@ -4498,6 +4360,7 @@ class BulkActionGridController {
         const firstItem = this.basketItems.find((item) => item.recordId === firstRecordId) || null;
         const sessionKey = bulkActionBuildFormFlowSessionKey(this.namespace, action.target);
         const navToken = bulkActionMakeToken();
+        const sourceHashState = bulkActionGetCurrentHashState();
 
         bulkActionWriteFormFlowState(sessionKey, {
             sourceViewId: this.viewId,
@@ -4508,6 +4371,8 @@ class BulkActionGridController {
             formMode: String(action.operation || 'create').toLowerCase() === 'update' ? 'update' : 'create',
             sceneSlug,
             navToken,
+            sourceHashPath: sourceHashState.path,
+            sourceHashQuery: sourceHashState.query,
             createdAt: Date.now(),
             activeFormViewId: ''
         });
@@ -4623,8 +4488,15 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         : bulkActionResolveConnectionFieldRecordId(record, recordFieldId) || recordIds[0] || '';
 
     const formViewRef = options.formViewId || action.target;
-    const includeFieldKeys = mode === 'update' ? bulkActionGetFormFieldKeys(action.target) : [];
+    const includeFieldKeys = mode === 'update'
+        ? bulkActionNormalizeFieldKeys(bulkState?.formFieldKeys || bulkActionGetFormFieldKeys(formViewRef))
+        : [];
     const excludeFieldKeys = mode === 'create' && recordFieldId ? [recordFieldId] : [];
+
+    if (mode === 'update' && !includeFieldKeys.length) {
+        throw new Error('Bulk form replication could not determine the visible form fields for update mode.');
+    }
+
     const basePayload = bulkActionBuildReplicateBasePayload({
         mode,
         bulkState,
@@ -4633,6 +4505,8 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         includeFieldKeys,
         excludeFieldKeys
     });
+    const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || knackNavigator.getSceneInfoForView(action?.target)?.key);
+    const apiViewId = knackNavigator.normalizeViewId(action?.target);
 
     if (processedRecordId) {
         sourceStore.removeItems([processedRecordId]);
@@ -4664,8 +4538,6 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         sourceController.clearBasketItemFailures(recordIds);
     }
 
-    const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || knackNavigator.getSceneInfoForView(action?.target)?.key);
-    const apiViewId = knackNavigator.normalizeViewId(action?.target);
     const failedIds = [];
     const { preparedOperations, failedIds: preparationFailedIds } = await bulkActionPrepareReplicateOperations({
         mode,
@@ -4720,22 +4592,6 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
 
     // Prefer batch writes when available so progress can be tracked across queued writes; otherwise fall back to one-record-at-a-time replication.
     const canUseBatchApi = bulkActionHasBatchWriteApi(apiClient, mode);
-    const concurrencyInfo = bulkActionResolveApiConcurrency(apiClient, preparedOperations.length);
-    bulkActionLog('Starting bulk form replication', {
-        mode,
-        sourceViewId,
-        targetViewId: apiViewId,
-        totalSelected: recordIds.length,
-        alreadyProcessed: processedRecordId ? 1 : 0,
-        queuedForReplication: preparedOperations.length,
-        preparationFailures: preparationFailedIds.length,
-        method: canUseBatchApi ? 'batch-api' : 'fallback-sequential',
-        apiSource: apiClient._source || 'unknown',
-        concurrencyConfigured: concurrencyInfo.configured,
-        recordsAtOnce: canUseBatchApi ? concurrencyInfo.atOnce : 1,
-        queueActive: concurrencyInfo.queueActive,
-        queuedWritesAhead: concurrencyInfo.queuedWrites
-    });
 
     if (preparedOperations.length) {
         if (canUseBatchApi) {
@@ -4781,6 +4637,12 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
             sourceController.basketModal.close();
         }
     }
+
+    await bulkActionCloseModalIfOpen();
+    bulkActionRestoreHashState({
+        path: bulkState?.sourceHashPath,
+        query: bulkState?.sourceHashQuery
+    });
 
     if (typeof apiClient.refreshView === 'function' && document.getElementById(sourceViewId)) {
         try {
@@ -4866,7 +4728,8 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
 
         bulkActionMergeFormFlowState(sessionKey, {
             tokenVerifiedAt: Date.now(),
-            activeFormViewId: renderedViewId
+            activeFormViewId: renderedViewId,
+            formFieldKeys: bulkActionGetFormFieldKeys(viewElement)
         }, bulkState);
 
         bulkActionRenderFormNotice({
@@ -4878,19 +4741,14 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
 
         if (String(bulkState.formMode || 'create').toLowerCase() === 'update') {
             const form = viewElement.querySelector('form');
-            if (form && !form.dataset.knackBulkEmptyCaptureBound) {
-                const captureFormFieldPayload = () => bulkActionCaptureEmptyFieldPayload({
-                    sessionKey,
-                    viewElement,
-                    activeFormViewId: renderedViewId
-                });
-
-                form.addEventListener('input', captureFormFieldPayload, true);
-                form.addEventListener('change', captureFormFieldPayload, true);
-                form.addEventListener('submit', captureFormFieldPayload, true);
-                form.dataset.knackBulkEmptyCaptureBound = 'true';
-
-                window.setTimeout(captureFormFieldPayload, 0);
+            if (form && !form.dataset.knackBulkFieldKeysBound) {
+                form.addEventListener('submit', () => {
+                    bulkActionMergeFormFlowState(sessionKey, {
+                        activeFormViewId: renderedViewId,
+                        formFieldKeys: bulkActionGetFormFieldKeys(viewElement)
+                    });
+                }, true);
+                form.dataset.knackBulkFieldKeysBound = 'true';
             }
         }
 
@@ -4963,7 +4821,30 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
         if (activeFormViewId && submitViewId !== activeFormViewId) return;
 
-        bulkActionClearFormFlowState(sessionKey);
+        const submitViewElement = bulkActionFindViewRoot(submitViewId);
+        const sourceViewId = knackNavigator.normalizeViewId(bulkState.sourceViewId);
+        const sourceController = sourceViewId ? bulkActionControllerStore.get(sourceViewId) || null : null;
+        const latestBulkState = (() => {
+            const persistedState = bulkActionReadFormFlowState(sessionKey) || bulkState;
+            if (String(bulkState.formMode || 'create').toLowerCase() !== 'update') {
+                return persistedState;
+            }
+
+            const liveSubmitFieldKeys = (submitViewElement instanceof Element)
+                ? bulkActionGetFormFieldKeys(submitViewElement)
+                : [];
+            const submitFieldKeys = bulkActionNormalizeFieldKeys(
+                liveSubmitFieldKeys.length
+                    ? liveSubmitFieldKeys
+                    : persistedState?.formFieldKeys
+            );
+
+            return {
+                ...persistedState,
+                activeFormViewId: submitViewId,
+                formFieldKeys: submitFieldKeys
+            };
+        })();
 
         const resolvedApi = bulkActionResolveReplicationApi(config.action.api);
         const mode = String(bulkState.formMode || 'create').toLowerCase() === 'update' ? 'update' : 'create';
@@ -4971,6 +4852,8 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
             ? (typeof resolvedApi.updateRecords === 'function' || typeof resolvedApi.updateRecord === 'function')
             : (typeof resolvedApi.createRecords === 'function' || typeof resolvedApi.createRecord === 'function');
         if (!hasRequiredApi) {
+            bulkActionClearFormFlowState(sessionKey);
+            sourceController?.resetFormActionState?.();
             bulkActionNotify(`Bulk action API callbacks are missing ${mode} handlers.`, 'error', config.action);
             return;
         }
@@ -4982,13 +4865,17 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         };
 
         try {
+            await bulkActionCloseModalIfOpen();
+
             const result = await replicateBulkActionSubmittedRecord({
                 action: actionWithApi,
-                bulkState: { ...bulkState, namespace },
+                bulkState: { ...latestBulkState, namespace },
                 record,
                 api: resolvedApi,
                 options: { ...config.action, namespace, formViewId: submitViewId }
             });
+
+            bulkActionClearFormFlowState(sessionKey);
 
             const successCount = Math.max(0, Number(result?.total || 0) - Number(result?.failedIds?.length || 0));
             if (result?.failedIds?.length) {
@@ -4997,6 +4884,8 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
                 bulkActionNotify(`Completed ${successCount} item(s).`, 'success', config.action);
             }
         } catch (error) {
+            bulkActionClearFormFlowState(sessionKey);
+            sourceController?.resetFormActionState?.();
             bulkActionReportError(error, { targetViewId: submitViewId, sourceViewId: bulkState.sourceViewId }, 'Bulk form submit replicate failed', config.action);
             bulkActionNotify('Bulk form replication failed.', 'error', config.action);
         }
@@ -11120,7 +11009,7 @@ class KnackAPI {
                 }
 
                 // Calendar views: use renderRecords()
-                                if (viewType === 'calendar') {
+                if (viewType === 'calendar') {
                     if (typeof view.renderRecords === 'function') {
                         view.renderRecords();
                         Knack.hideSpinner?.();
@@ -11132,9 +11021,12 @@ class KnackAPI {
                     }
                 }
 
-                // Search views: skip fetch/render, just use renderResults
+                // Search views: follow the fuller KTL refresh path so the search form and results stay in sync.
                 if (viewType === 'search') {
                     if (typeof view.renderResults === 'function') {
+                        view.model.trigger?.('change');
+                        view.renderForm?.();
+                        view.renderView?.();
                         view.renderResults();
                         this._log('Search view refreshed via renderResults', viewId);
                         return resolve();
