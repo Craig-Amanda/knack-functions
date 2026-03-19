@@ -2601,6 +2601,52 @@ function bulkActionResolveViewContext(viewRef) {
 }
 
 /**
+ * Resolves a view content host and ensures a mount element exists inside it.
+ * @param {*} viewRef - View id, key, element, or view object.
+ * @param {Object} [options={}] - Mount resolution options.
+ * @param {string} [options.contentHostSelector=''] - Optional selector used to scope where the mount lives.
+ * @param {string} [options.mountSelector=''] - Selector for an existing mount element.
+ * @param {string} [options.mountClassName=''] - Class name applied when creating the mount element.
+ * @param {string} [options.mountTagName='div'] - Tag name used when creating the mount element.
+ * @param {boolean} [options.clearContent=true] - Whether to clear the host before creating the mount element.
+ * @returns {HTMLElement|null} Mount element.
+ */
+function getViewMountElement(viewRef, {
+    contentHostSelector = '',
+    mountSelector = '',
+    mountClassName = '',
+    mountTagName = 'div',
+    clearContent = true
+} = {}) {
+    const { viewElement } = bulkActionResolveViewContext(viewRef);
+    if (!(viewElement instanceof Element)) return null;
+
+    const normalizedHostSelector = knackValueResolver.toStringSafe(contentHostSelector);
+    const normalizedMountSelector = knackValueResolver.toStringSafe(mountSelector);
+    const normalizedMountClassName = knackValueResolver.toStringSafe(mountClassName).trim();
+    const normalizedMountTagName = knackValueResolver.toStringSafe(mountTagName).trim().toLowerCase() || 'div';
+    const contentHost = normalizedHostSelector ? viewElement.querySelector(normalizedHostSelector) || viewElement : viewElement;
+
+    let mountElement = normalizedMountSelector ? contentHost.querySelector(normalizedMountSelector) : null;
+    if (mountElement instanceof HTMLElement) {
+        return mountElement;
+    }
+
+    if (clearContent) {
+        contentHost.innerHTML = '';
+    }
+
+    mountElement = document.createElement(normalizedMountTagName);
+
+    if (normalizedMountClassName) {
+        mountElement.className = normalizedMountClassName;
+    }
+
+    contentHost.appendChild(mountElement);
+    return mountElement;
+}
+
+/**
  * Normalises and deduplicates field ids used by form replication helpers.
  * @param {Array<string|number>} [fieldKeys=[]] - Field ids or field keys.
  * @returns {Array<string>} Normalised field ids.
@@ -7187,7 +7233,8 @@ $(document).keydown(function (e) {
 });
 
 function escapeHTML(text) {
-    return text.replace(/[&<>"']/g, function (match) {
+    const normalizedText = String(text ?? '');
+    return normalizedText.replace(/[&<>"']/g, function (match) {
         return `&#${match.charCodeAt(0)};`;
     });
 }
@@ -7919,6 +7966,75 @@ function getDateUKFormat(inputDate) {
         return '';
     }
     return date.toLocaleDateString('en-GB');
+}
+
+/** Format Date as a time string.
+ * @param {Date|string|number} inputDate - Date object or parsable date value.
+ * @param {'24hr'|'ampm'|'12hr'|'12hour'|'24hour'|'24'} [timeFormat='24hr'] - Output time format.
+ * @returns {string} Formatted time string or '' if invalid.
+ */
+function formatTime(inputDate, timeFormat = '24hr') {
+    const date = inputDate instanceof Date ? inputDate : parseDateObject(inputDate);
+    if (!date) {
+        console.warn('formatTime: cannot parse date:', inputDate);
+        return '';
+    }
+
+    const normalizedFormat = String(timeFormat || '24hr').trim().toLowerCase();
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+
+    if (['ampm', '12hr', '12hour'].includes(normalizedFormat)) {
+        const hours = date.getHours();
+        const displayHours = hours % 12 || 12;
+        const meridiem = hours >= 12 ? 'pm' : 'am';
+        return `${displayHours}:${minutes}${meridiem}`;
+    }
+
+    if (!['24hr', '24hour', '24'].includes(normalizedFormat)) {
+        console.warn('formatTime: unsupported time format, falling back to 24hr:', timeFormat);
+    }
+
+    return `${String(date.getHours()).padStart(2, '0')}:${minutes}`;
+}
+
+/** Format Date as a weekday label.
+ * @param {Date|string|number} inputDate - Date object or parsable date value.
+ * @param {string} [locale='en-GB'] - Locale used for formatting.
+ * @returns {string} Weekday label or '' if invalid.
+ */
+function getWeekdayName(inputDate, locale = 'en-GB') {
+    const date = inputDate instanceof Date ? inputDate : parseDateObject(inputDate);
+    if (!date) {
+        console.warn('getWeekdayName: cannot parse date:', inputDate);
+        return '';
+    }
+
+    return date.toLocaleDateString(locale, { weekday: 'long' });
+}
+
+/** Format a numeric value as currency.
+ * @param {unknown} value - Raw currency value.
+ * @param {{ locale?: string, currency?: string }} [options={}] - Formatting options.
+ * @returns {string} Formatted currency text or '' if invalid.
+ */
+function formatCurrency(value, options = {}) {
+    const numericValue = Number(String(value ?? '').replace(/[^\d.-]/g, ''));
+    if (!Number.isFinite(numericValue)) {
+        return '';
+    }
+
+    const locale = String(options.locale || 'en-GB').trim() || 'en-GB';
+    const currency = String(options.currency || 'GBP').trim().toUpperCase() || 'GBP';
+
+    try {
+        return new Intl.NumberFormat(locale, {
+            style: 'currency',
+            currency,
+        }).format(numericValue);
+    } catch (error) {
+        console.warn('formatCurrency: unable to format currency.', { value, options, error });
+        return '';
+    }
 }
 
 /**
