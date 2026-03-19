@@ -7970,28 +7970,28 @@ function getDateUKFormat(inputDate) {
 
 /** Format Date as a time string.
  * @param {Date|string|number} inputDate - Date object or parsable date value.
- * @param {'24hr'|'ampm'|'12hr'|'12hour'|'24hour'|'24'} [timeFormat='24hr'] - Output time format.
+ * @param {12|24|'12'|'24'} [timeFormat=24] - Output time format.
  * @returns {string} Formatted time string or '' if invalid.
  */
-function formatTime(inputDate, timeFormat = '24hr') {
+function formatTime(inputDate, timeFormat = 24) {
     const date = inputDate instanceof Date ? inputDate : parseDateObject(inputDate);
     if (!date) {
         console.warn('formatTime: cannot parse date:', inputDate);
         return '';
     }
 
-    const normalizedFormat = String(timeFormat || '24hr').trim().toLowerCase();
+    const normalizedFormat = String(timeFormat || 24).trim();
     const minutes = String(date.getMinutes()).padStart(2, '0');
 
-    if (['ampm', '12hr', '12hour'].includes(normalizedFormat)) {
+    if (normalizedFormat === '12') {
         const hours = date.getHours();
         const displayHours = hours % 12 || 12;
         const meridiem = hours >= 12 ? 'pm' : 'am';
         return `${displayHours}:${minutes}${meridiem}`;
     }
 
-    if (!['24hr', '24hour', '24'].includes(normalizedFormat)) {
-        console.warn('formatTime: unsupported time format, falling back to 24hr:', timeFormat);
+    if (normalizedFormat !== '24') {
+        console.warn('formatTime: unsupported time format, falling back to 24:', timeFormat);
     }
 
     return `${String(date.getHours()).padStart(2, '0')}:${minutes}`;
