@@ -6173,6 +6173,50 @@ function addInputEventListener(target, callback, options = {}) {
 }
 
 /**
+ * Attach click and focus behaviour that opens the browser's native picker for date inputs when supported.
+ * Safe no-op when the target is not a date input or the platform does not expose `showPicker()`.
+ *
+ * Supports targeting via:
+ *  - CSS selector string
+ *  - HTMLElement
+ *  - NodeList / array of elements
+ *
+ * @param {HTMLElement|string|Array|NodeList} inputOrSelector - Target date input(s).
+ * @returns {Array<HTMLInputElement>} Inputs wired with native picker behaviour.
+ */
+function attachNativeDateInputPicker(inputOrSelector) {
+    const resolveElements = () => {
+        if (typeof inputOrSelector === 'string') return Array.from(document.querySelectorAll(inputOrSelector));
+        if (NodeList.prototype.isPrototypeOf(inputOrSelector) || Array.isArray(inputOrSelector)) return Array.from(inputOrSelector);
+        if (inputOrSelector instanceof Element) return [inputOrSelector];
+        return [];
+    };
+
+    return resolveElements().filter((inputEl) => {
+        if (!(inputEl instanceof HTMLInputElement)) return false;
+        if (String(inputEl.type || '').toLowerCase() !== 'date') return false;
+        if (inputEl.dataset.knackNativeDatePickerAttached === 'true') return true;
+
+        const openPicker = () => {
+            if (typeof inputEl.showPicker !== 'function' || inputEl.disabled || inputEl.readOnly) {
+                return;
+            }
+
+            try {
+                inputEl.showPicker();
+            } catch (_) {
+                // Ignore browser restrictions and unsupported invocation contexts.
+            }
+        };
+
+        inputEl.addEventListener('click', openPicker);
+        inputEl.addEventListener('focus', openPicker);
+        inputEl.dataset.knackNativeDatePickerAttached = 'true';
+        return true;
+    });
+}
+
+/**
  * Enhance a jQuery UI datepicker/timepicker input to show month/year selectors, optional date/time bounds, and apply styling.
  * Safe no-op when required plugins are not present or the input lacks an initialized picker.
  *
