@@ -7283,6 +7283,712 @@ function escapeHTML(text) {
     });
 }
 
+/**
+ * Renders a generic interactive table into a Knack view and provides a small controller API.
+ *
+ * Use cases:
+ * - Render prefilled data in a table
+ * - Configure per-column editability
+ * - Support typed editors (text, date, number, select, checkbox)
+ * - Receive change callbacks whenever a cell is updated
+ *
+ * @param {Object} config - Table configuration.
+ * @param {string} config.viewId - View id where the table should be inserted (e.g. 'view_2214').
+ * @param {string} [config.containerSelector='.view-content'] - Selector inside the view for insertion.
+ * @param {string} [config.tableClassName=''] - One or more space-separated CSS classes appended to the default 'kn-table knTable' classes (e.g. 'is-bordered my-class another-class').
+ * @param {string} [config.dateLocale='uk'] - Date locale for picker format and slash-separated date interpretation.
+ *   'uk' (default): dd/mm/yyyy display; picker format 'dd/mm/yy'.
+ *   'us': mm/dd/yyyy display; picker format 'mm/dd/yy'.
+ *   This sets the default column dateFormat and teaches the internal date converters to read/write
+ *   the correct field order. Individual columns can still override dateFormat directly.
+ * @param {'none'|'manual'|'auto'} [config.saveMode='manual'] - Save behaviour. `manual` renders a submit button, `auto` is reserved for save-as-you-go flows, `none` disables built-in save UI.
+ * @param {string} [config.saveButtonText='Save'] - Text shown on the manual submit button.
+ * @param {string} [config.saveButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-primary` button classes.
+ * @param {Function|null} [config.onSubmit=null] - Called when the manual submit button is clicked or controller.submit() is invoked.
+ * @param {Array<{header?: string, key?: string|number, type?: string, editable?: boolean|Function, options?: Array|Function, className?: string, inputClassName?: string, align?: string, maxWidth?: string|number|null, allowHtml?: boolean, display?: Function, parse?: Function, openDateHintKey?: string, minDate?: string|Date|null, maxDate?: string|Date|null, dateFormat?: string}>} [config.columns=[]] - Column schema. Select options may be a static array, a function returning an array, or an async function/Promise resolving to an array. Select options are fetched once per column and cached for the current table instance.
+ * @param {Array<string>} [config.headers=[]] - Optional headers when columns are omitted.
+ * @param {Array<Object|Array>} [config.rows=[]] - Prefilled row data.
+ * @param {Function|null} [config.onChange=null] - Called after a cell value changes.
+ * @param {Function|null} [config.onRenderComplete=null] - Called after initial render.
+ * @returns {{getData: Function, setData: Function, updateCell: Function, destroy: Function}|null}
+ */
+function renderInteractiveTable(config = {}) {
+    const settings = {
+        viewId: '',
+        containerSelector: '.view-content',
+        tableClassName: '',
+        dateLocale: 'uk',
+        saveMode: 'manual',
+        saveButtonText: 'Save',
+        saveButtonClassName: '',
+        columns: [],
+        headers: [],
+        rows: [],
+        onChange: null,
+        onSubmit: null,
+        onRenderComplete: null,
+        ...config,
+    };
+
+    const viewId = String(settings.viewId || '').trim();
+    if (!viewId) {
+        console.warn('renderInteractiveTable: missing viewId.');
+        return null;
+    }
+
+    const viewEl = document.getElementById(viewId);
+    if (!viewEl) {
+        console.warn('renderInteractiveTable: view element not found:', viewId);
+        return null;
+    }
+
+    const host = settings.containerSelector
+        ? (viewEl.querySelector(settings.containerSelector) || viewEl)
+        : viewEl;
+
+    const cloneRow = (row) => {
+        if (Array.isArray(row)) return row.slice();
+        if (row && typeof row === 'object') return { ...row };
+        return {};
+    };
+
+    let rowsData = Array.isArray(settings.rows) ? settings.rows.map(cloneRow) : [];
+
+    const normaliseColumns = () => {
+        if (Array.isArray(settings.columns) && settings.columns.length) {
+            return settings.columns.map((column, index) => ({
+                header: '',
+                key: index,
+                type: 'text',
+                editable: false,
+                options: [],
+                className: '',
+                inputClassName: '',
+                align: 'left',
+                maxWidth: null,
+                allowHtml: false,
+                display: null,
+                parse: null,
+                openDateHintKey: '',
+                minDate: null,
+                maxDate: null,
+                dateFormat: settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy',
+                ...column,
+            }));
+        }
+
+        const headers = Array.isArray(settings.headers) ? settings.headers : [];
+        return headers.map((header, index) => ({
+            header: String(header || ''),
+            key: index,
+            type: 'text',
+            editable: false,
+            options: [],
+            className: '',
+            inputClassName: '',
+            align: 'left',
+            maxWidth: null,
+            allowHtml: false,
+            display: null,
+            parse: null,
+            openDateHintKey: '',
+            minDate: null,
+            maxDate: null,
+            dateFormat: settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy',
+        }));
+    };
+
+    const columns = normaliseColumns();
+    const colIndexByKey = new Map(columns.map((col, index) => [String(col.key), index]));
+    const selectOptionsCache = new Map();
+    let isSubmitting = false;
+    let controller = null;
+
+    const toCssSize = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return `${value}px`;
+        }
+        const text = String(value ?? '').trim();
+        return text || '';
+    };
+
+    const getCellValue = (row, column, colIndex) => {
+        if (typeof column.getValue === 'function') {
+            return column.getValue(row, colIndex);
+        }
+        if (Array.isArray(row)) {
+            const idx = Number(column.key);
+            return Number.isFinite(idx) ? row[idx] : row[colIndex];
+        }
+        return row?.[column.key];
+    };
+
+    const setCellValue = (row, column, colIndex, value) => {
+        if (Array.isArray(row)) {
+            const idx = Number(column.key);
+            if (Number.isFinite(idx)) {
+                row[idx] = value;
+            } else {
+                row[colIndex] = value;
+            }
+            return;
+        }
+        row[column.key] = value;
+    };
+
+    const isEditableCell = (column, row, rowIndex) => {
+        if (typeof column.editable === 'function') {
+            try {
+                return !!column.editable(row, rowIndex, rowsData);
+            } catch (_) {
+                return false;
+            }
+        }
+        return !!column.editable;
+    };
+
+    /**
+     * Converts a date value to the ISO yyyy-mm-dd string required by <input type="date">.
+     * Interprets slash-separated dates according to the table's dateLocale setting.
+     */
+    const toIsoDate = (value) => {
+        const text = String(value || '').trim();
+        if (!text) return '';
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(text)) {
+            const parts = text.split('/');
+            // US: mm/dd/yyyy → yyyy-mm-dd; UK: dd/mm/yyyy → yyyy-mm-dd
+            return settings.dateLocale === 'us'
+                ? `${parts[2]}-${parts[0]}-${parts[1]}`
+                : `${parts[2]}-${parts[1]}-${parts[0]}`;
+        }
+        const parsed = parseDateObject(text);
+        if (!parsed) return '';
+        const day = String(parsed.getDate()).padStart(2, '0');
+        const month = String(parsed.getMonth() + 1).padStart(2, '0');
+        const year = parsed.getFullYear();
+        return `${year}-${month}-${day}`;
+    };
+
+    /**
+     * Converts a date value to the locale display format.
+     * UK (default): dd/mm/yyyy. US: mm/dd/yyyy.
+     * Accepts ISO strings (yyyy-mm-dd), already-formatted slash dates, or anything
+     * parseable by getDateUKFormat as a last resort.
+     */
+    const toDisplayDate = (value) => {
+        const text = String(value || '').trim();
+        if (!text) return '';
+        // Already a slash-separated date in the expected locale format — pass through.
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(text)) return text;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+            const parts = text.split('-');
+            // US: yyyy-mm-dd → mm/dd/yyyy; UK: yyyy-mm-dd → dd/mm/yyyy
+            return settings.dateLocale === 'us'
+                ? `${parts[1]}/${parts[2]}/${parts[0]}`
+                : `${parts[2]}/${parts[1]}/${parts[0]}`;
+        }
+        return getDateUKFormat(text) || text;
+    };
+
+    const parseCellValue = (rawValue, column, row, rowIndex) => {
+        const baseValue = (() => {
+            if (column.type === 'date') return toDisplayDate(rawValue);
+            if (column.type === 'number') {
+                const normalised = String(rawValue || '').trim();
+                if (!normalised) return '';
+                const parsed = Number(normalised);
+                return Number.isFinite(parsed) ? parsed : normalised;
+            }
+            if (column.type === 'checkbox') return !!rawValue;
+            return String(rawValue ?? '');
+        })();
+
+        if (typeof column.parse === 'function') {
+            try {
+                return column.parse(baseValue, row, rowIndex, rowsData);
+            } catch (_) {
+                return baseValue;
+            }
+        }
+        return baseValue;
+    };
+
+    const formatCellValue = (value, column, row, rowIndex) => {
+        if (typeof column.display === 'function') {
+            try {
+                return String(column.display(value, row, rowIndex, rowsData) ?? '');
+            } catch (_) {
+                return '';
+            }
+        }
+
+        if (column.type === 'checkbox') {
+            return value ? 'Yes' : 'No';
+        }
+
+        if (column.type === 'date') {
+            return toDisplayDate(value);
+        }
+
+        return String(value ?? '');
+    };
+
+    const normaliseSelectOptions = (rawOptions) => {
+        const optionsArray = Array.isArray(rawOptions) ? rawOptions : [];
+        return optionsArray.map((item) => {
+            if (item && typeof item === 'object' && 'value' in item) {
+                return {
+                    value: String(item.value ?? ''),
+                    label: String(item.label ?? item.value ?? ''),
+                };
+            }
+            return {
+                value: String(item ?? ''),
+                label: String(item ?? ''),
+            };
+        });
+    };
+
+    const resolveSelectOptions = async (column, row, rowIndex, colIndex) => {
+        const cacheKey = String(colIndex);
+        if (selectOptionsCache.has(cacheKey)) {
+            return selectOptionsCache.get(cacheKey);
+        }
+
+        try {
+            const rawOptions = typeof column.options === 'function'
+                ? column.options(row, rowIndex, rowsData)
+                : column.options;
+            const resolvedOptions = await Promise.resolve(rawOptions);
+            const normalisedOptions = normaliseSelectOptions(resolvedOptions);
+            selectOptionsCache.set(cacheKey, normalisedOptions);
+            return normalisedOptions;
+        } catch (err) {
+            console.error('renderInteractiveTable select options error:', err);
+            return [];
+        }
+    };
+
+    const tryOpenSelectMenu = (selectEl) => {
+        if (!selectEl || selectEl.disabled) return;
+
+        const open = () => {
+            try {
+                if (typeof selectEl.showPicker === 'function') {
+                    selectEl.showPicker();
+                    return;
+                }
+            } catch (_) {}
+
+            try {
+                selectEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+            } catch (_) {}
+
+            try {
+                selectEl.click();
+            } catch (_) {}
+        };
+
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(open);
+            return;
+        }
+
+        setTimeout(open, 0);
+    };
+
+    const getCellElement = (rowIndex, colIndex) => {
+        return host.querySelector(`td.kfInteractiveTable__cell[data-row-index="${rowIndex}"][data-col-index="${colIndex}"]`);
+    };
+
+    const emitChange = (payload) => {
+        if (typeof settings.onChange !== 'function') return;
+        try {
+            settings.onChange(payload);
+        } catch (err) {
+            console.error('renderInteractiveTable onChange error:', err);
+        }
+    };
+
+    const renderCell = (cell, rowIndex, colIndex) => {
+        if (!cell) return;
+        const column = columns[colIndex];
+        const row = rowsData[rowIndex];
+        const value = getCellValue(row, column, colIndex);
+        const formatted = formatCellValue(value, column, row, rowIndex);
+        cell.innerHTML = column.allowHtml ? formatted : escapeHTML(formatted);
+    };
+
+    const renderTable = () => {
+        const tableClass = `kn-table knTable is-bordered is-striped ${String(settings.tableClassName || '').trim()}`.trim();
+        const saveMode = String(settings.saveMode || 'none').trim().toLowerCase();
+        const showSubmitButton = saveMode === 'manual';
+        const saveButtonText = String(settings.saveButtonText || 'Save').trim() || 'Save';
+        const saveButtonClassName = String(settings.saveButtonClassName || '').trim();
+        const buttonClass = ['kn-button', 'is-primary', saveButtonClassName].filter(Boolean).join(' ');
+
+        const headersHtml = columns.map((column) => {
+            const align = String(column.align || 'left');
+            const maxWidth = toCssSize(column.maxWidth);
+            const styleParts = [`text-align:${escapeHTML(align)}`, 'padding:6px 8px'];
+            if (maxWidth) styleParts.push(`max-width:${escapeHTML(maxWidth)}`);
+            return `<th style="${styleParts.join('; ')};">${escapeHTML(column.header || '')}</th>`;
+        }).join('');
+
+        const rowsHtml = rowsData.map((row, rowIndex) => {
+            const cellsHtml = columns.map((column, colIndex) => {
+                const editable = isEditableCell(column, row, rowIndex);
+                const value = getCellValue(row, column, colIndex);
+                const formatted = formatCellValue(value, column, row, rowIndex);
+                const classes = [
+                    'kfInteractiveTable__cell',
+                    editable ? 'is-editable' : '',
+                    editable ? 'ktlInlineEditableCellsStyle' : '',
+                    String(column.className || '').trim(),
+                ].filter(Boolean).join(' ');
+                const align = String(column.align || 'left');
+                const maxWidth = toCssSize(column.maxWidth);
+                const styleParts = ['padding:4px 8px', `text-align:${escapeHTML(align)}`];
+                if (maxWidth) styleParts.push(`max-width:${escapeHTML(maxWidth)}`);
+                return `<td class="${escapeHTML(classes)}" data-row-index="${rowIndex}" data-col-index="${colIndex}" data-col-key="${escapeHTML(String(column.key))}" style="${styleParts.join('; ')};">${column.allowHtml ? formatted : escapeHTML(formatted)}</td>`;
+            }).join('');
+
+            return `<tr data-row-index="${rowIndex}">${cellsHtml}</tr>`;
+        }).join('');
+
+        const actionsHtml = showSubmitButton
+            ? `<div class="kfInteractiveTable__actions" style="margin-top:12px;"><button class="${escapeHTML(buttonClass)}" type="submit" data-kf-interactive-table-submit="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(saveButtonText)}</button></div>`
+            : '';
+
+        host.innerHTML = `<table class="${escapeHTML(tableClass)}"><thead><tr>${headersHtml}</tr></thead><tbody>${rowsHtml}</tbody></table>${actionsHtml}`;
+    };
+
+    const submitTable = async () => {
+        if (typeof settings.onSubmit !== 'function') {
+            console.warn('renderInteractiveTable: manual submit requested but no onSubmit handler was provided.');
+            return;
+        }
+
+        if (isSubmitting) return;
+
+        isSubmitting = true;
+        renderTable();
+
+        try {
+            await settings.onSubmit({
+                viewId,
+                host,
+                data: rowsData.map(cloneRow),
+                controller,
+            });
+        } catch (err) {
+            console.error('renderInteractiveTable onSubmit error:', err);
+            throw err;
+        } finally {
+            isSubmitting = false;
+            renderTable();
+        }
+    };
+
+    const closeEditor = (inputEl, commit) => {
+        const cell = inputEl.closest('.kfInteractiveTable__cell');
+        if (!cell) return;
+
+        const rowIndex = Number(cell.getAttribute('data-row-index'));
+        const colIndex = Number(cell.getAttribute('data-col-index'));
+        const column = columns[colIndex];
+        const row = rowsData[rowIndex];
+        const previousValue = getCellValue(row, column, colIndex);
+
+        if (commit) {
+            const rawValue = column.type === 'checkbox' ? !!inputEl.checked : inputEl.value;
+            const nextValue = parseCellValue(rawValue, column, row, rowIndex);
+            setCellValue(row, column, colIndex, nextValue);
+            renderCell(cell, rowIndex, colIndex);
+            emitChange({
+                rowIndex,
+                columnIndex: colIndex,
+                columnKey: column.key,
+                column,
+                previousValue,
+                nextValue,
+                row: cloneRow(row),
+                data: rowsData.map(cloneRow),
+                source: 'editor',
+            });
+        } else {
+            renderCell(cell, rowIndex, colIndex);
+        }
+
+        cell.classList.remove('is-editing');
+    };
+
+    const isDatepickerOpen = (jq) => {
+        if (!jq) return false;
+        try {
+            return jq('.ui-datepicker:visible').length > 0;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const openEditor = async (cell) => {
+        if (!cell || cell.classList.contains('is-editing')) return;
+
+        const rowIndex = Number(cell.getAttribute('data-row-index'));
+        const colIndex = Number(cell.getAttribute('data-col-index'));
+        const column = columns[colIndex];
+        const row = rowsData[rowIndex];
+
+        if (!isEditableCell(column, row, rowIndex)) return;
+
+        const jq = typeof jQuery === 'function' ? jQuery : (typeof $ === 'function' ? $ : null);
+        const hasJqDatepicker = !!(jq && jq.fn && typeof jq.fn.datepicker === 'function');
+        const currentValue = getCellValue(row, column, colIndex);
+
+        cell.classList.add('is-editing');
+        cell.textContent = '';
+
+        let inputEl;
+        if (column.type === 'select') {
+            inputEl = document.createElement('select');
+            inputEl.className = ['input', 'kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
+            inputEl.disabled = true;
+            const loadingOption = document.createElement('option');
+            loadingOption.value = '';
+            loadingOption.textContent = 'Loading...';
+            inputEl.appendChild(loadingOption);
+        } else if (column.type === 'checkbox') {
+            inputEl = document.createElement('input');
+            inputEl.type = 'checkbox';
+            inputEl.className = ['kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
+            inputEl.checked = !!currentValue;
+        } else {
+            inputEl = document.createElement('input');
+            inputEl.className = ['input', 'kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
+
+            if (column.type === 'date') {
+                const valueDisplay = toDisplayDate(currentValue);
+                const valueIso = toIsoDate(currentValue);
+                if (hasJqDatepicker) {
+                    inputEl.type = 'text';
+                    inputEl.value = valueDisplay;
+                } else {
+                    inputEl.type = 'date';
+                    inputEl.value = valueIso;
+                }
+            } else if (column.type === 'number') {
+                inputEl.type = 'number';
+                inputEl.value = String(currentValue ?? '');
+            } else {
+                inputEl.type = 'text';
+                inputEl.value = String(currentValue ?? '');
+            }
+        }
+
+        inputEl.style.width = '100%';
+        inputEl.style.minHeight = '30px';
+        inputEl.style.maxWidth = '100%';
+        cell.appendChild(inputEl);
+
+        if (column.type === 'select') {
+            const options = await resolveSelectOptions(column, row, rowIndex, colIndex);
+            const editingCell = inputEl.closest('.kfInteractiveTable__cell');
+            if (!editingCell || !editingCell.classList.contains('is-editing')) return;
+
+            inputEl.innerHTML = '';
+            options.forEach((opt) => {
+                const optionEl = document.createElement('option');
+                optionEl.value = opt.value;
+                optionEl.textContent = opt.label;
+                inputEl.appendChild(optionEl);
+            });
+
+            const currentValueText = String(currentValue ?? '');
+            if (currentValueText && !options.some((opt) => opt.value === currentValueText)) {
+                const fallbackOption = document.createElement('option');
+                fallbackOption.value = currentValueText;
+                fallbackOption.textContent = currentValueText;
+                inputEl.insertBefore(fallbackOption, inputEl.firstChild);
+            }
+
+            inputEl.value = currentValueText;
+            inputEl.disabled = false;
+        }
+
+        if (column.type === 'date' && hasJqDatepicker) {
+            const inputJq = jq(inputEl);
+            const openDateHint = String(row?.[column.openDateHintKey] || '').trim();
+            const dateFormat = String(column.dateFormat || (settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy'));
+
+            if (!inputJq.hasClass('hasDatepicker')) {
+                inputJq.datepicker({
+                    dateFormat,
+                    changeMonth: true,
+                    changeYear: true,
+                    defaultDate: openDateHint || null,
+                    minDate: column.minDate ?? null,
+                    maxDate: column.maxDate ?? null,
+                    onSelect: function () {
+                        closeEditor(inputEl, true);
+                    },
+                });
+            }
+
+            if (typeof formatDatePicker === 'function') {
+                try { formatDatePicker(inputEl); } catch (_) {}
+            }
+
+            if (typeof enhanceDateTimePicker === 'function') {
+                try {
+                    enhanceDateTimePicker(inputEl, {
+                        mode: 'date',
+                        dateFormat,
+                        minDate: column.minDate ?? null,
+                        maxDate: column.maxDate ?? null,
+                        waitForInit: false,
+                    });
+                } catch (_) {}
+            }
+
+            try {
+                if (String(inputEl.value || '').trim()) {
+                    inputJq.datepicker('setDate', inputEl.value);
+                } else {
+                    if (openDateHint) {
+                        inputJq.datepicker('option', 'defaultDate', openDateHint);
+                    }
+                    inputJq.datepicker('setDate', null);
+                }
+                inputJq.datepicker('show');
+            } catch (_) {}
+        }
+
+        inputEl.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                closeEditor(inputEl, true);
+            }
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                closeEditor(inputEl, false);
+            }
+        });
+
+        inputEl.addEventListener('change', function () {
+            if (column.type === 'checkbox' || column.type === 'select') {
+                closeEditor(inputEl, true);
+            }
+        });
+
+        inputEl.addEventListener('blur', function () {
+            setTimeout(function () {
+                const jq = typeof jQuery === 'function' ? jQuery : (typeof $ === 'function' ? $ : null);
+                if (column.type === 'date' && isDatepickerOpen(jq)) {
+                    return;
+                }
+                const editingCell = inputEl.closest('.kfInteractiveTable__cell');
+                if (editingCell && editingCell.classList.contains('is-editing')) {
+                    closeEditor(inputEl, true);
+                }
+            }, 120);
+        });
+
+        inputEl.focus();
+        if (typeof inputEl.select === 'function' && column.type !== 'checkbox') {
+            inputEl.select();
+        }
+        if (column.type === 'select') {
+            tryOpenSelectMenu(inputEl);
+        }
+    };
+
+    const handleTableClick = (event) => {
+        const submitButton = event.target.closest('[data-kf-interactive-table-submit="true"]');
+        if (submitButton && host.contains(submitButton)) {
+            event.preventDefault();
+            void submitTable();
+            return;
+        }
+
+        const cell = event.target.closest('.kfInteractiveTable__cell');
+        if (!cell || !host.contains(cell)) return;
+        void openEditor(cell);
+    };
+
+    renderTable();
+    host.addEventListener('click', handleTableClick);
+
+    if (typeof settings.onRenderComplete === 'function') {
+        try {
+            settings.onRenderComplete({
+                viewId,
+                host,
+                data: rowsData.map(cloneRow),
+            });
+        } catch (err) {
+            console.error('renderInteractiveTable onRenderComplete error:', err);
+        }
+    }
+
+    controller = {
+        getData() {
+            return rowsData.map(cloneRow);
+        },
+        setData(nextRows) {
+            rowsData = Array.isArray(nextRows) ? nextRows.map(cloneRow) : [];
+            renderTable();
+        },
+        updateCell(rowIndex, columnKeyOrIndex, value, options = {}) {
+            const idx = Number(rowIndex);
+            if (!Number.isFinite(idx) || idx < 0 || idx >= rowsData.length) return;
+
+            const colIndex = typeof columnKeyOrIndex === 'number'
+                ? columnKeyOrIndex
+                : colIndexByKey.get(String(columnKeyOrIndex));
+            if (!Number.isFinite(colIndex) || colIndex < 0 || colIndex >= columns.length) return;
+
+            const column = columns[colIndex];
+            const row = rowsData[idx];
+            const previousValue = getCellValue(row, column, colIndex);
+            const nextValue = parseCellValue(value, column, row, idx);
+            setCellValue(row, column, colIndex, nextValue);
+
+            const cell = getCellElement(idx, colIndex);
+            if (cell) {
+                renderCell(cell, idx, colIndex);
+            } else {
+                renderTable();
+            }
+
+            if (options.emit !== false) {
+                emitChange({
+                    rowIndex: idx,
+                    columnIndex: colIndex,
+                    columnKey: column.key,
+                    column,
+                    previousValue,
+                    nextValue,
+                    row: cloneRow(row),
+                    data: rowsData.map(cloneRow),
+                    source: options.source || 'api',
+                });
+            }
+        },
+        async submit() {
+            await submitTable();
+        },
+        destroy() {
+            selectOptionsCache.clear();
+            host.removeEventListener('click', handleTableClick);
+            host.innerHTML = '';
+        },
+    };
+
+    return controller;
+}
+
 /** Get checked row IDs from the grid
  * @param {string} viewId
  * @returns {string[]} Array of checked row IDs. */
@@ -15949,5 +16655,121 @@ class KnackError {
         }
 
         return 'Unknown OS';
+    }
+}
+
+/**
+ * Returns the full bank holiday weekend range for a holiday date.
+ * If holiday is Monday: returns preceding Saturday-Sunday-Monday (from Sat to Mon).
+ * If holiday is Friday: returns Friday-Saturday-Sunday (from Fri to Sun).
+ * @param {string} dateIso - Holiday date in yyyy-mm-dd format.
+ * @returns {{ from: string, to: string, dayName: string }} Weekend range in dd/mm/yyyy format.
+ */
+function getBankHolidayWeekendRange(dateIso) {
+    const d = new Date(dateIso + 'T00:00:00Z');
+    const dayOfWeek = d.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+
+    let from;
+    let to;
+
+    if (dayOfWeek === 1) { // Monday
+        from = new Date(d.getTime() - 2 * 24 * 60 * 60 * 1000); // Saturday
+        to = d; // Monday
+    } else if (dayOfWeek === 5) { // Friday
+        from = d; // Friday
+        to = new Date(d.getTime() + 2 * 24 * 60 * 60 * 1000); // Sunday
+    } else {
+        from = d;
+        to = d;
+    }
+
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+    const formatDate = function (date) {
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const year = date.getUTCFullYear();
+        return day + '/' + month + '/' + year;
+    };
+
+    return {
+        from: formatDate(from),
+        to: formatDate(to),
+        dayName: dayNames[dayOfWeek]
+    };
+}
+
+/**
+ * Fetches UK gov.uk bank holidays with flexible filtering options.
+ * @param {object} options - Configuration options.
+ * @param {number} options.targetYear - Required. The year to fetch holidays for.
+ * @param {number} [options.monthNumber] - Optional. Month number (1-12) to filter by. If omitted, all months are included.
+ * @param {string} [options.titleContains] - Optional. Case-insensitive title fragment to match. If omitted, all titles are included.
+ * @param {string} [options.region] - Optional. Region: 'scotland', 'ireland' (Northern Ireland), or 'eng' (default: 'eng'). Other values are treated as 'eng'.
+ * @returns {Promise<Array>} Array of objects: { dateIso, dateUk, title, weekend: { from, to, dayName } }
+ */
+async function getGovBankHolidays(options = {}) {
+    const targetYear = options.targetYear;
+    const monthNumber = options.monthNumber;
+    const titleContains = options.titleContains;
+    const region = String(options.region || 'eng').toLowerCase();
+
+    if (targetYear === undefined || targetYear === null) {
+        throw new Error('getGovBankHolidays requires options.targetYear');
+    }
+
+    const year = Number(targetYear);
+    if (!Number.isFinite(year)) {
+        throw new Error('getGovBankHolidays: targetYear must be a valid number');
+    }
+
+    try {
+        const response = await fetch('https://www.gov.uk/bank-holidays.json');
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+        }
+
+        const payload = await response.json();
+
+        let events = [];
+        if (region === 'scotland') {
+            events = payload && payload.scotland ? payload.scotland.events : [];
+        } else if (region === 'ireland') {
+            events = payload && payload['northern-ireland'] ? payload['northern-ireland'].events : [];
+        } else {
+            events = payload && payload['england-and-wales'] ? payload['england-and-wales'].events : [];
+        }
+
+        const results = [];
+
+        for (let i = 0; i < events.length; i++) {
+            const ev = events[i];
+            if (!ev || !ev.date) continue;
+
+            const d = new Date(ev.date + 'T00:00:00Z');
+            const evYear = d.getUTCFullYear();
+            const evMonth = d.getUTCMonth() + 1;
+
+            if (evYear !== year) continue;
+            if (monthNumber && evMonth !== monthNumber) continue;
+            if (titleContains && !ev.title.toLowerCase().includes(titleContains.toLowerCase())) {
+                continue;
+            }
+
+            const dateUk = getDateUKFormat(ev.date);
+            const weekend = getBankHolidayWeekendRange(ev.date);
+
+            results.push({
+                dateIso: ev.date,
+                dateUk: dateUk,
+                title: ev.title,
+                weekend: weekend
+            });
+        }
+
+        return results;
+    } catch (err) {
+        console.error('getGovBankHolidays error:', err);
+        throw err;
     }
 }
