@@ -15834,3 +15834,119 @@ class KnackError {
         return 'Unknown OS';
     }
 }
+
+/**
+ * Returns the full bank holiday weekend range for a holiday date.
+ * If holiday is Monday: returns preceding Saturday-Sunday-Monday (from Sat to Mon).
+ * If holiday is Friday: returns Friday-Saturday-Sunday (from Fri to Sun).
+ * @param {string} dateIso - Holiday date in yyyy-mm-dd format.
+ * @returns {{ from: string, to: string, dayName: string }} Weekend range in dd/mm/yyyy format.
+ */
+function getBankHolidayWeekendRange(dateIso) {
+    const d = new Date(dateIso + 'T00:00:00Z');
+    const dayOfWeek = d.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+
+    let from;
+    let to;
+
+    if (dayOfWeek === 1) { // Monday
+        from = new Date(d.getTime() - 2 * 24 * 60 * 60 * 1000); // Saturday
+        to = d; // Monday
+    } else if (dayOfWeek === 5) { // Friday
+        from = d; // Friday
+        to = new Date(d.getTime() + 2 * 24 * 60 * 60 * 1000); // Sunday
+    } else {
+        from = d;
+        to = d;
+    }
+
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+    const formatDate = function (date) {
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const year = date.getUTCFullYear();
+        return day + '/' + month + '/' + year;
+    };
+
+    return {
+        from: formatDate(from),
+        to: formatDate(to),
+        dayName: dayNames[dayOfWeek]
+    };
+}
+
+/**
+ * Fetches UK gov.uk bank holidays with flexible filtering options.
+ * @param {object} options - Configuration options.
+ * @param {number} options.targetYear - Required. The year to fetch holidays for.
+ * @param {number} [options.monthNumber] - Optional. Month number (1-12) to filter by. If omitted, all months are included.
+ * @param {string} [options.titleContains] - Optional. Case-insensitive title fragment to match. If omitted, all titles are included.
+ * @param {string} [options.region] - Optional. Region: 'scotland', 'ireland' (Northern Ireland), or 'eng' (default: 'eng'). Other values are treated as 'eng'.
+ * @returns {Promise<Array>} Array of objects: { dateIso, dateUk, title, weekend: { from, to, dayName } }
+ */
+async function getGovBankHolidays(options = {}) {
+    const targetYear = options.targetYear;
+    const monthNumber = options.monthNumber;
+    const titleContains = options.titleContains;
+    const region = String(options.region || 'eng').toLowerCase();
+
+    if (targetYear === undefined || targetYear === null) {
+        throw new Error('getGovBankHolidays requires options.targetYear');
+    }
+
+    const year = Number(targetYear);
+    if (!Number.isFinite(year)) {
+        throw new Error('getGovBankHolidays: targetYear must be a valid number');
+    }
+
+    try {
+        const response = await fetch('https://www.gov.uk/bank-holidays.json');
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+        }
+
+        const payload = await response.json();
+
+        let events = [];
+        if (region === 'scotland') {
+            events = payload && payload.scotland ? payload.scotland.events : [];
+        } else if (region === 'ireland') {
+            events = payload && payload['northern-ireland'] ? payload['northern-ireland'].events : [];
+        } else {
+            events = payload && payload['england-and-wales'] ? payload['england-and-wales'].events : [];
+        }
+
+        const results = [];
+
+        for (let i = 0; i < events.length; i++) {
+            const ev = events[i];
+            if (!ev || !ev.date) continue;
+
+            const d = new Date(ev.date + 'T00:00:00Z');
+            const evYear = d.getUTCFullYear();
+            const evMonth = d.getUTCMonth() + 1;
+
+            if (evYear !== year) continue;
+            if (monthNumber && evMonth !== monthNumber) continue;
+            if (titleContains && !ev.title.toLowerCase().includes(titleContains.toLowerCase())) {
+                continue;
+            }
+
+            const dateUk = getDateUKFormat(ev.date);
+            const weekend = getBankHolidayWeekendRange(ev.date);
+
+            results.push({
+                dateIso: ev.date,
+                dateUk: dateUk,
+                title: ev.title,
+                weekend: weekend
+            });
+        }
+
+        return results;
+    } catch (err) {
+        console.error('getGovBankHolidays error:', err);
+        throw err;
+    }
+}
