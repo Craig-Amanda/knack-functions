@@ -14327,6 +14327,79 @@ function hideElementsByValue (view, keywords) {
     });
 }
 
+/**
+ * Redirects modal form submissions back to the parent URL.
+ * Optional keyword param: scene_1234 (scene key to ignore)
+ * @param {Object} view - Knack view object
+ * @param {Object} keywords - Parsed KTL keywords for the view
+ * @example
+ * // _rtp
+ * // _rtp=scene_1234
+ */
+function redirectToPopUp(view, keywords) {
+    const kw = '_rtp';
+    if (!keywords || !keywords[kw]) return;
+
+    const viewId = view.key;
+    const viewType = ktl.views.getViewType(viewId);
+    if (viewType !== 'form') return;
+
+    if (!document.querySelector('.kn-modal')) return;
+
+    const parentUrl = ktl.core.findParentURL(sanitiseURL(window.location.href), 1);
+
+    if (!parentUrl) return;
+
+    const rawParam = keywords._rtp?.[0]?.params?.[0]?.[0];
+    const sceneToIgnore = rawParam ? String(rawParam).trim() : '';
+    const shouldSkipRedirect = () => sceneToIgnore && document.getElementById(`kn-${sceneToIgnore}`);
+
+    if (shouldSkipRedirect()) return;
+
+    $(document)
+        .off(`knack-form-submit.${viewId}.rtp`)
+        .on(`knack-form-submit.${viewId}.rtp`, (event) => {
+            if (shouldSkipRedirect()) return;
+            handleRedirect(event, parentUrl);
+        });
+
+    $(document)
+        .off(`knack-view-render.${viewId}.rtp`)
+        .on(`knack-view-render.${viewId}.rtp`, (event) => {
+            if (shouldSkipRedirect()) return;
+            handleRedirect(event, parentUrl);
+        });
+
+}
+
+/**
+ * Redirect to parent URL after form submit or modal close.
+ * @param {object} event - Knack event
+ * @param {string} newURL - URL to redirect to
+ * @example
+ * handleRedirect({ type: 'knack-form-submit' }, 'https://example.com');
+ */
+function handleRedirect(event, newURL) {
+    if (!event || !newURL) return;
+
+    if (event.type === 'knack-form-submit') {
+        setTimeout(() => {
+            window.location.href = newURL;
+        }, 300);
+        return;
+    }
+
+    if (event.type === 'knack-scene-render' || event.type === 'knack-view-render') {
+        document.querySelectorAll('button.close-modal').forEach(btn => {
+            btn.addEventListener('click', function () {
+                setTimeout(() => {
+                    window.location.href = newURL;
+                }, 300);
+            }, { once: true });
+        });
+    }
+}
+
 function buttonToUrl({ key: viewId }, keywords) {
     const btnUrl = '_btnurl';
     if (!keywords[btnUrl]) return;
