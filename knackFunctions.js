@@ -7737,6 +7737,112 @@ function renderInteractiveTable(config = {}) {
         return matchedOption ? matchedOption.value : '';
     };
 
+    const ensureSearchSelectDropdown = (inputEl) => {
+        if (!inputEl) return null;
+        if (inputEl._kfSearchDropdown instanceof HTMLElement) {
+            return inputEl._kfSearchDropdown;
+        }
+
+        const dropdownEl = document.createElement('div');
+        dropdownEl.className = 'kfInteractiveTable__searchSelectDropdown';
+        dropdownEl.style.position = 'absolute';
+        dropdownEl.style.top = 'calc(100% + 4px)';
+        dropdownEl.style.left = '0';
+        dropdownEl.style.right = '0';
+        dropdownEl.style.zIndex = '50';
+        dropdownEl.style.maxHeight = '220px';
+        dropdownEl.style.overflowY = 'auto';
+        dropdownEl.style.background = '#fff';
+        dropdownEl.style.border = '1px solid #d3d9e3';
+        dropdownEl.style.borderRadius = '0 0 8px 8px';
+        dropdownEl.style.boxShadow = '0 10px 26px rgba(15, 23, 42, 0.12)';
+        dropdownEl.style.padding = '6px';
+        dropdownEl.style.display = 'none';
+
+        inputEl._kfSearchWrapper?.appendChild(dropdownEl);
+        inputEl._kfSearchDropdown = dropdownEl;
+        return dropdownEl;
+    };
+
+    const closeSearchSelectDropdown = (inputEl) => {
+        const dropdownEl = inputEl?._kfSearchDropdown;
+        if (!(dropdownEl instanceof HTMLElement)) return;
+        dropdownEl.style.display = 'none';
+        dropdownEl.innerHTML = '';
+        inputEl._kfSearchFilteredOptions = [];
+        inputEl._kfSearchHighlightedIndex = -1;
+        inputEl.setAttribute('aria-expanded', 'false');
+    };
+
+    const renderSearchSelectDropdown = (inputEl, options, filterText = '') => {
+        const dropdownEl = ensureSearchSelectDropdown(inputEl);
+        if (!(dropdownEl instanceof HTMLElement)) return;
+
+        const targetText = String(filterText ?? '').trim().toLowerCase();
+        const filteredOptions = (Array.isArray(options) ? options : []).filter((option) => {
+            if (!targetText) return true;
+            const optionLabel = String(option?.label ?? '').trim().toLowerCase();
+            const optionValue = String(option?.value ?? '').trim().toLowerCase();
+            return optionLabel.includes(targetText) || optionValue.includes(targetText);
+        }).slice(0, 75);
+
+        inputEl._kfSearchFilteredOptions = filteredOptions;
+        const hasOptions = filteredOptions.length > 0;
+        const nextHighlightedIndex = hasOptions
+            ? Math.min(Math.max(Number(inputEl._kfSearchHighlightedIndex) || 0, 0), filteredOptions.length - 1)
+            : -1;
+        inputEl._kfSearchHighlightedIndex = nextHighlightedIndex;
+
+        dropdownEl.innerHTML = '';
+
+        if (!hasOptions) {
+            const emptyStateEl = document.createElement('div');
+            emptyStateEl.textContent = 'No matches found';
+            emptyStateEl.style.padding = '8px 10px';
+            emptyStateEl.style.color = '#6b7280';
+            emptyStateEl.style.fontSize = '12px';
+            dropdownEl.appendChild(emptyStateEl);
+            dropdownEl.style.display = 'block';
+            inputEl.setAttribute('aria-expanded', 'true');
+            return;
+        }
+
+        filteredOptions.forEach((option, optionIndex) => {
+            const optionButton = document.createElement('button');
+            optionButton.type = 'button';
+            optionButton.className = 'kfInteractiveTable__searchSelectOption';
+            optionButton.textContent = String(option?.label ?? '');
+            optionButton.dataset.value = String(option?.value ?? '');
+            optionButton.dataset.label = String(option?.label ?? '');
+            optionButton.style.display = 'block';
+            optionButton.style.width = '100%';
+            optionButton.style.border = '0';
+            optionButton.style.borderRadius = '6px';
+            optionButton.style.background = optionIndex === nextHighlightedIndex ? '#eef4ff' : 'transparent';
+            optionButton.style.color = '#1f2937';
+            optionButton.style.cursor = 'pointer';
+            optionButton.style.font = 'inherit';
+            optionButton.style.padding = '8px 10px';
+            optionButton.style.textAlign = 'left';
+
+            optionButton.addEventListener('mouseenter', () => {
+                inputEl._kfSearchHighlightedIndex = optionIndex;
+                renderSearchSelectDropdown(inputEl, options, inputEl.value);
+            });
+
+            optionButton.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+                inputEl.value = optionButton.dataset.label || '';
+                closeEditor(inputEl, true);
+            });
+
+            dropdownEl.appendChild(optionButton);
+        });
+
+        dropdownEl.style.display = 'block';
+        inputEl.setAttribute('aria-expanded', 'true');
+    };
+
     const getCellElement = (rowIndex, colIndex) => {
         return host.querySelector(`td.kfInteractiveTable__cell[data-row-index="${rowIndex}"][data-col-index="${colIndex}"]`);
     };
@@ -7911,11 +8017,38 @@ function renderInteractiveTable(config = {}) {
             loadingOption.textContent = 'Loading...';
             inputEl.appendChild(loadingOption);
         } else if (column.type === 'search-select') {
+            const wrapperEl = document.createElement('div');
+            wrapperEl.className = 'kfInteractiveTable__searchSelect';
+            wrapperEl.style.position = 'relative';
+            wrapperEl.style.display = 'flex';
+            wrapperEl.style.alignItems = 'center';
+            wrapperEl.style.width = '100%';
+
             inputEl = document.createElement('input');
             inputEl.type = 'text';
             inputEl.className = ['input', 'kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
             inputEl.disabled = true;
-            inputEl.placeholder = 'Search...';
+            inputEl.placeholder = 'Select...';
+            inputEl.autocomplete = 'off';
+            inputEl.spellcheck = false;
+            inputEl.setAttribute('aria-autocomplete', 'list');
+            inputEl.setAttribute('aria-expanded', 'false');
+            inputEl.style.paddingRight = '34px';
+
+            const iconEl = document.createElement('span');
+            iconEl.textContent = '▾';
+            iconEl.style.position = 'absolute';
+            iconEl.style.right = '10px';
+            iconEl.style.top = '50%';
+            iconEl.style.transform = 'translateY(-50%)';
+            iconEl.style.pointerEvents = 'none';
+            iconEl.style.color = '#64748b';
+            iconEl.style.fontSize = '12px';
+
+            wrapperEl.appendChild(inputEl);
+            wrapperEl.appendChild(iconEl);
+            cell.appendChild(wrapperEl);
+            inputEl._kfSearchWrapper = wrapperEl;
         } else if (column.type === 'checkbox') {
             inputEl = document.createElement('input');
             inputEl.type = 'checkbox';
@@ -7947,7 +8080,9 @@ function renderInteractiveTable(config = {}) {
         inputEl.style.width = '100%';
         inputEl.style.minHeight = '30px';
         inputEl.style.maxWidth = '100%';
-        cell.appendChild(inputEl);
+        if (column.type !== 'search-select') {
+            cell.appendChild(inputEl);
+        }
 
         if (column.type === 'select' || column.type === 'search-select') {
             const options = await resolveSelectOptions(column, row, rowIndex, colIndex);
@@ -7975,27 +8110,12 @@ function renderInteractiveTable(config = {}) {
                 inputEl.value = currentValueText;
                 inputEl.disabled = false;
             } else {
-                const dataListId = `kf-interactive-table-datalist-${viewId}-${rowIndex}-${colIndex}`;
-                let dataListEl = editingCell.querySelector(`#${CSS.escape(dataListId)}`);
-                if (!dataListEl) {
-                    dataListEl = document.createElement('datalist');
-                    dataListEl.id = dataListId;
-                    editingCell.appendChild(dataListEl);
-                }
-
-                dataListEl.innerHTML = '';
-                options.forEach((opt) => {
-                    const optionEl = document.createElement('option');
-                    optionEl.value = opt.label;
-                    optionEl.label = opt.label;
-                    dataListEl.appendChild(optionEl);
-                });
-
                 const currentOption = options.find((opt) => String(opt.value) === currentValueText);
                 inputEl._kfSearchOptions = options;
-                inputEl.setAttribute('list', dataListId);
+                inputEl._kfSearchHighlightedIndex = 0;
                 inputEl.value = currentOption ? currentOption.label : currentValueText;
                 inputEl.disabled = false;
+                renderSearchSelectDropdown(inputEl, options, inputEl.value);
             }
         }
 
@@ -8048,6 +8168,38 @@ function renderInteractiveTable(config = {}) {
         }
 
         inputEl.addEventListener('keydown', function (event) {
+            if (column.type === 'search-select') {
+                const filteredOptions = Array.isArray(inputEl._kfSearchFilteredOptions) ? inputEl._kfSearchFilteredOptions : [];
+
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    if (filteredOptions.length) {
+                        const direction = event.key === 'ArrowDown' ? 1 : -1;
+                        const currentIndex = Number(inputEl._kfSearchHighlightedIndex);
+                        const nextIndex = Number.isFinite(currentIndex)
+                            ? (currentIndex + direction + filteredOptions.length) % filteredOptions.length
+                            : 0;
+                        inputEl._kfSearchHighlightedIndex = nextIndex;
+                    } else {
+                        inputEl._kfSearchHighlightedIndex = -1;
+                    }
+                    renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
+                    return;
+                }
+
+                if (event.key === 'Enter') {
+                    const highlightedOption = filteredOptions[inputEl._kfSearchHighlightedIndex] || filteredOptions[0] || null;
+                    if (highlightedOption) {
+                        event.preventDefault();
+                        inputEl.value = String(highlightedOption.label ?? '');
+                    }
+                }
+
+                if (event.key === 'Escape') {
+                    closeSearchSelectDropdown(inputEl);
+                }
+            }
+
             if (event.key === 'Enter') {
                 event.preventDefault();
                 closeEditor(inputEl, true);
@@ -8064,11 +8216,29 @@ function renderInteractiveTable(config = {}) {
             }
         });
 
+        if (column.type === 'search-select') {
+            inputEl.addEventListener('input', function () {
+                inputEl._kfSearchHighlightedIndex = 0;
+                renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
+            });
+
+            inputEl.addEventListener('focus', function () {
+                renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
+            });
+
+            inputEl.addEventListener('click', function () {
+                renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
+            });
+        }
+
         inputEl.addEventListener('blur', function () {
             setTimeout(function () {
                 const jq = typeof jQuery === 'function' ? jQuery : (typeof $ === 'function' ? $ : null);
                 if (column.type === 'date' && isDatepickerOpen(jq)) {
                     return;
+                }
+                if (column.type === 'search-select') {
+                    closeSearchSelectDropdown(inputEl);
                 }
                 const editingCell = inputEl.closest('.kfInteractiveTable__cell');
                 if (editingCell && editingCell.classList.contains('is-editing')) {
@@ -13443,6 +13613,46 @@ function clearInput(inputContainer, triggerChange = false) {
             });
         });
     });
+}
+
+/**
+ * Reset a select element to its first option and optionally emit a change event.
+ * Useful for Chosen-enhanced Knack selects that should return to their placeholder option.
+ * @param {HTMLSelectElement|null} selectEl
+ * @param {{ silent?: boolean, updateChosen?: boolean }} [options]
+ * @returns {void}
+ */
+function resetSelectToFirstOption(selectEl, options = {}) {
+    if (!(selectEl instanceof HTMLSelectElement)) return;
+
+    const { silent = false, updateChosen = true } = options;
+    const firstOption = selectEl.options[0] || null;
+    const firstValue = firstOption ? firstOption.value : '';
+    const previousIndex = selectEl.selectedIndex;
+    const previousValue = selectEl.value;
+    const changed = previousIndex !== 0 || previousValue !== firstValue;
+
+    Array.from(selectEl.options).forEach((option, index) => {
+        const isFirstOption = index === 0;
+        option.selected = isFirstOption;
+        if (isFirstOption) {
+            option.setAttribute('selected', 'selected');
+        } else {
+            option.removeAttribute('selected');
+        }
+    });
+
+    selectEl.selectedIndex = firstOption ? 0 : -1;
+    selectEl.value = firstValue;
+
+    if (typeof window !== 'undefined' && window.jQuery && updateChosen) {
+        const select = window.jQuery(selectEl);
+        select.trigger('liszt:updated');
+    }
+
+    if (changed && !silent) {
+        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
 }
 
 /**
