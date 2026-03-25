@@ -4,6 +4,8 @@ This note explains the shared `renderInteractiveTable` helper in `knack-function
 
 The helper renders an editable table into a Knack view, keeps an internal row state, and optionally provides a manual submit action.
 
+It can also keep one trailing blank row available for fast data entry, so users can keep typing new records without the app having to pre-create a guessed number of rows.
+
 ## What the helper does
 
 `renderInteractiveTable` is designed for cases where Spot or another app needs to:
@@ -64,6 +66,9 @@ The main options are:
 - `saveMode`: `'manual'`, `'none'`, or `'auto'`
 - `saveButtonText`: label for the manual submit button
 - `saveButtonClassName`: extra classes for the submit button
+- `autoAppendRow`: keep a blank row at the bottom and append another when the last row becomes populated
+- `createEmptyRow`: optional function that returns the next blank row shape
+- `isRowPopulated`: optional function used to decide when a row counts as populated
 - `rows`: array of row objects or row arrays
 - `columns`: column definitions
 - `onChange`: callback after a cell value changes
@@ -178,6 +183,81 @@ Example with async options:
 
 Select options are fetched once per column and cached for the current table instance.
 
+## Auto-append row mode
+
+For rapid entry flows, you can enable `autoAppendRow`.
+
+When enabled, the helper will:
+
+- ensure the table always has one blank row ready at the bottom
+- append a new blank row when the last row becomes populated
+- keep the helper row out of the normal `data` payload passed to callbacks and `controller.getData()`
+
+Basic example:
+
+```javascript
+const tableController = renderInteractiveTable({
+    viewId: 'view_2214',
+    autoAppendRow: true,
+    rows: [],
+    columns: [
+        {
+            key: 'name',
+            header: 'Name',
+            type: 'text',
+            editable: true,
+        },
+        {
+            key: 'startDate',
+            header: 'Start Date',
+            type: 'date',
+            editable: true,
+        },
+        {
+            key: 'active',
+            header: 'Active',
+            type: 'checkbox',
+            editable: true,
+        },
+    ],
+});
+```
+
+By default, a row is treated as populated when any column has a meaningful value. For checkboxes that means `true`; for text, select, date, and number fields that means a non-empty value.
+
+If you need custom logic, provide `isRowPopulated`:
+
+```javascript
+renderInteractiveTable({
+    viewId: 'view_2214',
+    autoAppendRow: true,
+    rows: [],
+    columns,
+    isRowPopulated: function (row) {
+        return String(row.name || '').trim() !== '' || String(row.email || '').trim() !== '';
+    },
+});
+```
+
+If the default blank row shape is not enough, provide `createEmptyRow`:
+
+```javascript
+renderInteractiveTable({
+    viewId: 'view_2214',
+    autoAppendRow: true,
+    rows: [],
+    columns,
+    createEmptyRow: function () {
+        return {
+            name: '',
+            startDate: '',
+            active: false,
+            source: 'Manual',
+        };
+    },
+});
+```
+
 ## Manual submit mode
 
 The helper now defaults to manual save mode.
@@ -237,6 +317,14 @@ tableController.updateCell(0, 'status', 'Live');
 await tableController.submit();
 ```
 
+When `autoAppendRow` is enabled, `getData()` returns populated rows only.
+
+If you need the internal table state including the trailing blank helper row, use:
+
+```javascript
+const rawRows = tableController.getData({ includeEmptyRows: true });
+```
+
 ## Data flow
 
 Internally, the helper stores its editable row state in its own internal row array.
@@ -247,6 +335,11 @@ In practice, consumers usually work with that state through:
 - `controller.getData()` when they need the full current table snapshot
 
 This means validation and submit logic should usually work from row data, not by reading the DOM.
+
+When `autoAppendRow` is enabled:
+
+- `data` contains populated rows only
+- `rawData` contains the full internal row state, including the trailing blank helper row
 
 ## Example: app-side validation before submit
 
@@ -294,6 +387,7 @@ Editor inputs receive inline width styles by default, so if you need a fixed wid
 
 - `renderInteractiveTable` is a shared helper for editable inline tables in Knack views.
 - It handles rendering, editor types, and row state management.
+- It can optionally maintain a trailing blank row for fast record entry.
 - It supports manual submit, async select options, and locale-aware dates.
 - Validation and persistence rules should usually stay in the consuming app.
 - Use the returned controller when you need to inspect, update, submit, or destroy the table programmatically.
