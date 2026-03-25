@@ -593,8 +593,13 @@ class KnackValueResolver {
         }
 
         if (fieldType === 'multiple_choice') {
-            const choiceValues = this.toStringArray(rawValue ?? sourceValue);
-            return choiceValues.length <= 1 ? (choiceValues[0] ?? '') : choiceValues;
+            if (Array.isArray(sourceValue)) {
+                const choiceValues = this.toStringArray(sourceValue);
+                return choiceValues.length <= 1 ? (choiceValues[0] ?? '') : choiceValues;
+            }
+
+            const singleChoiceValue = this.toStringSafe(sourceValue);
+            return singleChoiceValue || undefined;
         }
 
         if (Array.isArray(sourceValue)) return this.toStringArray(sourceValue);
@@ -619,8 +624,14 @@ class KnackValueResolver {
         }
 
         if (fieldType === 'multiple_choice') {
-            const values = this.toStringArray(rawValue ?? displayValue);
-            return values.length ? values : undefined;
+            const sourceValue = rawValue ?? displayValue;
+            if (Array.isArray(sourceValue)) {
+                const values = this.toStringArray(sourceValue);
+                return values.length ? values : undefined;
+            }
+
+            const singleChoiceValue = this.toStringSafe(sourceValue);
+            return singleChoiceValue || undefined;
         }
 
         const base = rawValue !== undefined ? rawValue : displayValue;
@@ -659,9 +670,13 @@ class KnackValueResolver {
         }
 
         if (fieldType === 'multiple_choice') {
-            const values = this.toStringArray(sourceValue);
-            if (!values.length) return undefined;
-            return Array.isArray(sourceValue) ? values : (values[0] ?? undefined);
+            if (Array.isArray(sourceValue)) {
+                const values = this.toStringArray(sourceValue);
+                return values.length ? values : undefined;
+            }
+
+            const singleChoiceValue = this.toStringSafe(sourceValue);
+            return singleChoiceValue || undefined;
         }
 
         if (fieldType === 'boolean') {
@@ -850,7 +865,7 @@ class KnackValueResolver {
      * @returns {boolean} Whether the field should be omitted from POST/PUT payloads.
      */
     isReadOnlyFieldType(fieldType) {
-        return ['auto_increment', 'equation', 'concatenation'].includes(String(fieldType || '').trim().toLowerCase());
+        return ['auto_increment', 'equation', 'concatenation', 'count', 'max', 'min', 'average'].includes(String(fieldType || '').trim().toLowerCase());
     }
 
     /**
@@ -877,8 +892,11 @@ class KnackValueResolver {
      * @returns {string} Human-readable shape description.
      */
     getRawShapeForType(fieldType) {
+        if (fieldType === 'short_text' || fieldType === 'paragraph_text' || fieldType === 'password') return 'string';
+        if (fieldType === 'link') return 'string|object{url,label}';
         if (fieldType === 'connection') return 'array<object{id,identifier}>';
         if (fieldType === 'multiple_choice') return 'string|array<string>';
+        if (fieldType === 'user_roles') return 'string|array<string>';
         if (fieldType === 'boolean') return 'boolean';
         if (fieldType === 'number') return 'number';
         if (fieldType === 'currency') return 'number|string';
@@ -899,8 +917,11 @@ class KnackValueResolver {
      */
     getWriteShapeForType(fieldType) {
         if (this.isReadOnlyFieldType(fieldType)) return 'unsupported';
+        if (fieldType === 'short_text' || fieldType === 'paragraph_text' || fieldType === 'password') return 'string';
+        if (fieldType === 'link') return 'string|object{url,label}';
         if (fieldType === 'connection') return 'recordId|array<recordId>';
         if (fieldType === 'multiple_choice') return 'string|array<string>';
+        if (fieldType === 'user_roles') return 'string|array<string>';
         if (fieldType === 'boolean') return 'boolean';
         if (fieldType === 'number' || fieldType === 'currency') return 'number';
         if (fieldType === 'date_time') return 'object|string';
@@ -7305,7 +7326,7 @@ function escapeHTML(text) {
  * @param {string} [config.saveButtonText='Save'] - Text shown on the manual submit button.
  * @param {string} [config.saveButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-primary` button classes.
  * @param {Function|null} [config.onSubmit=null] - Called when the manual submit button is clicked or controller.submit() is invoked.
- * @param {Array<{header?: string, key?: string|number, type?: string, editable?: boolean|Function, options?: Array|Function, className?: string, inputClassName?: string, align?: string, maxWidth?: string|number|null, allowHtml?: boolean, display?: Function, parse?: Function, openDateHintKey?: string, minDate?: string|Date|null, maxDate?: string|Date|null, dateFormat?: string}>} [config.columns=[]] - Column schema. Select options may be a static array, a function returning an array, or an async function/Promise resolving to an array. Select options are fetched once per column and cached for the current table instance.
+ * @param {Array<{header?: string, key?: string|number, type?: string, editable?: boolean|Function, options?: Array|Function, className?: string, inputClassName?: string, align?: string, maxWidth?: string|number|null, allowHtml?: boolean, display?: Function, parse?: Function, openDateHintKey?: string, minDate?: string|Date|null, maxDate?: string|Date|null, dateFormat?: string}>} [config.columns=[]] - Column schema. Select options may be a static array, a function returning an array, or an async function/Promise resolving to an array. `type: 'search-select'` renders a searchable input backed by a datalist while still storing the selected option value. Select options are fetched once per column and cached for the current table instance.
  * @param {Array<string>} [config.headers=[]] - Optional headers when columns are omitted.
  * @param {Array<Object|Array>} [config.rows=[]] - Prefilled row data.
  * @param {Function|null} [config.onChange=null] - Called after a cell value changes.
@@ -7321,6 +7342,9 @@ function renderInteractiveTable(config = {}) {
         saveMode: 'manual',
         saveButtonText: 'Save',
         saveButtonClassName: '',
+        autoAppendRow: false,
+        createEmptyRow: null,
+        isRowPopulated: null,
         columns: [],
         headers: [],
         rows: [],
@@ -7404,6 +7428,12 @@ function renderInteractiveTable(config = {}) {
     let isSubmitting = false;
     let controller = null;
 
+    const useArrayRowShape = (() => {
+        if (Array.isArray(rowsData[0])) return true;
+        if (rowsData[0] && typeof rowsData[0] === 'object') return false;
+        return columns.every((column, index) => String(column.key) === String(index));
+    })();
+
     const toCssSize = (value) => {
         if (typeof value === 'number' && Number.isFinite(value)) {
             return `${value}px`;
@@ -7435,6 +7465,101 @@ function renderInteractiveTable(config = {}) {
         }
         row[column.key] = value;
     };
+
+    const createDefaultCellValue = (column) => {
+        if (Object.prototype.hasOwnProperty.call(column, 'emptyValue')) {
+            return column.emptyValue;
+        }
+        if (column.type === 'checkbox') return false;
+        return '';
+    };
+
+    const createEmptyRowData = () => {
+        if (typeof settings.createEmptyRow === 'function') {
+            try {
+                const customRow = settings.createEmptyRow({
+                    viewId,
+                    host,
+                    columns: columns.slice(),
+                    data: rowsData.map(cloneRow),
+                });
+                if (Array.isArray(customRow)) return customRow.slice();
+                if (customRow && typeof customRow === 'object') return { ...customRow };
+            } catch (err) {
+                console.error('renderInteractiveTable createEmptyRow error:', err);
+            }
+        }
+
+        if (useArrayRowShape) {
+            return columns.map((column) => createDefaultCellValue(column));
+        }
+
+        return columns.reduce((nextRow, column, colIndex) => {
+            nextRow[column.key] = createDefaultCellValue(column, colIndex);
+            return nextRow;
+        }, {});
+    };
+
+    const isMeaningfulCellValue = (value, column) => {
+        if (column?.type === 'checkbox') return value === true;
+        if (Array.isArray(value)) return value.length > 0;
+        if (typeof value === 'number') return Number.isFinite(value);
+        if (value == null) return false;
+        return String(value).trim() !== '';
+    };
+
+    const defaultIsRowPopulated = (row, rowIndex) => {
+        return columns.some((column, colIndex) => {
+            const value = getCellValue(row, column, colIndex);
+            return isMeaningfulCellValue(value, column, row, rowIndex);
+        });
+    };
+
+    const isRowPopulated = (row, rowIndex) => {
+        if (typeof settings.isRowPopulated === 'function') {
+            try {
+                return !!settings.isRowPopulated(row, rowIndex, rowsData.map(cloneRow));
+            } catch (err) {
+                console.error('renderInteractiveTable isRowPopulated error:', err);
+            }
+        }
+        return defaultIsRowPopulated(row, rowIndex);
+    };
+
+    const getRawData = () => rowsData.map(cloneRow);
+
+    const getData = (options = {}) => {
+        if (options && options.includeEmptyRows === true) {
+            return getRawData();
+        }
+
+        if (!settings.autoAppendRow) {
+            return getRawData();
+        }
+
+        return rowsData
+            .filter((row, rowIndex) => isRowPopulated(row, rowIndex))
+            .map(cloneRow);
+    };
+
+    const ensureTrailingEmptyRow = () => {
+        if (!settings.autoAppendRow) return false;
+
+        if (!rowsData.length) {
+            rowsData.push(createEmptyRowData());
+            return true;
+        }
+
+        const lastRowIndex = rowsData.length - 1;
+        if (isRowPopulated(rowsData[lastRowIndex], lastRowIndex)) {
+            rowsData.push(createEmptyRowData());
+            return true;
+        }
+
+        return false;
+    };
+
+    ensureTrailingEmptyRow();
 
     const isEditableCell = (column, row, rowIndex) => {
         if (typeof column.editable === 'function') {
@@ -7598,6 +7723,20 @@ function renderInteractiveTable(config = {}) {
         setTimeout(open, 0);
     };
 
+    const resolveSearchSelectValue = (rawValue, options) => {
+        const normalisedRawValue = String(rawValue ?? '').trim();
+        if (!normalisedRawValue) return '';
+
+        const matchedOption = (Array.isArray(options) ? options : []).find((option) => {
+            const optionValue = String(option?.value ?? '').trim().toLowerCase();
+            const optionLabel = String(option?.label ?? '').trim().toLowerCase();
+            const targetValue = normalisedRawValue.toLowerCase();
+            return optionValue === targetValue || optionLabel === targetValue;
+        });
+
+        return matchedOption ? matchedOption.value : '';
+    };
+
     const getCellElement = (rowIndex, colIndex) => {
         return host.querySelector(`td.kfInteractiveTable__cell[data-row-index="${rowIndex}"][data-col-index="${colIndex}"]`);
     };
@@ -7679,7 +7818,8 @@ function renderInteractiveTable(config = {}) {
             await settings.onSubmit({
                 viewId,
                 host,
-                data: rowsData.map(cloneRow),
+                data: getData(),
+                rawData: getRawData(),
                 controller,
             });
         } catch (err) {
@@ -7702,10 +7842,19 @@ function renderInteractiveTable(config = {}) {
         const previousValue = getCellValue(row, column, colIndex);
 
         if (commit) {
-            const rawValue = column.type === 'checkbox' ? !!inputEl.checked : inputEl.value;
+            const rawValue = column.type === 'checkbox'
+                ? !!inputEl.checked
+                : column.type === 'search-select'
+                    ? resolveSearchSelectValue(inputEl.value, inputEl._kfSearchOptions)
+                    : inputEl.value;
             const nextValue = parseCellValue(rawValue, column, row, rowIndex);
             setCellValue(row, column, colIndex, nextValue);
-            renderCell(cell, rowIndex, colIndex);
+            const appendedRow = ensureTrailingEmptyRow();
+            if (appendedRow) {
+                renderTable();
+            } else {
+                renderCell(cell, rowIndex, colIndex);
+            }
             emitChange({
                 rowIndex,
                 columnIndex: colIndex,
@@ -7714,7 +7863,8 @@ function renderInteractiveTable(config = {}) {
                 previousValue,
                 nextValue,
                 row: cloneRow(row),
-                data: rowsData.map(cloneRow),
+                data: getData(),
+                rawData: getRawData(),
                 source: 'editor',
             });
         } else {
@@ -7759,6 +7909,12 @@ function renderInteractiveTable(config = {}) {
             loadingOption.value = '';
             loadingOption.textContent = 'Loading...';
             inputEl.appendChild(loadingOption);
+        } else if (column.type === 'search-select') {
+            inputEl = document.createElement('input');
+            inputEl.type = 'text';
+            inputEl.className = ['input', 'kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
+            inputEl.disabled = true;
+            inputEl.placeholder = 'Search...';
         } else if (column.type === 'checkbox') {
             inputEl = document.createElement('input');
             inputEl.type = 'checkbox';
@@ -7792,29 +7948,54 @@ function renderInteractiveTable(config = {}) {
         inputEl.style.maxWidth = '100%';
         cell.appendChild(inputEl);
 
-        if (column.type === 'select') {
+        if (column.type === 'select' || column.type === 'search-select') {
             const options = await resolveSelectOptions(column, row, rowIndex, colIndex);
             const editingCell = inputEl.closest('.kfInteractiveTable__cell');
             if (!editingCell || !editingCell.classList.contains('is-editing')) return;
 
-            inputEl.innerHTML = '';
-            options.forEach((opt) => {
-                const optionEl = document.createElement('option');
-                optionEl.value = opt.value;
-                optionEl.textContent = opt.label;
-                inputEl.appendChild(optionEl);
-            });
-
             const currentValueText = String(currentValue ?? '');
-            if (currentValueText && !options.some((opt) => opt.value === currentValueText)) {
-                const fallbackOption = document.createElement('option');
-                fallbackOption.value = currentValueText;
-                fallbackOption.textContent = currentValueText;
-                inputEl.insertBefore(fallbackOption, inputEl.firstChild);
-            }
 
-            inputEl.value = currentValueText;
-            inputEl.disabled = false;
+            if (column.type === 'select') {
+                inputEl.innerHTML = '';
+                options.forEach((opt) => {
+                    const optionEl = document.createElement('option');
+                    optionEl.value = opt.value;
+                    optionEl.textContent = opt.label;
+                    inputEl.appendChild(optionEl);
+                });
+
+                if (currentValueText && !options.some((opt) => opt.value === currentValueText)) {
+                    const fallbackOption = document.createElement('option');
+                    fallbackOption.value = currentValueText;
+                    fallbackOption.textContent = currentValueText;
+                    inputEl.insertBefore(fallbackOption, inputEl.firstChild);
+                }
+
+                inputEl.value = currentValueText;
+                inputEl.disabled = false;
+            } else {
+                const dataListId = `kf-interactive-table-datalist-${viewId}-${rowIndex}-${colIndex}`;
+                let dataListEl = editingCell.querySelector(`#${CSS.escape(dataListId)}`);
+                if (!dataListEl) {
+                    dataListEl = document.createElement('datalist');
+                    dataListEl.id = dataListId;
+                    editingCell.appendChild(dataListEl);
+                }
+
+                dataListEl.innerHTML = '';
+                options.forEach((opt) => {
+                    const optionEl = document.createElement('option');
+                    optionEl.value = opt.label;
+                    optionEl.label = opt.label;
+                    dataListEl.appendChild(optionEl);
+                });
+
+                const currentOption = options.find((opt) => String(opt.value) === currentValueText);
+                inputEl._kfSearchOptions = options;
+                inputEl.setAttribute('list', dataListId);
+                inputEl.value = currentOption ? currentOption.label : currentValueText;
+                inputEl.disabled = false;
+            }
         }
 
         if (column.type === 'date' && hasJqDatepicker) {
@@ -7877,7 +8058,7 @@ function renderInteractiveTable(config = {}) {
         });
 
         inputEl.addEventListener('change', function () {
-            if (column.type === 'checkbox' || column.type === 'select') {
+            if (column.type === 'checkbox' || column.type === 'select' || column.type === 'search-select') {
                 closeEditor(inputEl, true);
             }
         });
@@ -7925,7 +8106,8 @@ function renderInteractiveTable(config = {}) {
             settings.onRenderComplete({
                 viewId,
                 host,
-                data: rowsData.map(cloneRow),
+                data: getData(),
+                rawData: getRawData(),
             });
         } catch (err) {
             console.error('renderInteractiveTable onRenderComplete error:', err);
@@ -7933,11 +8115,12 @@ function renderInteractiveTable(config = {}) {
     }
 
     controller = {
-        getData() {
-            return rowsData.map(cloneRow);
+        getData(options = {}) {
+            return getData(options);
         },
         setData(nextRows) {
             rowsData = Array.isArray(nextRows) ? nextRows.map(cloneRow) : [];
+            ensureTrailingEmptyRow();
             renderTable();
         },
         updateCell(rowIndex, columnKeyOrIndex, value, options = {}) {
@@ -7954,9 +8137,10 @@ function renderInteractiveTable(config = {}) {
             const previousValue = getCellValue(row, column, colIndex);
             const nextValue = parseCellValue(value, column, row, idx);
             setCellValue(row, column, colIndex, nextValue);
+            const appendedRow = ensureTrailingEmptyRow();
 
             const cell = getCellElement(idx, colIndex);
-            if (cell) {
+            if (cell && !appendedRow) {
                 renderCell(cell, idx, colIndex);
             } else {
                 renderTable();
@@ -7971,7 +8155,8 @@ function renderInteractiveTable(config = {}) {
                     previousValue,
                     nextValue,
                     row: cloneRow(row),
-                    data: rowsData.map(cloneRow),
+                    data: getData(),
+                    rawData: getRawData(),
                     source: options.source || 'api',
                 });
             }
@@ -15031,6 +15216,79 @@ function hideElementsByValue (view, keywords) {
             }
         });
     });
+}
+
+/**
+ * Redirects modal form submissions back to the parent URL.
+ * Optional keyword param: scene_1234 (scene key to ignore)
+ * @param {Object} view - Knack view object
+ * @param {Object} keywords - Parsed KTL keywords for the view
+ * @example
+ * // _rtp
+ * // _rtp=scene_1234
+ */
+function redirectToPopUp(view, keywords) {
+    const kw = '_rtp';
+    if (!keywords || !keywords[kw]) return;
+
+    const viewId = view.key;
+    const viewType = ktl.views.getViewType(viewId);
+    if (viewType !== 'form') return;
+
+    if (!document.querySelector('.kn-modal')) return;
+
+    const parentUrl = ktl.core.findParentURL(sanitiseURL(window.location.href), 1);
+
+    if (!parentUrl) return;
+
+    const rawParam = keywords._rtp?.[0]?.params?.[0]?.[0];
+    const sceneToIgnore = rawParam ? String(rawParam).trim() : '';
+    const shouldSkipRedirect = () => sceneToIgnore && document.getElementById(`kn-${sceneToIgnore}`);
+
+    if (shouldSkipRedirect()) return;
+
+    $(document)
+        .off(`knack-form-submit.${viewId}.rtp`)
+        .on(`knack-form-submit.${viewId}.rtp`, (event) => {
+            if (shouldSkipRedirect()) return;
+            handleRedirect(event, parentUrl);
+        });
+
+    $(document)
+        .off(`knack-view-render.${viewId}.rtp`)
+        .on(`knack-view-render.${viewId}.rtp`, (event) => {
+            if (shouldSkipRedirect()) return;
+            handleRedirect(event, parentUrl);
+        });
+
+}
+
+/**
+ * Redirect to parent URL after form submit or modal close.
+ * @param {object} event - Knack event
+ * @param {string} newURL - URL to redirect to
+ * @example
+ * handleRedirect({ type: 'knack-form-submit' }, 'https://example.com');
+ */
+function handleRedirect(event, newURL) {
+    if (!event || !newURL) return;
+
+    if (event.type === 'knack-form-submit') {
+        setTimeout(() => {
+            window.location.href = newURL;
+        }, 300);
+        return;
+    }
+
+    if (event.type === 'knack-scene-render' || event.type === 'knack-view-render') {
+        document.querySelectorAll('button.close-modal').forEach(btn => {
+            btn.addEventListener('click', function () {
+                setTimeout(() => {
+                    window.location.href = newURL;
+                }, 300);
+            }, { once: true });
+        });
+    }
 }
 
 function buttonToUrl({ key: viewId }, keywords) {
