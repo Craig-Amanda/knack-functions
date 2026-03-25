@@ -7772,7 +7772,8 @@ function renderInteractiveTable(config = {}) {
             const maxWidth = toCssSize(column.maxWidth);
             const styleParts = [`text-align:${escapeHTML(align)}`, 'padding:6px 8px'];
             if (maxWidth) styleParts.push(`max-width:${escapeHTML(maxWidth)}`);
-            return `<th style="${styleParts.join('; ')};">${escapeHTML(column.header || '')}</th>`;
+            const headerHtml = String(column.header || '');
+            return `<th style="${styleParts.join('; ')};">${headerHtml}</th>`;
         }).join('');
 
         const rowsHtml = rowsData.map((row, rowIndex) => {
