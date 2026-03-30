@@ -2,6 +2,13 @@
 
 ## 2026-03-30
 
+<!-- pr:45 fix-changelog - amandajane-mo -->
+- Changelog Fixed the build-and-tag workflow so generated changelog and dist commits push cleanly to main, only falling back to a rebase with autostash if the branch moved underneath the workflow run.
+- Updated the changelog workflow to prefer ## Changelog over ## Summary when reading merged PR descriptions.
+- Fixed changelog parsing so paragraph-style text under ## Changelog is preserved as multiple entries instead of only keeping the first paragraph.
+- Updated changelog markers to include the PR number, branch name, and author while keeping visible changelog bullets free of repeated author suffixes.
+- Corrected the PR 44 changelog entry so it captures the full shipped changes from PRs 43 and 44.
+
 <!-- pr:44 Fix-build-and-tag - amandajane-mo -->
 - Added a pull request template with Summary, Changelog, and Testing sections, and updated the merge workflow to copy reviewed PR changelog text into `CHANGELOG.md` instead of relying on in-branch changelog edits.
 - Fixed the build-and-tag workflow so generated changelog and dist commits push cleanly to `main`, only falling back to a rebase with autostash if the branch moved underneath the workflow run.
