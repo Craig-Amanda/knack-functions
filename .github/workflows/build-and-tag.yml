@@ -245,8 +245,12 @@ jobs:
             fi
 
             git commit -m "$COMMIT_MESSAGE"
-            git pull --rebase origin main
-            git push
+
+            if ! git push origin HEAD:main; then
+              git pull --rebase --autostash origin main
+              git push origin HEAD:main
+            fi
+
             echo "changed=true" >> $GITHUB_OUTPUT
           else
             echo "No generated file changes to commit."
