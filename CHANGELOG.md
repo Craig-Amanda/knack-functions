@@ -2,9 +2,13 @@
 
 ## 2026-03-30
 
-<!-- pr:44 -->
-- Added a pull request template with Summary, Changelog, and Testing sections, and updated the merge workflow to copy the reviewed Changelog text from merged PRs into CHANGELOG.md instead of relying on in-branch changelog edits. (by @amandajane-mo)
-
-- MultiFormSubmissionCoordinator now treats Knack's `knack-form-submit` event as a successful auto-form outcome, which prevents false timeouts when a form submits without leaving a persistent success message in the DOM.
-- Kept the existing DOM-based success, error, and invalid-input checks as fallback outcome detection.
-- Added a console fallback for `errorHandler` so apps without a configured handler still log the original error context instead of throwing a `ReferenceError`.
+<!-- pr:44 Fix-build-and-tag - amandajane-mo -->
+- Added a pull request template with Summary, Changelog, and Testing sections, and updated the merge workflow to copy reviewed PR changelog text into `CHANGELOG.md` instead of relying on in-branch changelog edits.
+- Fixed the build-and-tag workflow so generated changelog and dist commits push cleanly to `main`, only falling back to a rebase with autostash if the branch moved underneath the workflow run.
+- Updated interactive tables so column headers can render trusted HTML for custom labels, tooltips, and directional indicators instead of forcing escaped plain text.
+- Documented the shared interactive table helper with usage examples, configuration options, editable rules, date and select behaviour, and auto-append row support.
+- Improved multi-form submission handling so `MultiFormSubmissionCoordinator` treats `knack-form-submit` as the primary success signal, which prevents false timeouts when a form submits successfully without leaving a persistent success message in the DOM.
+- Kept the existing DOM-based success, error, and invalid-input checks as fallback outcome detection for multi-form submission monitoring.
+- Added a fallback global `errorHandler` so apps that do not configure one still log the original error context instead of throwing a secondary `ReferenceError` during form submission failures.
+- Added `fadeFormConfirmation`, which fades and removes Knack form confirmation messages after a configurable delay without requiring extra app-specific CSS.
+- Improved `_rtp` popup redirect handling so modal views can redirect on submit or close, support `_rtp=false` to disable close redirects, and support `scene_1234` exclusions when a specific scene should suppress the redirect.

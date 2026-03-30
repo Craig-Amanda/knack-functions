@@ -105,9 +105,10 @@ jobs:
               return lines.slice(start, end);
             }
 
-            function extractNamedSection(body) {
+            function extractSectionByName(body, sectionNames) {
               const lines = stripHtmlComments(body).split('\n');
-              const sectionPattern = /^#{1,6}\s*(changelog|summary|changes)\s*$/i;
+              const escapedNames = sectionNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+              const sectionPattern = new RegExp(`^#{1,6}\\s*(${escapedNames.join('|')})\\s*$`, 'i');
 
               for (let index = 0; index < lines.length; index += 1) {
                 if (!sectionPattern.test(lines[index].trim())) {
@@ -131,6 +132,12 @@ jobs:
               return '';
             }
 
+            function extractNamedSection(body) {
+              return extractSectionByName(body, ['Changelog'])
+                || extractSectionByName(body, ['Changes'])
+                || extractSectionByName(body, ['Summary']);
+            }
+
             function toEntries(sectionText) {
               const lines = trimEmptyLines(stripHtmlComments(sectionText).split('\n'));
               const bulletEntries = lines
@@ -150,10 +157,17 @@ jobs:
                 .filter(Boolean);
 
               if (paragraphEntries.length) {
-                return [paragraphEntries[0]];
+                return paragraphEntries;
               }
 
               return [];
+            }
+
+            function sanitiseCommentValue(value) {
+              return String(value || '')
+                .replace(/--/g, '- -')
+                .replace(/>/g, '')
+                .trim();
             }
 
             const { owner, repo } = context.repo;
@@ -179,14 +193,16 @@ jobs:
             const finalEntries = changelogEntries.length
               ? changelogEntries
               : [mergedPullRequest.title.trim()];
-            const authorSuffix = mergedPullRequest.user?.login ? ` (by @${mergedPullRequest.user.login})` : '';
+            const branchName = sanitiseCommentValue(mergedPullRequest.head?.ref || 'unknown-branch');
+            const authorName = sanitiseCommentValue(mergedPullRequest.user?.login || 'unknown-author');
 
-            const marker = `<!-- pr:${mergedPullRequest.number} -->`;
+            const marker = `<!-- pr:${mergedPullRequest.number} ${branchName} - ${authorName} -->`;
+            const existingMarkerPattern = new RegExp(`<!--\\s*pr:${mergedPullRequest.number}\\b[^>]*-->`);
             const dateHeading = `## ${new Date().toISOString().slice(0, 10)}`;
-            const entryBlock = `${marker}\n${finalEntries.map((entry) => `- ${entry}${authorSuffix}`).join('\n')}`;
+            const entryBlock = `${marker}\n${finalEntries.map((entry) => `- ${entry}`).join('\n')}`;
             const existingContent = fs.readFileSync(changelogPath, 'utf8').replace(/\r/g, '');
 
-            if (existingContent.includes(marker)) {
+            if (existingMarkerPattern.test(existingContent)) {
               core.info(`CHANGELOG already includes PR #${mergedPullRequest.number}.`);
               core.setOutput('changed', 'false');
               return;
