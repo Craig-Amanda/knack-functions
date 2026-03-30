@@ -97,6 +97,25 @@ Each column can define:
 
 ## Editable rules
 
+## Header HTML
+
+Interactive table headers render HTML directly.
+
+Example:
+
+```javascript
+{
+    key: 'copyToSco',
+    header: '<span title="Click to copy ENG dates to SCO.">→ SCO</span>',
+    editable: false,
+    align: 'center',
+}
+```
+
+Only use trusted header content, because the helper does not escape header HTML.
+
+## Editable rules
+
 `editable` can be either a simple boolean or a function.
 
 When it is a function, the helper calls it like this:
