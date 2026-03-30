@@ -7427,6 +7427,7 @@ function renderInteractiveTable(config = {}) {
     const selectOptionsCache = new Map();
     let isSubmitting = false;
     let controller = null;
+    let pendingEditorNavigation = null;
 
     const useArrayRowShape = (() => {
         if (Array.isArray(rowsData[0])) return true;
@@ -7676,15 +7677,23 @@ function renderInteractiveTable(config = {}) {
     };
 
     const resolveSelectOptions = async (column, row, rowIndex, colIndex) => {
+        if (typeof column.options === 'function') {
+            try {
+                const resolvedOptions = await Promise.resolve(column.options(row, rowIndex, rowsData));
+                return normaliseSelectOptions(resolvedOptions);
+            } catch (err) {
+                console.error('renderInteractiveTable select options error:', err);
+                return [];
+            }
+        }
+
         const cacheKey = String(colIndex);
         if (selectOptionsCache.has(cacheKey)) {
             return selectOptionsCache.get(cacheKey);
         }
 
         try {
-            const rawOptions = typeof column.options === 'function'
-                ? column.options(row, rowIndex, rowsData)
-                : column.options;
+            const rawOptions = column.options;
             const resolvedOptions = await Promise.resolve(rawOptions);
             const normalisedOptions = normaliseSelectOptions(resolvedOptions);
             selectOptionsCache.set(cacheKey, normalisedOptions);
@@ -7832,8 +7841,15 @@ function renderInteractiveTable(config = {}) {
 
             optionButton.addEventListener('mousedown', (event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 inputEl.value = optionButton.dataset.label || '';
+                inputEl._kfSearchSelectedValue = optionButton.dataset.value || '';
                 closeEditor(inputEl, true);
+            });
+
+            optionButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
             });
 
             dropdownEl.appendChild(optionButton);
@@ -7845,6 +7861,51 @@ function renderInteractiveTable(config = {}) {
 
     const getCellElement = (rowIndex, colIndex) => {
         return host.querySelector(`td.kfInteractiveTable__cell[data-row-index="${rowIndex}"][data-col-index="${colIndex}"]`);
+    };
+
+    const getEditableCellCoordinates = () => {
+        const coordinates = [];
+        rowsData.forEach((row, rowIndex) => {
+            columns.forEach((column, colIndex) => {
+                if (isEditableCell(column, row, rowIndex)) {
+                    coordinates.push({ rowIndex, colIndex });
+                }
+            });
+        });
+        return coordinates;
+    };
+
+    const findAdjacentEditableCell = (rowIndex, colIndex, direction = 1) => {
+        const editableCells = getEditableCellCoordinates();
+        const currentIndex = editableCells.findIndex((cell) => cell.rowIndex === rowIndex && cell.colIndex === colIndex);
+        if (currentIndex === -1) return null;
+
+        const nextIndex = currentIndex + (direction < 0 ? -1 : 1);
+        if (nextIndex < 0 || nextIndex >= editableCells.length) return null;
+
+        const nextCell = editableCells[nextIndex];
+        return getCellElement(nextCell.rowIndex, nextCell.colIndex);
+    };
+
+    const focusEditableCell = (cell, { open = false } = {}) => {
+        if (!cell) return;
+
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => {
+                cell.focus();
+                if (open) {
+                    void openEditor(cell);
+                }
+            });
+            return;
+        }
+
+        setTimeout(() => {
+            cell.focus();
+            if (open) {
+                void openEditor(cell);
+            }
+        }, 0);
     };
 
     const emitChange = (payload) => {
@@ -7896,7 +7957,8 @@ function renderInteractiveTable(config = {}) {
                 const maxWidth = toCssSize(column.maxWidth);
                 const styleParts = ['padding:4px 8px', `text-align:${escapeHTML(align)}`];
                 if (maxWidth) styleParts.push(`max-width:${escapeHTML(maxWidth)}`);
-                return `<td class="${escapeHTML(classes)}" data-row-index="${rowIndex}" data-col-index="${colIndex}" data-col-key="${escapeHTML(String(column.key))}" style="${styleParts.join('; ')};">${column.allowHtml ? formatted : escapeHTML(formatted)}</td>`;
+                const tabIndexAttr = editable ? ' tabindex="0"' : '';
+                return `<td class="${escapeHTML(classes)}" data-row-index="${rowIndex}" data-col-index="${colIndex}" data-col-key="${escapeHTML(String(column.key))}" style="${styleParts.join('; ')};"${tabIndexAttr}>${column.allowHtml ? formatted : escapeHTML(formatted)}</td>`;
             }).join('');
 
             return `<tr data-row-index="${rowIndex}">${cellsHtml}</tr>`;
@@ -7937,7 +7999,34 @@ function renderInteractiveTable(config = {}) {
         }
     };
 
-    const closeEditor = (inputEl, commit) => {
+    const EDITOR_BLUR_SETTLE_DELAY_MS = 120;
+    const EDITOR_INITIAL_BLUR_GUARD_MS = 400;
+    const EDITOR_POINTER_BLUR_GUARD_MS = 250;
+
+    const shouldKeepEditorOpenOnBlur = (inputEl, editingCell, relatedTarget) => {
+        const activeElement = document.activeElement;
+
+        if (Date.now() < Number(inputEl._kfIgnoreBlurUntil || 0)) {
+            return true;
+        }
+
+        if (activeElement === inputEl) {
+            return true;
+        }
+
+        if (editingCell && activeElement instanceof Node && editingCell.contains(activeElement)) {
+            return true;
+        }
+
+        if (editingCell && relatedTarget instanceof Node && editingCell.contains(relatedTarget)) {
+            return true;
+        }
+
+        return false;
+    };
+
+    const closeEditor = (inputEl, commit, options = {}) => {
+        const restoreFocus = options.restoreFocus !== false;
         const cell = inputEl.closest('.kfInteractiveTable__cell');
         if (!cell) return;
 
@@ -7951,7 +8040,7 @@ function renderInteractiveTable(config = {}) {
             const rawValue = column.type === 'checkbox'
                 ? !!inputEl.checked
                 : column.type === 'search-select'
-                    ? resolveSearchSelectValue(inputEl.value, inputEl._kfSearchOptions)
+                    ? String(inputEl._kfSearchSelectedValue ?? '').trim() || resolveSearchSelectValue(inputEl.value, inputEl._kfSearchOptions)
                     : inputEl.value;
             const nextValue = parseCellValue(rawValue, column, row, rowIndex);
             setCellValue(row, column, colIndex, nextValue);
@@ -7978,6 +8067,25 @@ function renderInteractiveTable(config = {}) {
         }
 
         cell.classList.remove('is-editing');
+        if (isEditableCell(column, row, rowIndex)) {
+            cell.setAttribute('tabindex', '0');
+        } else {
+            cell.removeAttribute('tabindex');
+        }
+
+        if (pendingEditorNavigation) {
+            const nextCell = findAdjacentEditableCell(rowIndex, colIndex, pendingEditorNavigation.direction);
+            pendingEditorNavigation = null;
+            if (nextCell) {
+                focusEditableCell(nextCell, { open: true });
+                return;
+            }
+        }
+
+        if (!restoreFocus) return;
+
+        if (cell.matches(':focus')) return;
+        focusEditableCell(cell);
     };
 
     const isDatepickerOpen = (jq) => {
@@ -8004,6 +8112,7 @@ function renderInteractiveTable(config = {}) {
         const currentValue = getCellValue(row, column, colIndex);
 
         cell.classList.add('is-editing');
+        cell.removeAttribute('tabindex');
         cell.textContent = '';
 
         let inputEl;
@@ -8079,6 +8188,15 @@ function renderInteractiveTable(config = {}) {
         inputEl.style.width = '100%';
         inputEl.style.minHeight = '30px';
         inputEl.style.maxWidth = '100%';
+        inputEl._kfIgnoreBlurUntil = Date.now() + EDITOR_INITIAL_BLUR_GUARD_MS;
+        const markInternalPointerInteraction = () => {
+            inputEl._kfIgnoreBlurUntil = Date.now() + EDITOR_POINTER_BLUR_GUARD_MS;
+        };
+
+        inputEl.addEventListener('mousedown', markInternalPointerInteraction);
+        inputEl.addEventListener('pointerdown', markInternalPointerInteraction);
+        inputEl.addEventListener('touchstart', markInternalPointerInteraction, { passive: true });
+
         if (column.type !== 'search-select') {
             cell.appendChild(inputEl);
         }
@@ -8112,6 +8230,7 @@ function renderInteractiveTable(config = {}) {
                 const currentOption = options.find((opt) => String(opt.value) === currentValueText);
                 inputEl._kfSearchOptions = options;
                 inputEl._kfSearchHighlightedIndex = 0;
+                inputEl._kfSearchSelectedValue = currentOption ? String(currentOption.value ?? '') : '';
                 inputEl.value = currentOption ? currentOption.label : currentValueText;
                 inputEl.disabled = false;
                 renderSearchSelectDropdown(inputEl, options, inputEl.value);
@@ -8191,6 +8310,7 @@ function renderInteractiveTable(config = {}) {
                     if (highlightedOption) {
                         event.preventDefault();
                         inputEl.value = String(highlightedOption.label ?? '');
+                        inputEl._kfSearchSelectedValue = String(highlightedOption.value ?? '');
                     }
                 }
 
@@ -8202,6 +8322,16 @@ function renderInteractiveTable(config = {}) {
             if (event.key === 'Enter') {
                 event.preventDefault();
                 closeEditor(inputEl, true);
+            }
+            if (event.key === 'Tab') {
+                const nextCell = findAdjacentEditableCell(rowIndex, colIndex, event.shiftKey ? -1 : 1);
+                if (nextCell) {
+                    event.preventDefault();
+                    pendingEditorNavigation = {
+                        direction: event.shiftKey ? -1 : 1,
+                    };
+                    closeEditor(inputEl, true);
+                }
             }
             if (event.key === 'Escape') {
                 event.preventDefault();
@@ -8218,6 +8348,7 @@ function renderInteractiveTable(config = {}) {
         if (column.type === 'search-select') {
             inputEl.addEventListener('input', function () {
                 inputEl._kfSearchHighlightedIndex = 0;
+                inputEl._kfSearchSelectedValue = '';
                 renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
             });
 
@@ -8230,20 +8361,24 @@ function renderInteractiveTable(config = {}) {
             });
         }
 
-        inputEl.addEventListener('blur', function () {
+        inputEl.addEventListener('blur', function (event) {
             setTimeout(function () {
                 const jq = typeof jQuery === 'function' ? jQuery : (typeof $ === 'function' ? $ : null);
                 if (column.type === 'date' && isDatepickerOpen(jq)) {
                     return;
                 }
+                const editingCell = inputEl.closest('.kfInteractiveTable__cell');
+                if (shouldKeepEditorOpenOnBlur(inputEl, editingCell, event.relatedTarget)) {
+                    return;
+                }
+
                 if (column.type === 'search-select') {
                     closeSearchSelectDropdown(inputEl);
                 }
-                const editingCell = inputEl.closest('.kfInteractiveTable__cell');
                 if (editingCell && editingCell.classList.contains('is-editing')) {
-                    closeEditor(inputEl, true);
+                    closeEditor(inputEl, true, { restoreFocus: false });
                 }
-            }, 120);
+            }, EDITOR_BLUR_SETTLE_DELAY_MS);
         });
 
         inputEl.focus();
@@ -8263,13 +8398,43 @@ function renderInteractiveTable(config = {}) {
             return;
         }
 
+        const editor = event.target.closest('.kfInteractiveTable__editor');
+        if (editor && host.contains(editor)) return;
+
         const cell = event.target.closest('.kfInteractiveTable__cell');
-        if (!cell || !host.contains(cell)) return;
+        if (!cell || !host.contains(cell) || cell.classList.contains('is-editing')) return;
         void openEditor(cell);
     };
 
+    const handleTableMouseDown = (event) => {
+        const submitButton = event.target.closest('[data-kf-interactive-table-submit="true"]');
+        if (submitButton && host.contains(submitButton)) return;
+
+        const editor = event.target.closest('.kfInteractiveTable__editor');
+        if (editor && host.contains(editor)) return;
+
+        const cell = event.target.closest('.kfInteractiveTable__cell');
+        if (!cell || !host.contains(cell)) return;
+
+        if (!cell.classList.contains('is-editing')) {
+            event.preventDefault();
+        }
+    };
+
+    const handleTableKeydown = (event) => {
+        const cell = event.target.closest('.kfInteractiveTable__cell');
+        if (!cell || !host.contains(cell) || cell.classList.contains('is-editing')) return;
+
+        if (event.key === 'Enter' || event.key === ' ' || event.key === 'F2') {
+            event.preventDefault();
+            void openEditor(cell);
+        }
+    };
+
     renderTable();
+    host.addEventListener('mousedown', handleTableMouseDown);
     host.addEventListener('click', handleTableClick);
+    host.addEventListener('keydown', handleTableKeydown);
 
     if (typeof settings.onRenderComplete === 'function') {
         try {
@@ -8336,7 +8501,9 @@ function renderInteractiveTable(config = {}) {
         },
         destroy() {
             selectOptionsCache.clear();
+            host.removeEventListener('mousedown', handleTableMouseDown);
             host.removeEventListener('click', handleTableClick);
+            host.removeEventListener('keydown', handleTableKeydown);
             host.innerHTML = '';
         },
     };
@@ -14926,7 +15093,6 @@ async function waitGetConxIdFromDetailId({ viewId, fieldId, delay = 5000 }) {
                 const ids = Array.from(elements).map(element => element.id).filter(Boolean);
 
                 if (ids.length === 0) {
-                    console.log('No connection IDs found in elements');
                     resolve(null);
                 } else {
                     // Return a single ID or array depending on number of results
@@ -15471,34 +15637,6 @@ function redirectToPopUp(view, keywords) {
             handleRedirect(event, parentUrl);
         });
 
-}
-
-/**
- * Redirect to parent URL after form submit or modal close.
- * @param {object} event - Knack event
- * @param {string} newURL - URL to redirect to
- * @example
- * handleRedirect({ type: 'knack-form-submit' }, 'https://example.com');
- */
-function handleRedirect(event, newURL) {
-    if (!event || !newURL) return;
-
-    if (event.type === 'knack-form-submit') {
-        setTimeout(() => {
-            window.location.href = newURL;
-        }, 300);
-        return;
-    }
-
-    if (event.type === 'knack-scene-render' || event.type === 'knack-view-render') {
-        document.querySelectorAll('button.close-modal').forEach(btn => {
-            btn.addEventListener('click', function () {
-                setTimeout(() => {
-                    window.location.href = newURL;
-                }, 300);
-            }, { once: true });
-        });
-    }
 }
 
 function buttonToUrl({ key: viewId }, keywords) {
