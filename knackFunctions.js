@@ -9,6 +9,31 @@ const HEADER_CHECKBOX_SELECTOR = 'th input[type="checkbox"]';
 const CLASS_DISABLED = 'disabled';
 
 /**
+ * Provide a console-based fallback when an app has not configured a global error handler.
+ * This keeps the original error visible instead of throwing a ReferenceError while handling it.
+ */
+if (typeof globalThis.errorHandler === 'undefined') {
+    globalThis.errorHandler = {
+        handle(error, additionalInfo = {}, errorSource = 'Unknown') {
+            console.error('[knackFunctions] Fallback error handler:', {
+                error,
+                additionalInfo,
+                errorSource,
+            });
+            return null;
+        },
+        handleError(error, additionalInfo = {}, errorSource = 'Unknown') {
+            console.error('[knackFunctions] Fallback error handler:', {
+                error,
+                additionalInfo,
+                errorSource,
+            });
+            return null;
+        },
+    };
+}
+
+/**
  * Lightweight Knack metadata navigator.
  * Provides view and field metadata lookups with memoization.
  */
@@ -9836,6 +9861,7 @@ class MultiFormSubmissionCoordinator {
             let timeoutId = null;
             let pollIntervalId = null;
             let observer = null;
+            const submitEventNamespace = this._getEventNamespace('knack-form-submit', viewId);
 
             const cleanup = () => {
                 if (cleanupDone) return;
@@ -9843,6 +9869,7 @@ class MultiFormSubmissionCoordinator {
                 if (timeoutId) clearTimeout(timeoutId);
                 if (pollIntervalId) clearInterval(pollIntervalId);
                 if (observer) observer.disconnect();
+                $(document).off(submitEventNamespace);
             };
 
             timeoutId = setTimeout(() => {
@@ -9856,6 +9883,19 @@ class MultiFormSubmissionCoordinator {
                 reject(new Error(`View element not found: ${viewId}`));
                 return;
             }
+
+            // Treat Knack's form-submit event as the primary success signal.
+            // Some forms submit successfully without leaving a persistent success message in the DOM.
+            $(document).off(submitEventNamespace);
+            $(document).on(submitEventNamespace, (_, view, record) => {
+                cleanup();
+                resolve({
+                    success: true,
+                    record: record || null,
+                    view: view?.key || viewId,
+                    message: 'Form submitted successfully',
+                });
+            });
 
             const checkOutcome = () => {
                 // Check for success message
