@@ -9,6 +9,31 @@ const HEADER_CHECKBOX_SELECTOR = 'th input[type="checkbox"]';
 const CLASS_DISABLED = 'disabled';
 
 /**
+ * Provide a console-based fallback when an app has not configured a global error handler.
+ * This keeps the original error visible instead of throwing a ReferenceError while handling it.
+ */
+if (typeof globalThis.errorHandler === 'undefined') {
+    globalThis.errorHandler = {
+        handle(error, additionalInfo = {}, errorSource = 'Unknown') {
+            console.error('[knackFunctions] Fallback error handler:', {
+                error,
+                additionalInfo,
+                errorSource,
+            });
+            return null;
+        },
+        handleError(error, additionalInfo = {}, errorSource = 'Unknown') {
+            console.error('[knackFunctions] Fallback error handler:', {
+                error,
+                additionalInfo,
+                errorSource,
+            });
+            return null;
+        },
+    };
+}
+
+/**
  * Lightweight Knack metadata navigator.
  * Provides view and field metadata lookups with memoization.
  */
@@ -5245,6 +5270,42 @@ function showIf(elements, condition) {
 }
 
 /**
+ * Fade and remove a Knack form confirmation block after a delay.
+ * Uses inline styles so apps can reuse the behaviour without extra CSS.
+ * @param {HTMLElement|null} viewElement - Form view root that may contain a confirmation block.
+ * @param {Object} [options={}] - Timing options.
+ * @param {number} [options.delayMs=7000] - Total delay before removing the confirmation.
+ * @param {number} [options.fadeDurationMs=500] - Duration of the fade transition.
+ * @returns {void}
+ */
+function fadeFormConfirmation(viewElement, options = {}) {
+    if (!(viewElement instanceof Element)) return;
+
+    const confirmationElement = viewElement.querySelector('.kn-form-confirmation');
+    if (!confirmationElement || confirmationElement.dataset.formConfirmationFadeScheduled === 'true') return;
+
+    confirmationElement.dataset.formConfirmationFadeScheduled = 'true';
+
+    const delayMs = Math.max(0, Number(options.delayMs ?? 7000) || 7000);
+    const fadeDurationMs = Math.max(100, Number(options.fadeDurationMs ?? 500) || 500);
+    const fadeDelayMs = Math.max(0, delayMs - fadeDurationMs);
+
+    confirmationElement.style.opacity = '1';
+    confirmationElement.style.transition = `opacity ${fadeDurationMs}ms ease`;
+
+    window.setTimeout(() => {
+        if (!confirmationElement.isConnected) return;
+        confirmationElement.style.pointerEvents = 'none';
+        confirmationElement.style.opacity = '0';
+    }, fadeDelayMs);
+
+    window.setTimeout(() => {
+        if (!confirmationElement.isConnected) return;
+        confirmationElement.remove();
+    }, delayMs);
+}
+
+/**
  * Toggle element(s) visibility based on a condition.
  * @param {Element|NodeList|string|Array} elements - DOM element(s), selector, or array of elements/selectors.
  * @param {Function|boolean} [condition] - If provided, toggles to that state; if omitted, toggles current state.
@@ -7939,7 +8000,8 @@ function renderInteractiveTable(config = {}) {
             const maxWidth = toCssSize(column.maxWidth);
             const styleParts = [`text-align:${escapeHTML(align)}`, 'padding:6px 8px'];
             if (maxWidth) styleParts.push(`max-width:${escapeHTML(maxWidth)}`);
-            return `<th style="${styleParts.join('; ')};">${escapeHTML(column.header || '')}</th>`;
+            const headerHtml = String(column.header || '');
+            return `<th style="${styleParts.join('; ')};">${headerHtml}</th>`;
         }).join('');
 
         const rowsHtml = rowsData.map((row, rowIndex) => {
@@ -9966,6 +10028,7 @@ class MultiFormSubmissionCoordinator {
             let timeoutId = null;
             let pollIntervalId = null;
             let observer = null;
+            const submitEventNamespace = this._getEventNamespace('knack-form-submit', viewId);
 
             const cleanup = () => {
                 if (cleanupDone) return;
@@ -9973,6 +10036,7 @@ class MultiFormSubmissionCoordinator {
                 if (timeoutId) clearTimeout(timeoutId);
                 if (pollIntervalId) clearInterval(pollIntervalId);
                 if (observer) observer.disconnect();
+                $(document).off(submitEventNamespace);
             };
 
             timeoutId = setTimeout(() => {
@@ -9986,6 +10050,19 @@ class MultiFormSubmissionCoordinator {
                 reject(new Error(`View element not found: ${viewId}`));
                 return;
             }
+
+            // Treat Knack's form-submit event as the primary success signal.
+            // Some forms submit successfully without leaving a persistent success message in the DOM.
+            $(document).off(submitEventNamespace);
+            $(document).on(submitEventNamespace, (_, view, record) => {
+                cleanup();
+                resolve({
+                    success: true,
+                    record: record || null,
+                    view: view?.key || viewId,
+                    message: 'Form submitted successfully',
+                });
+            });
 
             const checkOutcome = () => {
                 // Check for success message
@@ -14292,12 +14369,14 @@ function openFileFromBtn(viewId, btnText, filePath, openInNewWindow = false) {
  * @param {object}  event - calling event
  * @param {string} newURL - url to redirect to */
 function handleRedirect(event, newURL) {
-    if (event.type === 'knack-form-submit') {
+    if (!event || !newURL) return;
+
+    if (event.type === 'knack-form-submit' || event.type === 'click') {
         setTimeout(() => {
             window.location.href = newURL;
         }, 300);
     } else if (event.type === 'knack-scene-render' || event.type === 'knack-view-render') {
-        document.querySelectorAll('button.close-modal').forEach(btn => {
+        document.querySelectorAll('.kn-modal button.close-modal, .kn-modal .close-modal').forEach(btn => {
             btn.addEventListener('click', function () {
                 setTimeout(() => {
                     window.location.href = newURL;
@@ -15595,13 +15674,86 @@ function hideElementsByValue (view, keywords) {
 }
 
 /**
- * Redirects modal form submissions back to the parent URL.
- * Optional keyword param: scene_1234 (scene key to ignore)
+ * Parse _rtp keyword params.
+ * Supported params: scene_1234 and false.
+ * @param {Array<{ params?: Array }>} keywordEntries - Parsed keyword entries.
+ * @returns {{ redirectOnClose: boolean, sceneToIgnore: string }}
+ */
+function getRedirectToPopUpConfig(keywordEntries = []) {
+    const config = {
+        redirectOnClose: true,
+        sceneToIgnore: ''
+    };
+
+    keywordEntries.forEach(({ params = [] } = {}) => {
+        params.flat().forEach((param) => {
+            const normalisedParam = String(param || '').trim();
+            if (!normalisedParam) return;
+
+            const lowerCaseParam = normalisedParam.toLowerCase();
+            if (lowerCaseParam === 'false') {
+                config.redirectOnClose = false;
+                return;
+            }
+
+            if (lowerCaseParam === 'true') return;
+
+            if (lowerCaseParam.startsWith('scene_')) {
+                config.sceneToIgnore = normalisedParam;
+            }
+        });
+    });
+
+    return config;
+}
+
+/**
+ * Bind direct click listeners to modal close buttons for _rtp.
+ * This intercepts the close button in the capture phase so the modal's own close
+ * handler cannot dismiss the popup before the redirect runs.
+ * @param {object} options - Binding options.
+ * @param {string} options.viewId - Current view ID.
+ * @param {string} options.parentUrl - Parent URL to redirect to.
+ * @param {string} options.closeRedirectSelector - Selector for close buttons.
+ * @param {Function} options.shouldSkipRedirect - Predicate to skip redirect.
+ * @returns {void}
+ */
+function bindRedirectToPopUpCloseButtons({
+    viewId,
+    parentUrl,
+    closeRedirectSelector,
+    shouldSkipRedirect
+}) {
+    const closeButtons = document.querySelectorAll(closeRedirectSelector);
+
+    closeButtons.forEach((button) => {
+        if (button.dataset.rtpCloseBound === viewId) return;
+
+        button.dataset.rtpCloseBound = viewId;
+        button.addEventListener('click', (event) => {
+            if (shouldSkipRedirect()) return;
+
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            event.stopPropagation();
+
+            handleRedirect(event, parentUrl);
+        }, { capture: true });
+    });
+}
+
+/**
+ * Redirects modal views back to the parent URL.
+ * Form views redirect on submit and, by default, on modal close.
+ * Non-form modal views redirect on modal close by default.
+ * Optional keyword params: scene_1234 (scene key to ignore), false (disable close redirect)
  * @param {Object} view - Knack view object
  * @param {Object} keywords - Parsed KTL keywords for the view
  * @example
  * // _rtp
+ * // _rtp=false
  * // _rtp=scene_1234
+ * // _rtp=scene_1234,false
  */
 function redirectToPopUp(view, keywords) {
     const kw = '_rtp';
@@ -15609,7 +15761,10 @@ function redirectToPopUp(view, keywords) {
 
     const viewId = view.key;
     const viewType = ktl.views.getViewType(viewId);
-    if (viewType !== 'form') return;
+    const closeRedirectSelector = '.kn-modal button.close-modal, .kn-modal .close-modal';
+
+    $(document)
+        .off(`knack-form-submit.${viewId}.rtp`);
 
     if (!document.querySelector('.kn-modal')) return;
 
@@ -15617,11 +15772,21 @@ function redirectToPopUp(view, keywords) {
 
     if (!parentUrl) return;
 
-    const rawParam = keywords._rtp?.[0]?.params?.[0]?.[0];
-    const sceneToIgnore = rawParam ? String(rawParam).trim() : '';
+    const { redirectOnClose, sceneToIgnore } = getRedirectToPopUpConfig(keywords[kw]);
     const shouldSkipRedirect = () => sceneToIgnore && document.getElementById(`kn-${sceneToIgnore}`);
 
     if (shouldSkipRedirect()) return;
+
+    if (redirectOnClose) {
+        bindRedirectToPopUpCloseButtons({
+            viewId,
+            parentUrl,
+            closeRedirectSelector,
+            shouldSkipRedirect
+        });
+    }
+
+    if (viewType !== 'form') return;
 
     $(document)
         .off(`knack-form-submit.${viewId}.rtp`)
@@ -15629,14 +15794,6 @@ function redirectToPopUp(view, keywords) {
             if (shouldSkipRedirect()) return;
             handleRedirect(event, parentUrl);
         });
-
-    $(document)
-        .off(`knack-view-render.${viewId}.rtp`)
-        .on(`knack-view-render.${viewId}.rtp`, (event) => {
-            if (shouldSkipRedirect()) return;
-            handleRedirect(event, parentUrl);
-        });
-
 }
 
 function buttonToUrl({ key: viewId }, keywords) {
