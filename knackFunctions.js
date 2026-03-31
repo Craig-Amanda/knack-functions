@@ -8315,6 +8315,14 @@ function renderInteractiveTable(config = {}) {
                     onSelect: function () {
                         closeEditor(inputEl, true);
                     },
+                    onClose: function () {
+                        setTimeout(function () {
+                            const editingCell = inputEl.closest('.kfInteractiveTable__cell');
+                            if (editingCell && editingCell.classList.contains('is-editing')) {
+                                closeEditor(inputEl, true, { restoreFocus: false });
+                            }
+                        }, 0);
+                    },
                 });
             }
 
