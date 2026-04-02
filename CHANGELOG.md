@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-02
+
+<!-- pr:46 Updates-to-irt - CSWinnall -->
+- Improves child record retrieval and connection ID extraction
+
 ## 2026-03-30
 
 <!-- pr:45 fix-changelog - amandajane-mo -->
