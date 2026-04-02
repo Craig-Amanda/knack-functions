@@ -11317,8 +11317,8 @@ class KnackAPI {
      * Retrieves child records connected to a parent record
      * @param {string} sceneId - The scene ID/key/slug where the parent record is displayed
      * @param {string} viewId - The view ID/key where the parent record is displayed
-     * @param {string} recordId - The ID of the parent record
-     * @param {string} connectionFieldKey - The field key that connects child records to the parent
+    * @param {string} recordId - The ID of the parent record
+    * @param {string} parentSceneSlug - The slug used by the parent scene route, e.g. `id`.
      * @param {Object} [options] - Request options
      * @param {Array<Object>|Object} [options.filters] - Filter specifications
      * @param {Array<Object>|Object} [options.sorters] - Sort specifications
@@ -11329,9 +11329,14 @@ class KnackAPI {
      * @returns {Promise<Array<Object>|Object>} - Retrieved child records or raw response
      * @public
      */
-    async getRecordChildren(sceneId, viewId, recordId, connectionFieldKey, options = {}) {
+    async getRecordChildren(sceneId, viewId, recordId, parentSceneSlug, options = {}) {
         const opts = options || {};
         const params = this._buildQueryParams(opts);
+        const normalizedSceneSlug = String(parentSceneSlug || '').trim().replace(/^#/, '');
+
+        if (!normalizedSceneSlug) {
+            throw new Error('KnackAPI getRecordChildren requires a parentSceneSlug.');
+        }
 
         // Format URL for child records
         // For view-based API, we use the pattern:
@@ -11339,7 +11344,7 @@ class KnackAPI {
         const url = this._formatApiUrl(sceneId, viewId);
 
         // Add the parent record ID as a parameter
-        params[`${connectionFieldKey}_id`] = recordId;
+        params[`${normalizedSceneSlug}_id`] = recordId;
 
         const formattedUrl = url + this._formatParams(params);
         this._log('Getting child records', formattedUrl);
@@ -11352,15 +11357,15 @@ class KnackAPI {
      * Retrieves all child records connected to a parent record across multiple pages.
      * @param {string} sceneId - The scene ID/key/slug where the parent record is displayed
      * @param {string} viewId - The view ID/key where the child records are displayed
-     * @param {string} recordId - The ID of the parent record
-     * @param {string} connectionFieldKey - The field key that connects child records to the parent
+    * @param {string} recordId - The ID of the parent record
+    * @param {string} parentSceneSlug - The slug used by the parent scene route, e.g. `id`.
      * @param {Object} [options] - Optional parameters
      * @param {number} [options.rows=1000] - Number of rows per page
      * @param {Function} [options.onProgress] - Optional progress callback
      * @returns {Promise<Array<Object>>} - All connected child records
      * @public
      */
-    async getAllRecordChildren(sceneId, viewId, recordId, connectionFieldKey, options = {}) {
+    async getAllRecordChildren(sceneId, viewId, recordId, parentSceneSlug, options = {}) {
         const opts = options || {};
         const rows = Number.isFinite(opts.rows) ? opts.rows : 1000;
         const pageConcurrency = Number.isFinite(opts.pageConcurrency) && opts.pageConcurrency > 0
@@ -11369,7 +11374,7 @@ class KnackAPI {
         const pageOpts = { filters: opts.filters, sorters: opts.sorters, rows, rawResponse: true, timeout: opts.timeout };
         const failOnPageError = Boolean(opts.failOnPageError);
 
-        const firstPage = await this.getRecordChildren(sceneId, viewId, recordId, connectionFieldKey, { ...pageOpts, page: 1 });
+        const firstPage = await this.getRecordChildren(sceneId, viewId, recordId, parentSceneSlug, { ...pageOpts, page: 1 });
         const totalPages = Number(firstPage?.total_pages || 0);
         const totalRecords = Number(firstPage?.total_records || 0);
         const allRecords = Array.isArray(firstPage?.records) ? [...firstPage.records] : [];
@@ -11386,7 +11391,7 @@ class KnackAPI {
             for (let page = batchStart; page <= batchEnd; page++) pageNumbers.push(page);
 
             const batchResults = await Promise.allSettled(
-                pageNumbers.map(page => this.getRecordChildren(sceneId, viewId, recordId, connectionFieldKey, { ...pageOpts, page }))
+                pageNumbers.map(page => this.getRecordChildren(sceneId, viewId, recordId, parentSceneSlug, { ...pageOpts, page }))
             );
 
             for (let index = 0; index < batchResults.length; index++) {
@@ -11403,7 +11408,7 @@ class KnackAPI {
                     sceneId,
                     viewId,
                     recordId,
-                    connectionFieldKey,
+                    parentSceneSlug,
                     page,
                     error: result.reason?.message || result.reason
                 }, 'warn');
@@ -14559,6 +14564,15 @@ function getConnectionIdFromHtml(cellElOrHtml) {
     const idFromConn = getIdFromElement(conn);
     if (idFromConn) return idFromConn;
 
+    if (conn instanceof Element) {
+        let ancestor = conn.parentElement;
+        while (ancestor && ancestor !== root) {
+            const idFromAncestor = getIdFromElement(ancestor);
+            if (idFromAncestor) return idFromAncestor;
+            ancestor = ancestor.parentElement;
+        }
+    }
+
     // Fallback: any descendant <span>
     const spans = root.querySelectorAll('span');
     for (const s of spans) {
@@ -15152,9 +15166,8 @@ function capitaliseString(str, options = { allCaps: true }) {
  */
 async function waitGetConxIdFromDetailId({ viewId, fieldId, delay = 5000 }) {
     try {
-        const selector = `#${viewId} .field_${fieldId} .kn-detail-body > span > span > span`;
+        const selector = `#${viewId} .field_${fieldId} .kn-detail-body`;
 
-        // Wait for the elements to be available
         const elements = await waitSelector({
             selector,
             delay,
@@ -15162,20 +15175,41 @@ async function waitGetConxIdFromDetailId({ viewId, fieldId, delay = 5000 }) {
         });
 
         if (!elements || elements.length === 0) {
-            console.log(`No connection elements found with selector: ${selector}`);
             return null;
         }
 
-        // Give the DOM a moment to fully render the spans with IDs
         return new Promise(resolve => {
             setTimeout(() => {
-                const ids = Array.from(elements).map(element => element.id).filter(Boolean);
+                const ids = Array.from(elements).flatMap((element) => {
+                    const connectionNodes = Array.from(element.querySelectorAll('span[data-kn="connection-value"]'));
+                    const extractedIds = connectionNodes.flatMap((node) => {
+                        const matches = [];
+                        const directId = getIdFromElement(node);
+                        if (directId) matches.push(directId);
 
-                if (ids.length === 0) {
+                        let ancestor = node.parentElement;
+                        while (ancestor && ancestor !== element) {
+                            const ancestorId = getIdFromElement(ancestor);
+                            if (ancestorId) matches.push(ancestorId);
+                            ancestor = ancestor.parentElement;
+                        }
+
+                        return matches;
+                    }).filter(Boolean);
+
+                    if (extractedIds.length) {
+                        return Array.from(new Set(extractedIds));
+                    }
+
+                    const fallbackId = getConnectionIdFromHtml(element);
+                    return fallbackId ? [fallbackId] : [];
+                });
+                const uniqueIds = Array.from(new Set(ids));
+
+                if (uniqueIds.length === 0) {
                     resolve(null);
                 } else {
-                    // Return a single ID or array depending on number of results
-                    resolve(ids.length === 1 ? ids[0] : ids);
+                    resolve(uniqueIds.length === 1 ? uniqueIds[0] : uniqueIds);
                 }
             }, 100);
         });
