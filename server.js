@@ -17,9 +17,56 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.use(express.json({ limit: '32kb' }));
 
 // Serve static files
 app.use(express.static('.'));
+
+function normalizeHeaders(headersLike) {
+    const normalized = {};
+    if (!headersLike) return normalized;
+
+    if (typeof headersLike.forEach === 'function') {
+        headersLike.forEach((value, key) => {
+            normalized[String(key).toLowerCase()] = value;
+        });
+        return normalized;
+    }
+
+    Object.entries(headersLike).forEach(([key, value]) => {
+        normalized[String(key).toLowerCase()] = value;
+    });
+
+    return normalized;
+}
+
+function parseHeaderInt(value) {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = parseInt(String(value), 10);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildRateLimitSnapshot(headersLike, status = null) {
+    const headers = normalizeHeaders(headersLike);
+    const headerNames = Object.keys(headers).sort();
+    const limit = parseHeaderInt(headers['x-planlimit-limit'] || headers['x-rate-limit-limit']);
+    const remaining = parseHeaderInt(headers['x-planlimit-remaining'] || headers['x-rate-limit-remaining']);
+    const reset = parseHeaderInt(headers['x-planlimit-reset'] || headers['x-rate-limit-reset']);
+    const available = limit !== null || remaining !== null || reset !== null;
+
+    return {
+        available,
+        reason: available ? null : 'Knack did not return any readable rate-limit headers to the development server.',
+        limit,
+        remaining,
+        used: Number.isFinite(limit) && Number.isFinite(remaining) ? Math.max(0, limit - remaining) : null,
+        reset,
+        status: Number.isFinite(status) ? status : null,
+        observedAt: Date.now(),
+        headerNames,
+        headers
+    };
+}
 
 // Serve the knackFunctions.js file with proper headers
 app.get('/knackFunctions.js', (req, res) => {
@@ -30,9 +77,101 @@ app.get('/knackFunctions.js', (req, res) => {
 
     try {
         const content = fs.readFileSync('./knackFunctions.js', 'utf8');
-        res.send(content);
+        const bootstrap = `globalThis.__knackFunctionsDevServerUrl = "http://localhost:${PORT}";\n`;
+        res.send(`${bootstrap}${content}`);
     } catch (error) {
         res.status(500).send(`Error reading file: ${error.message}`);
+    }
+});
+
+// Local-only helper that fetches Knack rate-limit headers server-side for development testing.
+app.post('/api/knack/rate-limit', async (req, res) => {
+    const {
+        sceneId,
+        viewId,
+        apiBaseUrl,
+        applicationId,
+        authToken,
+        timeoutMs
+    } = req.body || {};
+
+    const normalizedSceneId = String(sceneId || '').trim();
+    const normalizedViewId = String(viewId || '').trim();
+    const normalizedBaseUrl = String(apiBaseUrl || 'https://api.knack.com/v1').trim().replace(/\/$/, '');
+    const normalizedApplicationId = String(applicationId || '').trim();
+    const normalizedAuthToken = String(authToken || '').trim();
+    const requestTimeoutMs = Number.isFinite(timeoutMs) ? Math.max(1000, Math.floor(timeoutMs)) : 15000;
+
+    if (!normalizedSceneId || !normalizedViewId) {
+        return res.status(400).json({
+            message: 'sceneId and viewId are required.'
+        });
+    }
+
+    if (!normalizedApplicationId || !normalizedAuthToken) {
+        return res.status(400).json({
+            message: 'applicationId and authToken are required.'
+        });
+    }
+
+    const targetUrl = `${normalizedBaseUrl}/pages/${encodeURIComponent(normalizedSceneId)}/views/${encodeURIComponent(normalizedViewId)}/records?page=1&rows_per_page=1`;
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), requestTimeoutMs);
+
+    try {
+        const response = await fetch(targetUrl, {
+            method: 'GET',
+            headers: {
+                'X-Knack-Application-ID': normalizedApplicationId,
+                'X-Knack-REST-API-Key': 'knack',
+                'Authorization': normalizedAuthToken
+            },
+            signal: controller.signal
+        });
+
+        const responseText = await response.text();
+        const daily = buildRateLimitSnapshot(response.headers, response.status);
+
+        if (!response.ok) {
+            return res.status(response.status).json({
+                message: 'Knack rate-limit probe failed.',
+                url: targetUrl,
+                status: response.status,
+                daily,
+                bodyPreview: responseText.slice(0, 500)
+            });
+        }
+
+        return res.json({
+            url: targetUrl,
+            status: response.status,
+            daily
+        });
+    } catch (error) {
+        const timedOut = error?.name === 'AbortError';
+        return res.status(timedOut ? 504 : 502).json({
+            message: timedOut
+                ? 'Knack rate-limit probe timed out.'
+                : `Knack rate-limit probe failed: ${error?.message || 'Unknown error'}`,
+            url: targetUrl,
+            status: timedOut ? 504 : 502,
+            daily: {
+                available: false,
+                reason: timedOut
+                    ? 'The development server timed out while reading Knack rate-limit headers.'
+                    : 'The development server could not reach Knack to read rate-limit headers.',
+                limit: null,
+                remaining: null,
+                used: null,
+                reset: null,
+                status: timedOut ? 504 : 502,
+                observedAt: Date.now(),
+                headerNames: [],
+                headers: {}
+            }
+        });
+    } finally {
+        clearTimeout(timerId);
     }
 });
 
@@ -41,13 +180,14 @@ app.get('/test', (req, res) => {
     res.json({
         message: 'KnackFunctions development server is running!',
         timestamp: new Date().toISOString(),
-        file: 'knackFunctions.js available at /knackFunctions.js'
+        file: 'knackFunctions.js available at /knackFunctions.js',
+        rateLimitProxy: 'POST /api/knack/rate-limit'
     });
 });
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-    res.json({ status: 'OK', port: PORT });
+    res.json({ status: 'OK', port: PORT, rateLimitProxy: true });
 });
 
 // Serve a simple test page
@@ -89,6 +229,12 @@ app.get('/', (req, res) => {
                     <strong>Health Check:</strong><br>
                     <code>http://localhost:${PORT}/health</code><br>
                     <em>Server health status</em>
+                </div>
+
+                <div class="endpoint">
+                    <strong>Rate Limit Proxy:</strong><br>
+                    <code>POST http://localhost:${PORT}/api/knack/rate-limit</code><br>
+                    <em>Development-only endpoint for reading Knack daily API limit headers</em>
                 </div>
 
                 <h2>Usage in Knack:</h2>
@@ -139,6 +285,7 @@ app.listen(PORT, () => {
     console.log(`📍 Server: http://localhost:${PORT}`);
     console.log(`📄 Main file: http://localhost:${PORT}/knackFunctions.js`);
     console.log(`🧪 Test endpoint: http://localhost:${PORT}/test`);
+    console.log(`📊 Rate limit proxy: http://localhost:${PORT}/api/knack/rate-limit`);
     console.log('👀 Watching knackFunctions.js for changes...');
     console.log('\n💡 Add this to your Knack app:');
     console.log(`   <script src="http://localhost:${PORT}/knackFunctions.js"></script>`);
