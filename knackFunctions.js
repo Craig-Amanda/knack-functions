@@ -9131,9 +9131,31 @@ function getDateTimeParts(fieldWrap) {
     if (!fieldWrap) return { date: '', time: '' };
     const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
     const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+    const hoursSelect = fieldWrap.querySelector('select[name="hours"]');
+    const minutesSelect = fieldWrap.querySelector('select[name="minutes"]');
+    const amPmSelect = fieldWrap.querySelector('select[name="am_pm"]');
+    const dateValue = dateInput ? String(dateInput.value || '').trim() : '';
+
+    if (timeInput) {
+        return {
+            date: dateValue,
+            time: String(timeInput.value || '').trim().replace(/\s+/g, ''),
+        };
+    }
+
+    if (hoursSelect instanceof HTMLSelectElement && minutesSelect instanceof HTMLSelectElement) {
+        const hours = String(hoursSelect.value || '').trim();
+        const minutes = String(minutesSelect.value || '').trim();
+        const amPm = amPmSelect instanceof HTMLSelectElement ? String(amPmSelect.value || '').trim().toLowerCase() : '';
+        return {
+            date: dateValue,
+            time: hours && minutes ? `${hours}:${minutes}${amPm}` : '',
+        };
+    }
+
     return {
-        date: dateInput ? dateInput.value : '',
-        time: timeInput ? timeInput.value : '',
+        date: dateValue,
+        time: '',
     };
 }
 
@@ -11216,6 +11238,7 @@ class KnackAPI {
 
         this._activeRequests = 0;
         this._inflightGets = new Map();
+        this._initApiUsageState();
         this._initLogSettings();
         this._initWriteQueue();
     }
@@ -12114,6 +12137,518 @@ class KnackAPI {
         this._log('Write concurrency set to', this.options.writeConcurrency);
         this._initWriteQueue();
         this._drainWriteQueue();
+    }
+
+    /**
+     * Returns the latest API usage snapshot for this client instance.
+     * Run counters only include requests made by this KnackAPI instance.
+     * Daily rate-limit values reflect the most recent response headers observed.
+     * @returns {{run: Object, daily: Object}}
+     * @public
+     */
+    getApiUsageStats() {
+        const usage = this._apiUsage || {};
+        const rateLimit = usage.rateLimit || this._createEmptyRateLimitSnapshot();
+
+        return {
+            run: {
+                startedAt: this._formatUsageTimestamp(usage.startedAt),
+                totalCalls: usage.totalCalls || 0,
+                successfulCalls: usage.successfulCalls || 0,
+                failedCalls: usage.failedCalls || 0,
+                rateLimitedCalls: usage.rateLimitedCalls || 0,
+                byMethod: { ...(usage.byMethod || {}) },
+                lastRequestAt: this._formatUsageTimestamp(usage.lastRequestAt),
+                lastResponseAt: this._formatUsageTimestamp(usage.lastResponseAt),
+                lastRequest: usage.lastRequest
+                    ? {
+                        ...usage.lastRequest,
+                        requestedAt: this._formatUsageTimestamp(usage.lastRequest.requestedAt),
+                        respondedAt: this._formatUsageTimestamp(usage.lastRequest.respondedAt)
+                    }
+                    : null
+            },
+            daily: {
+                available: rateLimit.available === true,
+                reason: rateLimit.reason || null,
+                limit: rateLimit.limit,
+                remaining: rateLimit.remaining,
+                used: rateLimit.used,
+                reset: rateLimit.reset,
+                status: rateLimit.status,
+                observedAt: this._formatUsageTimestamp(rateLimit.observedAt),
+                headerNames: Array.isArray(rateLimit.headerNames) ? [...rateLimit.headerNames] : [],
+                headers: { ...(rateLimit.headers || {}) }
+            }
+        };
+    }
+
+    /**
+     * Returns the number of actual HTTP requests made by this client instance.
+     * Retries count because they are real network calls.
+     * @returns {number}
+     * @public
+     */
+    getRunApiCallCount() {
+        return this._apiUsage?.totalCalls || 0;
+    }
+
+    /**
+     * Returns the latest observed daily rate-limit snapshot.
+     * @returns {{limit: number|null, remaining: number|null, used: number|null, reset: number|null, status: number|null, observedAt: string|null, headers: Object}}
+     * @public
+     */
+    getRateLimitStatus() {
+        return this.getApiUsageStats().daily;
+    }
+
+    /**
+     * Clears per-run API usage counters for this client instance.
+     * By default the latest daily rate-limit snapshot is retained.
+     * @param {Object} [options={}] - Reset options.
+     * @param {boolean} [options.preserveRateLimitSnapshot=true] - Keep the latest observed daily rate-limit values.
+     * @returns {{run: Object, daily: Object}}
+     * @public
+     */
+    resetApiUsageStats(options = {}) {
+        const preserveRateLimitSnapshot = options.preserveRateLimitSnapshot !== false;
+        this._initApiUsageState(preserveRateLimitSnapshot);
+        return this.getApiUsageStats();
+    }
+
+    /**
+     * Performs a minimal view request to refresh the latest rate-limit headers.
+     * This probe counts as one real API call.
+     * @param {string} sceneId - The scene ID/key.
+     * @param {string} viewId - The view ID/key.
+     * @param {Object} [options={}] - Optional getRecords options such as filters, sorters, or timeout.
+     * @returns {Promise<{run: Object, daily: Object}>}
+     * @public
+     */
+    async refreshApiUsageStats(sceneId, viewId, options = {}) {
+        const opts = options || {};
+        const { useDevServerProxy, devServerTimeout, ...requestOptions } = opts;
+
+        await this.getRecords(sceneId, viewId, {
+            ...requestOptions,
+            page: 1,
+            rows: 1,
+            rawResponse: true
+        });
+
+        if (useDevServerProxy !== false) {
+            await this._refreshRateLimitFromDevServer(sceneId, viewId, {
+                timeout: devServerTimeout
+            });
+        }
+
+        return this.getApiUsageStats();
+    }
+
+    /**
+     * Logs a compact API usage summary to the console.
+     * @param {Object} [options={}] - Logging options.
+     * @param {string} [options.label='KnackAPI usage'] - Group label shown in the console.
+     * @param {boolean} [options.includeHeaders=false] - Include the latest observed rate-limit headers.
+     * @returns {{run: Object, daily: Object}}
+     * @public
+     */
+    logApiUsageStats(options = {}) {
+        const stats = this.getApiUsageStats();
+        const label = typeof options.label === 'string' && options.label.trim()
+            ? options.label.trim()
+            : 'KnackAPI usage';
+        const includeHeaders = options.includeHeaders === true;
+        const summaryRows = [
+            { metric: 'Run started', value: stats.run.startedAt || 'Unknown' },
+            { metric: 'Actual HTTP calls', value: stats.run.totalCalls },
+            { metric: 'Successful calls', value: stats.run.successfulCalls },
+            { metric: 'Failed calls', value: stats.run.failedCalls },
+            { metric: '429 responses', value: stats.run.rateLimitedCalls },
+            { metric: 'Daily headers available', value: stats.daily.available ? 'Yes' : 'No' },
+            { metric: 'Daily limit', value: stats.daily.limit ?? 'Unknown' },
+            { metric: 'Daily used', value: stats.daily.used ?? 'Unknown' },
+            { metric: 'Daily remaining', value: stats.daily.remaining ?? 'Unknown' },
+            { metric: 'Rate-limit reset', value: stats.daily.reset ?? 'Unknown' },
+            { metric: 'Last response', value: stats.run.lastResponseAt || 'Unknown' }
+        ];
+        const methodRows = Object.entries(stats.run.byMethod || {}).map(([method, count]) => ({ method, count }));
+        const headerRows = includeHeaders
+            ? Object.entries(stats.daily.headers || {}).map(([header, value]) => ({ header, value }))
+            : [];
+        const canGroup = typeof console.groupCollapsed === 'function' && typeof console.groupEnd === 'function';
+
+        if (canGroup) {
+            console.groupCollapsed(`[KnackAPI] ${label}`);
+        }
+
+        if (typeof console.table === 'function') {
+            console.table(summaryRows);
+            if (methodRows.length) {
+                console.table(methodRows);
+            }
+            if (stats.daily.reason) {
+                console.info(`[KnackAPI] ${stats.daily.reason}`);
+            }
+            if (headerRows.length) {
+                console.table(headerRows);
+            }
+        } else {
+            console.log(`[KnackAPI] ${label}`, stats);
+        }
+
+        if (canGroup) {
+            console.groupEnd();
+        }
+
+        return stats;
+    }
+
+    /**
+     * Initializes or resets API usage tracking state.
+     * @param {boolean} [preserveRateLimitSnapshot=false] - Retain the latest observed daily rate-limit snapshot.
+     * @private
+     */
+    _initApiUsageState(preserveRateLimitSnapshot = false) {
+        const previousRateLimit = preserveRateLimitSnapshot && this._apiUsage?.rateLimit
+            ? {
+                ...this._apiUsage.rateLimit,
+                headers: { ...(this._apiUsage.rateLimit.headers || {}) }
+            }
+            : this._createEmptyRateLimitSnapshot();
+
+        this._apiUsage = {
+            startedAt: Date.now(),
+            totalCalls: 0,
+            successfulCalls: 0,
+            failedCalls: 0,
+            rateLimitedCalls: 0,
+            byMethod: {},
+            lastRequestAt: null,
+            lastResponseAt: null,
+            lastRequest: null,
+            rateLimit: previousRateLimit
+        };
+    }
+
+    /**
+     * Creates an empty rate-limit snapshot.
+     * @returns {{available: boolean, reason: string|null, limit: number|null, remaining: number|null, used: number|null, reset: number|null, status: number|null, observedAt: number|null, headerNames: Array<string>, headers: Object}}
+     * @private
+     */
+    _createEmptyRateLimitSnapshot() {
+        return {
+            available: false,
+            reason: 'No rate-limit headers observed yet.',
+            limit: null,
+            remaining: null,
+            used: null,
+            reset: null,
+            status: null,
+            observedAt: null,
+            headerNames: [],
+            headers: {}
+        };
+    }
+
+    /**
+     * Creates a standardized unavailable rate-limit snapshot.
+     * @param {string} reason - Human-readable reason for the missing data.
+     * @param {number|null} [status=null] - Optional related HTTP status.
+     * @param {Object} [headers={}] - Optional response headers.
+     * @returns {{available: boolean, reason: string|null, limit: number|null, remaining: number|null, used: number|null, reset: number|null, status: number|null, observedAt: number, headerNames: Array<string>, headers: Object}}
+     * @private
+     */
+    _createUnavailableRateLimitSnapshot(reason, status = null, headers = {}) {
+        const normalizedHeaders = this._normalizeResponseHeaders(headers);
+        return {
+            available: false,
+            reason: typeof reason === 'string' && reason.trim() ? reason.trim() : 'Rate-limit data is unavailable.',
+            limit: null,
+            remaining: null,
+            used: null,
+            reset: null,
+            status: Number.isFinite(status) ? status : null,
+            observedAt: Date.now(),
+            headerNames: Object.keys(normalizedHeaders).sort(),
+            headers: normalizedHeaders
+        };
+    }
+
+    /**
+     * Formats a timestamp for external usage snapshots.
+     * @param {number|null} timestampMs - Unix timestamp in milliseconds.
+     * @returns {string|null}
+     * @private
+     */
+    _formatUsageTimestamp(timestampMs) {
+        return Number.isFinite(timestampMs) ? new Date(timestampMs).toISOString() : null;
+    }
+
+    /**
+     * Resolves candidate localhost development server URLs for rate-limit proxy checks.
+     * @returns {Array<string>}
+     * @private
+     */
+    _getDevServerUrls() {
+        const urls = [];
+        const configured = typeof globalThis !== 'undefined' ? globalThis.__knackFunctionsDevServerUrl : '';
+
+        if (typeof configured === 'string' && /^https?:\/\//i.test(configured)) {
+            urls.push(configured.replace(/\/$/, ''));
+        }
+
+        urls.push('http://localhost:3001');
+
+        return Array.from(new Set(urls));
+    }
+
+    /**
+     * Converts response headers into a lowercase-key object.
+     * @param {Headers|Object|null} headersLike - Fetch headers or a plain object.
+     * @returns {Object}
+     * @private
+     */
+    _normalizeResponseHeaders(headersLike) {
+        const normalized = {};
+        if (!headersLike) return normalized;
+
+        if (typeof headersLike.forEach === 'function') {
+            headersLike.forEach((value, key) => {
+                normalized[String(key).toLowerCase()] = value;
+            });
+            return normalized;
+        }
+
+        Object.entries(headersLike).forEach(([key, value]) => {
+            normalized[String(key).toLowerCase()] = value;
+        });
+        return normalized;
+    }
+
+    /**
+     * Parses an integer header value.
+     * @param {*} value - Header value.
+     * @returns {number|null}
+     * @private
+     */
+    _parseRateLimitHeaderInt(value) {
+        if (value === undefined || value === null || value === '') return null;
+        const parsed = parseInt(String(value), 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    /**
+     * Normalizes a rate-limit snapshot returned by the development server.
+     * @param {Object|null} snapshot - Server-provided snapshot.
+     * @param {number|null} [fallbackStatus=null] - Fallback status code.
+     * @returns {{available: boolean, reason: string|null, limit: number|null, remaining: number|null, used: number|null, reset: number|null, status: number|null, observedAt: number, headerNames: Array<string>, headers: Object}|null}
+     * @private
+     */
+    _normalizeExternalRateLimitSnapshot(snapshot, fallbackStatus = null) {
+        if (!snapshot || typeof snapshot !== 'object') return null;
+
+        const headers = this._normalizeResponseHeaders(snapshot.headers);
+        const limit = this._parseRateLimitHeaderInt(snapshot.limit);
+        const remaining = this._parseRateLimitHeaderInt(snapshot.remaining);
+        const reset = this._parseRateLimitHeaderInt(snapshot.reset);
+        const used = this._parseRateLimitHeaderInt(snapshot.used);
+        const observedAt = Number.isFinite(snapshot.observedAt)
+            ? snapshot.observedAt
+            : (() => {
+                const parsed = Date.parse(snapshot.observedAt);
+                return Number.isNaN(parsed) ? Date.now() : parsed;
+            })();
+        const status = this._parseRateLimitHeaderInt(snapshot.status);
+        const available = snapshot.available === true || limit !== null || remaining !== null || reset !== null;
+
+        return {
+            available,
+            reason: available
+                ? null
+                : (typeof snapshot.reason === 'string' && snapshot.reason.trim()
+                    ? snapshot.reason.trim()
+                    : 'Rate-limit data is unavailable.'),
+            limit,
+            remaining,
+            used: used !== null
+                ? used
+                : (Number.isFinite(limit) && Number.isFinite(remaining) ? Math.max(0, limit - remaining) : null),
+            reset,
+            status: Number.isFinite(status) ? status : (Number.isFinite(fallbackStatus) ? fallbackStatus : null),
+            observedAt,
+            headerNames: Array.isArray(snapshot.headerNames) && snapshot.headerNames.length
+                ? snapshot.headerNames.map(name => String(name).toLowerCase())
+                : Object.keys(headers).sort(),
+            headers
+        };
+    }
+
+    /**
+     * Extracts Knack daily rate-limit values from response headers.
+     * @param {Headers|Object|null} headersLike - Response headers.
+     * @param {number|null} [status=null] - HTTP status code.
+     * @returns {{available: boolean, reason: string|null, limit: number|null, remaining: number|null, used: number|null, reset: number|null, status: number|null, observedAt: number, headerNames: Array<string>, headers: Object}}
+     * @private
+     */
+    _extractRateLimitSnapshot(headersLike, status = null) {
+        const headers = this._normalizeResponseHeaders(headersLike);
+        const headerNames = Object.keys(headers).sort();
+        const remaining = this._parseRateLimitHeaderInt(headers['x-planlimit-remaining'] || headers['x-rate-limit-remaining']);
+        const limit = this._parseRateLimitHeaderInt(headers['x-planlimit-limit'] || headers['x-rate-limit-limit']);
+        const reset = this._parseRateLimitHeaderInt(headers['x-planlimit-reset'] || headers['x-rate-limit-reset']);
+
+        if (remaining === null && limit === null && reset === null) {
+            return {
+                available: false,
+                reason: headerNames.length
+                    ? 'The browser can read response headers, but Knack did not expose any rate-limit headers on this response.'
+                    : 'The browser could not read any response headers for this request. Knack may not expose rate-limit headers to browser JavaScript for this endpoint.',
+                limit: null,
+                remaining: null,
+                used: null,
+                reset: null,
+                status: Number.isFinite(status) ? status : null,
+                observedAt: Date.now(),
+                headerNames,
+                headers
+            };
+        }
+
+        return {
+            available: true,
+            reason: null,
+            limit,
+            remaining,
+            used: Number.isFinite(limit) && Number.isFinite(remaining) ? Math.max(0, limit - remaining) : null,
+            reset,
+            status: Number.isFinite(status) ? status : null,
+            observedAt: Date.now(),
+            headerNames,
+            headers
+        };
+    }
+
+    /**
+     * Attempts to read rate-limit headers through the local development server.
+     * This only succeeds when the local knack-functions dev server is actually running.
+     * @param {string} sceneId - The scene ID/key.
+     * @param {string} viewId - The view ID/key.
+     * @param {Object} [options={}] - Proxy options.
+     * @param {number} [options.timeout] - Proxy timeout in milliseconds.
+     * @returns {Promise<boolean>}
+     * @private
+     */
+    async _refreshRateLimitFromDevServer(sceneId, viewId, options = {}) {
+        const applicationId = String(Knack?.application_id || '').trim();
+        const authToken = String(this._getAuthToken() || '').trim();
+        if (!applicationId || !authToken) {
+            return false;
+        }
+
+        const timeoutMs = Number.isFinite(options.timeout) ? Math.max(1000, Math.floor(options.timeout)) : 15000;
+        const devServerUrls = this._getDevServerUrls();
+        let lastFailureReason = 'The local knack-functions development server is unavailable. Start it to read daily limit headers during testing.';
+
+        for (const devServerUrl of devServerUrls) {
+            const controller = new AbortController();
+            const timerId = setTimeout(() => controller.abort(), timeoutMs);
+
+            try {
+                const response = await fetch(`${devServerUrl}/api/knack/rate-limit`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        sceneId,
+                        viewId,
+                        apiBaseUrl: this._getApiBaseUrl(),
+                        applicationId,
+                        authToken,
+                        timeoutMs
+                    }),
+                    signal: controller.signal
+                });
+
+                const payload = await response.json().catch(() => null);
+                const snapshot = this._normalizeExternalRateLimitSnapshot(payload?.daily, payload?.status || response.status);
+
+                if (snapshot) {
+                    this._apiUsage.rateLimit = snapshot;
+                } else if (this._apiUsage?.rateLimit?.available !== true) {
+                    this._apiUsage.rateLimit = this._createUnavailableRateLimitSnapshot(
+                        'The development server returned an invalid rate-limit response.',
+                        response.status
+                    );
+                }
+
+                return response.ok && snapshot?.available === true;
+            } catch (error) {
+                lastFailureReason = error?.name === 'AbortError'
+                    ? 'The local knack-functions development server timed out while reading Knack rate-limit headers.'
+                    : `The local knack-functions development server is unavailable at ${devServerUrl}.`;
+            } finally {
+                clearTimeout(timerId);
+            }
+        }
+
+        if (this._apiUsage?.rateLimit?.available !== true) {
+            this._apiUsage.rateLimit = this._createUnavailableRateLimitSnapshot(lastFailureReason);
+        }
+
+        return false;
+    }
+
+    /**
+     * Records one actual HTTP request attempt in the usage snapshot.
+     * @param {Object} details - Request details.
+     * @param {string} details.method - HTTP method.
+     * @param {string} details.url - Request URL.
+     * @param {number} details.attempt - Attempt number within the retry loop.
+     * @param {boolean} details.ok - Whether the response succeeded.
+     * @param {number|null} details.status - HTTP status when known.
+     * @param {Headers|Object|null} [details.headers] - Response headers when available.
+     * @param {number} details.requestedAt - Request start timestamp.
+     * @param {number} details.respondedAt - Response or failure timestamp.
+     * @private
+     */
+    _recordApiUsage(details) {
+        if (!this._apiUsage) {
+            this._initApiUsageState();
+        }
+
+        const method = String(details?.method || 'GET').toUpperCase();
+        const status = Number.isFinite(details?.status) ? details.status : null;
+        const ok = details?.ok === true;
+        const usage = this._apiUsage;
+
+        usage.totalCalls += 1;
+        usage.byMethod[method] = (usage.byMethod[method] || 0) + 1;
+        usage.lastRequestAt = Number.isFinite(details?.requestedAt) ? details.requestedAt : Date.now();
+        usage.lastResponseAt = Number.isFinite(details?.respondedAt) ? details.respondedAt : Date.now();
+
+        if (ok) {
+            usage.successfulCalls += 1;
+        } else {
+            usage.failedCalls += 1;
+        }
+
+        if (status === 429) {
+            usage.rateLimitedCalls += 1;
+        }
+
+        usage.lastRequest = {
+            method,
+            url: details?.url || '',
+            attempt: Number.isFinite(details?.attempt) ? details.attempt : 1,
+            status,
+            ok,
+            requestedAt: usage.lastRequestAt,
+            respondedAt: usage.lastResponseAt
+        };
+
+        usage.rateLimit = this._extractRateLimitSnapshot(details?.headers, status);
     }
 
     /**
@@ -13115,6 +13650,8 @@ class KnackAPI {
                 const method = (requestOptions.method || 'GET').toUpperCase();
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                const requestedAt = Date.now();
+                let usageRecorded = false;
 
                 try {
                     const fetchOptions = {
@@ -13129,6 +13666,18 @@ class KnackAPI {
 
                     const response = await fetch(url, fetchOptions);
                     const responseText = await response.text();
+
+                    this._recordApiUsage({
+                        method,
+                        url,
+                        attempt,
+                        ok: response.ok,
+                        status: response?.status,
+                        headers: response?.headers,
+                        requestedAt,
+                        respondedAt: Date.now()
+                    });
+                    usageRecorded = true;
 
                     if (response.ok) {
                         const result = responseText ? (() => {
@@ -13174,6 +13723,20 @@ class KnackAPI {
                     await new Promise(resolve => setTimeout(resolve, delay));
                 } catch (error) {
                     const isTimeout = error?.name === 'AbortError';
+
+                    if (!usageRecorded) {
+                        this._recordApiUsage({
+                            method,
+                            url,
+                            attempt,
+                            ok: false,
+                            status: Number.isFinite(error?.status) ? error.status : (isTimeout ? 0 : null),
+                            headers: error?.headers || null,
+                            requestedAt,
+                            respondedAt: Date.now()
+                        });
+                    }
+
                     if (isTimeout) {
                         throw this._buildRequestError({
                             status: 0,
@@ -13321,9 +13884,53 @@ function getKnackApiClient() {
 
     if (typeof window !== 'undefined') {
         window.__knackFunctionsApiClient = fallbackClient;
+        if (window.knackAPI === undefined || window.knackAPI === null) {
+            window.knackAPI = fallbackClient;
+        }
     }
 
     return fallbackClient;
+}
+
+/**
+ * Resolves the KnackAPI client used by global usage helpers.
+ * @param {KnackAPI|null} [apiClient=null] - Optional explicit client instance.
+ * @returns {KnackAPI}
+ */
+function resolveKnackApiUsageClient(apiClient = null) {
+    return apiClient instanceof KnackAPI ? apiClient : getKnackApiClient();
+}
+
+/**
+ * Global helpers for inspecting KnackAPI usage and rate-limit state.
+ */
+const KnackApiUsage = {
+    getClient(apiClient = null) {
+        return resolveKnackApiUsageClient(apiClient);
+    },
+    getStats(apiClient = null) {
+        return resolveKnackApiUsageClient(apiClient).getApiUsageStats();
+    },
+    getCallCount(apiClient = null) {
+        return resolveKnackApiUsageClient(apiClient).getRunApiCallCount();
+    },
+    getRateLimit(apiClient = null) {
+        return resolveKnackApiUsageClient(apiClient).getRateLimitStatus();
+    },
+    resetStats(options = {}, apiClient = null) {
+        return resolveKnackApiUsageClient(apiClient).resetApiUsageStats(options);
+    },
+    logStats(options = {}, apiClient = null) {
+        return resolveKnackApiUsageClient(apiClient).logApiUsageStats(options);
+    },
+    refreshStats(sceneId, viewId, options = {}, apiClient = null) {
+        return resolveKnackApiUsageClient(apiClient).refreshApiUsageStats(sceneId, viewId, options);
+    }
+};
+
+if (typeof globalThis !== 'undefined') {
+    globalThis.KnackApiUsage = KnackApiUsage;
+    globalThis.knackAPIUsage = KnackApiUsage;
 }
 
 /** Retrieves a nested value from an object using a dot-separated path.
@@ -13373,13 +13980,24 @@ function findElementByText(text, root = document, filter = {}) {
 }
 
 /**
+ * Resolve a Knack field wrapper by field id within an optional root.
+ * @param {string|number} fieldId - Knack field ID.
+ * @param {ParentNode} [root=document] - Optional root element to scope the lookup.
+ * @returns {HTMLElement|null} Matching field wrapper.
+ */
+function getFieldWrapper(fieldId, root = document) {
+    const containerId = `kn-input-field_${fieldId}`;
+    const container = root?.querySelector ? root.querySelector(`#${containerId}`) : document.getElementById(containerId);
+    return container instanceof HTMLElement ? container : null;
+}
+
+/**
  * Gets the selected radio value for a given Knack field ID.
  * @param {string|number} fieldId - Knack field ID
  * @param {ParentNode} [root=document] - Optional root element to scope the lookup.
  * @returns {string} The trimmed value of the selected radio input, or an empty string if none selected*/
 function getSelectedRadioValue(fieldId, root = document) {
-    const containerId = `kn-input-field_${fieldId}`;
-    const container = root?.querySelector ? root.querySelector(`#${containerId}`) : document.getElementById(containerId);
+    const container = getFieldWrapper(fieldId, root);
     const checked = container?.querySelector('input[type="radio"]:checked');
     return checked?.value?.trim() || '';
 }
@@ -13392,8 +14010,7 @@ function getSelectedRadioValue(fieldId, root = document) {
  * @returns {string|string[]} The selected option value(s).
  */
 function getSelectedValue(fieldId, root = document) {
-    const containerId = `kn-input-field_${fieldId}`;
-    const container = root?.querySelector ? root.querySelector(`#${containerId}`) : document.getElementById(containerId);
+    const container = getFieldWrapper(fieldId, root);
     const selectEl = container?.querySelector('select');
 
     if (!selectEl) {
@@ -13407,6 +14024,72 @@ function getSelectedValue(fieldId, root = document) {
     }
 
     return selectEl.value?.trim() || '';
+}
+
+/**
+ * Gets the display value shown in a Knack form field.
+ * @param {string|number} fieldId - Knack field ID.
+ * @param {ParentNode} [root=document] - Optional root element to scope the lookup.
+ * @returns {string} The current display value.
+ */
+function getFormFieldDisplayValue(fieldId, root = document) {
+    const fieldWrapper = getFieldWrapper(fieldId, root);
+    if (!fieldWrapper) {
+        return '';
+    }
+
+    const checkedRadio = fieldWrapper.querySelector('input[type="radio"]:checked');
+    if (checkedRadio instanceof HTMLInputElement) {
+        return String(checkedRadio.value || '').trim();
+    }
+
+    const selectEl = fieldWrapper.querySelector('select');
+    if (selectEl instanceof HTMLSelectElement) {
+        if (selectEl.multiple) {
+            return Array.from(selectEl.selectedOptions).map(function (optionEl) {
+                return String(optionEl.textContent || optionEl.value || '').trim();
+            }).filter(Boolean).join(', ');
+        }
+
+        const selectedOption = selectEl.selectedOptions[0];
+        return String(selectedOption?.textContent || selectEl.value || '').trim();
+    }
+
+    const checkedCheckboxes = Array.from(fieldWrapper.querySelectorAll('input[type="checkbox"]:checked'));
+    if (checkedCheckboxes.length) {
+        return checkedCheckboxes.map(function (inputEl) {
+            const labelEl = inputEl.closest('label');
+            return String(labelEl?.textContent || inputEl.value || '').trim();
+        }).filter(Boolean).join(', ');
+    }
+
+    const dateParts = getDateTimeParts(fieldWrapper);
+    if (dateParts.date) {
+        return dateParts.date;
+    }
+
+    const inputEl = fieldWrapper.querySelector('input:not([type="hidden"]), textarea');
+    return inputEl instanceof HTMLInputElement || inputEl instanceof HTMLTextAreaElement
+        ? String(inputEl.value || '').trim()
+        : '';
+}
+
+/**
+ * Gets the checked checkbox values shown in a Knack form field.
+ * @param {string|number} fieldId - Knack field ID.
+ * @param {ParentNode} [root=document] - Optional root element to scope the lookup.
+ * @returns {string[]} Selected checkbox values.
+ */
+function getFormFieldCheckboxValues(fieldId, root = document) {
+    const fieldWrapper = getFieldWrapper(fieldId, root);
+    if (!fieldWrapper) {
+        return [];
+    }
+
+    return Array.from(fieldWrapper.querySelectorAll('input[type="checkbox"]:checked')).map(function (inputEl) {
+        const labelEl = inputEl.closest('label');
+        return String(inputEl.value || labelEl?.textContent || '').trim();
+    }).filter(Boolean);
 }
 
 /** Replace text in given selector or td (using field ID) with that passed in when regex matched
@@ -15648,6 +16331,162 @@ function idleWatchDogTimeout() {
     // Auto-logout simply triggers the idempotent performLogout(); the fallback
     // will ensure the user is returned to the login screen if needed.
     autoLogoutTimeout = setTimeout(performLogout, Math.max(0, autoLogoutMinutes) * 60 * 1000);
+}
+
+/**
+ * Show a generic confirmation dialog with app-provided content and styling hooks.
+ * @param {Object} [options={}] Dialog options.
+ * @param {string} [options.title='Confirmation'] Dialog title.
+ * @param {string|string[]} [options.message='Are you sure you want to continue?'] Message paragraph(s). HTML is allowed.
+ * @param {string} [options.contentHtml=''] Additional HTML appended after the message block.
+ * @param {Array<{ text: string, className?: string, value?: string, action?: Function, closeOnClick?: boolean }>} [options.buttons=[]] Button definitions.
+ * @param {Object} [options.styling={}] Styling hooks.
+ * @param {string} [options.styling.overlayClass=''] Overlay class name.
+ * @param {string} [options.styling.containerClass=''] Optional inner container class name.
+ * @param {string} [options.styling.dialogClass=''] Dialog class name.
+ * @param {string} [options.styling.titleClass=''] Title class name.
+ * @param {string} [options.styling.messageClass=''] Message class name.
+ * @param {string} [options.styling.contentClass=''] Content wrapper class name.
+ * @param {string} [options.styling.buttonsClass=''] Buttons wrapper class name.
+ * @param {boolean} [options.closeOnOverlay=true] Whether clicking the overlay should close the dialog.
+ * @param {boolean} [options.closeOnEscape=true] Whether pressing Escape should close the dialog.
+ * @returns {Promise<{ value: string, button: Object }|null>} Selected button result, or null when dismissed.
+ */
+function showConfirmationDialog(options = {}) {
+    const defaultButtons = [
+        { text: 'Cancel', className: 'kn-button is-secondary', value: 'cancel' },
+        { text: 'OK', className: 'kn-button is-primary', value: 'confirm' },
+    ];
+    const config = {
+        title: knackValueResolver.toStringSafe(options?.title) || 'Confirmation',
+        message: options?.message ?? 'Are you sure you want to continue?',
+        contentHtml: knackValueResolver.toStringSafe(options?.contentHtml),
+        buttons: Array.isArray(options?.buttons) && options.buttons.length ? options.buttons : defaultButtons,
+        styling: {
+            overlayClass: knackValueResolver.toStringSafe(options?.styling?.overlayClass),
+            containerClass: knackValueResolver.toStringSafe(options?.styling?.containerClass),
+            dialogClass: knackValueResolver.toStringSafe(options?.styling?.dialogClass),
+            titleClass: knackValueResolver.toStringSafe(options?.styling?.titleClass),
+            messageClass: knackValueResolver.toStringSafe(options?.styling?.messageClass),
+            contentClass: knackValueResolver.toStringSafe(options?.styling?.contentClass),
+            buttonsClass: knackValueResolver.toStringSafe(options?.styling?.buttonsClass),
+        },
+        closeOnOverlay: options?.closeOnOverlay !== false,
+        closeOnEscape: options?.closeOnEscape !== false,
+    };
+
+    return new Promise(function (resolve) {
+        const titleId = `knack-confirm-title-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const overlay = document.createElement('div');
+        const dialog = document.createElement('div');
+        const titleEl = document.createElement('h2');
+        const messages = (Array.isArray(config.message) ? config.message : [config.message]).filter(function (messagePart) {
+            return messagePart !== null && messagePart !== undefined && String(messagePart).trim() !== '';
+        });
+        const buttonsWrap = document.createElement('div');
+        const previousActiveElement = document.activeElement;
+        let isClosed = false;
+        const containerClass = config.styling.containerClass;
+
+        overlay.className = config.styling.overlayClass;
+        dialog.className = config.styling.dialogClass;
+        titleEl.className = config.styling.titleClass;
+        titleEl.id = titleId;
+        titleEl.textContent = config.title;
+
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-labelledby', titleId);
+        dialog.setAttribute('tabindex', '-1');
+        dialog.appendChild(titleEl);
+
+        messages.forEach(function (messagePart) {
+            const paragraph = document.createElement('p');
+            paragraph.className = config.styling.messageClass;
+            paragraph.innerHTML = String(messagePart);
+            dialog.appendChild(paragraph);
+        });
+
+        if (config.contentHtml) {
+            const contentEl = document.createElement('div');
+            contentEl.className = config.styling.contentClass;
+            contentEl.innerHTML = config.contentHtml;
+            dialog.appendChild(contentEl);
+        }
+
+        buttonsWrap.className = config.styling.buttonsClass;
+        dialog.appendChild(buttonsWrap);
+
+        function cleanup(result) {
+            if (isClosed) {
+                return;
+            }
+
+            isClosed = true;
+            document.removeEventListener('keydown', handleKeydown);
+            overlay.remove();
+            if (previousActiveElement && typeof previousActiveElement.focus === 'function') {
+                previousActiveElement.focus();
+            }
+            resolve(result);
+        }
+
+        function handleKeydown(event) {
+            if (config.closeOnEscape && event.key === 'Escape') {
+                event.preventDefault();
+                cleanup(null);
+            }
+        }
+
+        config.buttons.forEach(function (buttonConfig, index) {
+            const buttonEl = document.createElement('button');
+            buttonEl.type = 'button';
+            buttonEl.className = knackValueResolver.toStringSafe(buttonConfig?.className || buttonConfig?.class) || 'kn-button';
+            buttonEl.textContent = knackValueResolver.toStringSafe(buttonConfig?.text) || `Option ${index + 1}`;
+            buttonEl.addEventListener('click', function (event) {
+                event.preventDefault();
+                const result = {
+                    value: knackValueResolver.toStringSafe(buttonConfig?.value) || knackValueResolver.toStringSafe(buttonConfig?.text),
+                    button: buttonConfig,
+                };
+
+                if (typeof buttonConfig?.action === 'function') {
+                    buttonConfig.action(result);
+                }
+
+                if (buttonConfig?.closeOnClick === false) {
+                    return;
+                }
+
+                cleanup(result);
+            });
+            buttonsWrap.appendChild(buttonEl);
+        });
+
+        if (config.closeOnOverlay) {
+            overlay.addEventListener('click', function (event) {
+                if (event.target === overlay) {
+                    cleanup(null);
+                }
+            });
+        }
+
+        document.addEventListener('keydown', handleKeydown);
+        if (containerClass) {
+            const container = document.createElement('div');
+            container.className = containerClass;
+            container.appendChild(dialog);
+            overlay.appendChild(container);
+        } else {
+            overlay.appendChild(dialog);
+        }
+        document.body.appendChild(overlay);
+        dialog.focus();
+    });
+}
+
+if (typeof globalThis.showConfirmationDialog === 'undefined') {
+    globalThis.showConfirmationDialog = showConfirmationDialog;
 }
 
 function setViewMaxWidth({ key: viewId }) {
