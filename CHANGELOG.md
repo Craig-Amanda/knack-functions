@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-10
+
+<!-- pr:47 Updates-to-Knack-API-and-and-confirmation-dialog-on-submit - CSWinnall -->
+- Adds API usage tracking and rate-limit inspection tools
+
 ## 2026-04-02
 
 <!-- pr:46 Updates-to-irt - CSWinnall -->
