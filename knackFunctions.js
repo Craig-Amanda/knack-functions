@@ -7386,7 +7386,7 @@ function escapeHTML(text) {
  * @param {'none'|'manual'|'auto'} [config.saveMode='manual'] - Save behaviour. `manual` renders a submit button, `auto` is reserved for save-as-you-go flows, `none` disables built-in save UI.
  * @param {string} [config.saveButtonText='Save'] - Text shown on the manual submit button.
  * @param {string} [config.saveButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-primary` button classes.
- * @param {boolean} [config.showClearButton=false] - Whether to render a clear button in the action area.
+ * @param {boolean} [config.showClearButton=false] - Whether to render a clear button in the top-right table toolbar.
  * @param {string} [config.clearButtonText='Clear'] - Text shown on the clear button.
  * @param {string} [config.clearButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-secondary` clear button classes.
  * @param {Function|null} [config.onSubmit=null] - Called when the manual submit button is clicked or controller.submit() is invoked.
@@ -8038,10 +8038,11 @@ function renderInteractiveTable(config = {}) {
             return `<tr data-row-index="${rowIndex}">${cellsHtml}</tr>`;
         }).join('');
 
+        const headerActionsHtml = showClearButton
+            ? `<div class="kfInteractiveTable__toolbar" style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;"><button class="${escapeHTML(clearButtonClass)}" type="button" data-kf-interactive-table-clear="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(clearButtonText)}</button></div>`
+            : '';
+
         const actionButtons = [
-            showClearButton
-                ? `<button class="${escapeHTML(clearButtonClass)}" type="button" data-kf-interactive-table-clear="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(clearButtonText)}</button>`
-                : '',
             showSubmitButton
                 ? `<button class="${escapeHTML(submitButtonClass)}" type="submit" data-kf-interactive-table-submit="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(saveButtonText)}</button>`
                 : '',
@@ -8051,7 +8052,7 @@ function renderInteractiveTable(config = {}) {
             ? `<div class="kfInteractiveTable__actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">${actionButtons}</div>`
             : '';
 
-        host.innerHTML = `<table class="${escapeHTML(tableClass)}"><thead><tr>${headersHtml}</tr></thead><tbody>${rowsHtml}</tbody></table>${actionsHtml}`;
+        host.innerHTML = `${headerActionsHtml}<table class="${escapeHTML(tableClass)}"><thead><tr>${headersHtml}</tr></thead><tbody>${rowsHtml}</tbody></table>${actionsHtml}`;
     };
 
     const clearTable = async () => {

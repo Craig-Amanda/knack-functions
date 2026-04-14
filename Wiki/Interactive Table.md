@@ -66,6 +66,9 @@ The main options are:
 - `saveMode`: `'manual'`, `'none'`, or `'auto'`
 - `saveButtonText`: label for the manual submit button
 - `saveButtonClassName`: extra classes for the submit button
+- `showClearButton`: render a clear button in the top-right table toolbar
+- `clearButtonText`: label for the clear button
+- `clearButtonClassName`: extra classes for the clear button
 - `autoAppendRow`: keep a blank row at the bottom and append another when the last row becomes populated
 - `createEmptyRow`: optional function that returns the next blank row shape
 - `isRowPopulated`: optional function used to decide when a row counts as populated
@@ -73,6 +76,7 @@ The main options are:
 - `columns`: column definitions
 - `onChange`: callback after a cell value changes
 - `onSubmit`: callback used when manual submit is triggered
+- `onClear`: callback used when the clear button is triggered
 - `onRenderComplete`: callback after the first render
 
 ## Column configuration
@@ -300,6 +304,25 @@ const tableController = renderInteractiveTable({
 ```
 
 Important: the helper does not decide what to save or where to save it. That stays in the consuming app.
+
+## Clear button
+
+When `showClearButton` is enabled, the helper renders the clear action in a small toolbar above the table, aligned to the right-hand side of the header area.
+
+Example:
+
+```javascript
+renderInteractiveTable({
+    viewId: 'view_2214',
+    showClearButton: true,
+    clearButtonText: 'Clear rows',
+    rows,
+    columns,
+    onClear: function ({ data, rawData }) {
+        console.log('Table cleared', { data, rawData });
+    },
+});
+```
 
 ## Where app-specific logic should live
 
