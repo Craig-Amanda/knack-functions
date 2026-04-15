@@ -7389,6 +7389,8 @@ function escapeHTML(text) {
  * @param {boolean} [config.showClearButton=false] - Whether to render a clear button in the top-right table toolbar.
  * @param {string} [config.clearButtonText='Clear'] - Text shown on the clear button.
  * @param {string} [config.clearButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-secondary` clear button classes.
+ * @param {boolean} [config.confirmOnClear=true] - Whether clearing rows should ask for confirmation first.
+ * @param {string} [config.clearConfirmMessage='Are you sure you want to clear all rows? This will remove any unsaved table data.'] - Confirmation text shown before rows are cleared.
  * @param {Function|null} [config.onSubmit=null] - Called when the manual submit button is clicked or controller.submit() is invoked.
  * @param {Function|null} [config.onClear=null] - Called after the clear button is clicked or controller.clear() is invoked.
  * @param {Array<{header?: string, key?: string|number, type?: string, editable?: boolean|Function, options?: Array|Function, className?: string, inputClassName?: string, align?: string, maxWidth?: string|number|null, allowHtml?: boolean, display?: Function, parse?: Function, openDateHintKey?: string, minDate?: string|Date|null, maxDate?: string|Date|null, dateFormat?: string}>} [config.columns=[]] - Column schema. Select options may be a static array, a function returning an array, or an async function/Promise resolving to an array. `type: 'search-select'` renders a searchable input backed by a datalist while still storing the selected option value. Select options are fetched once per column and cached for the current table instance.
@@ -7410,6 +7412,8 @@ function renderInteractiveTable(config = {}) {
         showClearButton: false,
         clearButtonText: 'Clear',
         clearButtonClassName: '',
+        confirmOnClear: true,
+        clearConfirmMessage: 'Are you sure you want to clear all rows? This will remove any unsaved table data.',
         autoAppendRow: false,
         createEmptyRow: null,
         isRowPopulated: null,
@@ -8057,6 +8061,31 @@ function renderInteractiveTable(config = {}) {
 
     const clearTable = async () => {
         if (isSubmitting) return;
+
+        const shouldConfirmClear = settings.confirmOnClear !== false;
+        const clearConfirmMessage = String(settings.clearConfirmMessage || '').trim()
+            || 'Are you sure you want to clear all rows? This will remove any unsaved table data.';
+
+        if (shouldConfirmClear) {
+            const confirmationResult = await showConfirmationDialog({
+                title: 'Clear rows',
+                message: clearConfirmMessage,
+                buttons: [
+                    {
+                        text: 'Cancel',
+                        className: 'kn-button is-secondary',
+                        value: 'cancel',
+                    },
+                    {
+                        text: 'Clear rows',
+                        className: 'kn-button is-danger',
+                        value: 'confirm',
+                    },
+                ],
+            });
+
+            if (confirmationResult?.value !== 'confirm') return;
+        }
 
         rowsData = [];
         ensureTrailingEmptyRow();
@@ -16444,6 +16473,42 @@ function showConfirmationDialog(options = {}) {
         titleEl.id = titleId;
         titleEl.textContent = config.title;
 
+        if (!config.styling.overlayClass) {
+            Object.assign(overlay.style, {
+                position: 'fixed',
+                inset: '0',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '24px',
+                backgroundColor: 'rgba(15, 23, 42, 0.55)',
+                zIndex: '2010',
+                boxSizing: 'border-box',
+            });
+        }
+
+        if (!containerClass) {
+            Object.assign(dialog.style, {
+                width: 'min(100%, 520px)',
+                maxHeight: 'calc(100vh - 48px)',
+                overflowY: 'auto',
+                background: '#ffffff',
+                color: '#1f2937',
+                borderRadius: '12px',
+                boxShadow: '0 20px 55px rgba(15, 23, 42, 0.28)',
+                padding: '24px',
+                boxSizing: 'border-box',
+            });
+        }
+
+        if (!config.styling.titleClass) {
+            Object.assign(titleEl.style, {
+                margin: '0 0 12px',
+                fontSize: '20px',
+                lineHeight: '1.3',
+            });
+        }
+
         dialog.setAttribute('role', 'dialog');
         dialog.setAttribute('aria-modal', 'true');
         dialog.setAttribute('aria-labelledby', titleId);
@@ -16453,6 +16518,12 @@ function showConfirmationDialog(options = {}) {
         messages.forEach(function (messagePart) {
             const paragraph = document.createElement('p');
             paragraph.className = config.styling.messageClass;
+            if (!config.styling.messageClass) {
+                Object.assign(paragraph.style, {
+                    margin: '0 0 12px',
+                    lineHeight: '1.5',
+                });
+            }
             paragraph.innerHTML = String(messagePart);
             dialog.appendChild(paragraph);
         });
@@ -16460,11 +16531,23 @@ function showConfirmationDialog(options = {}) {
         if (config.contentHtml) {
             const contentEl = document.createElement('div');
             contentEl.className = config.styling.contentClass;
+            if (!config.styling.contentClass) {
+                contentEl.style.marginBottom = '16px';
+            }
             contentEl.innerHTML = config.contentHtml;
             dialog.appendChild(contentEl);
         }
 
         buttonsWrap.className = config.styling.buttonsClass;
+        if (!config.styling.buttonsClass) {
+            Object.assign(buttonsWrap.style, {
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '8px',
+                flexWrap: 'wrap',
+                marginTop: '20px',
+            });
+        }
         dialog.appendChild(buttonsWrap);
 
         function cleanup(result) {
