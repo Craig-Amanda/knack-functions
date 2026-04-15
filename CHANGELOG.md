@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-15
+
+<!-- pr:48 add-clear-button-to-irt - CSWinnall -->
+- Added optional clear button support to `renderInteractiveTable`, with configurable button text and CSS classes, rendered in a right-aligned toolbar above the table.
+- Added `onClear` and `controller.clear()` support so apps can clear interactive table rows from either the UI or code and run follow-up logic after the table is reset.
+- Added configurable clear confirmation support with `confirmOnClear` and `clearConfirmMessage`, defaulting to a confirmation step before rows are cleared.
+- Updated the clear confirmation flow to use the shared `showConfirmationDialog` helper instead of the browser confirm dialog.
+- Improved `showConfirmationDialog` so unstyled calls render as a centred modal overlay by default instead of appearing as unstyled page content.
+- Documented the interactive table clear-button and clear-confirmation configuration in the interactive table wiki.
+
 ## 2026-04-10
 
 <!-- pr:47 Updates-to-Knack-API-and-and-confirmation-dialog-on-submit - CSWinnall -->
