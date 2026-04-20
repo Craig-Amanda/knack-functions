@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-20
+
+<!-- pr:49 feat/viewCachesForHeaders&Widths - CSWinnall -->
+- feat: add view column metadata resolution and caching methods
+
 ## 2026-04-15
 
 <!-- pr:48 add-clear-button-to-irt - CSWinnall -->

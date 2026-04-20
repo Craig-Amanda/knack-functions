@@ -45,6 +45,8 @@ class KnackNavigator {
         this._viewCache = new Map();
         this._sceneInfoCache = new Map();
         this._fieldIdByViewLabelCache = new Map();
+        this._fieldIdByViewHeaderCache = new Map();
+        this._viewHeaderByFieldIdCache = new Map();
         this._fieldMetaCache = new Map();
         this._fieldTypeCache = new Map();
     }
@@ -175,6 +177,144 @@ class KnackNavigator {
                 .map((field) => this.normalizeFieldId(field?.key || ''))
                 .filter(Boolean)
         ));
+    }
+
+    /**
+     * Returns column metadata declared on a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {Array<Object>} View columns.
+     */
+    getViewColumns(viewId) {
+        const viewObject = this.getViewObject(viewId);
+        return Array.isArray(viewObject?.columns) ? viewObject.columns : [];
+    }
+
+    /**
+     * Normalises a view column header for case-insensitive comparisons.
+     * @param {string} headerText - Raw column header text, possibly containing HTML.
+     * @returns {string} Normalised header text.
+     */
+    normalizeViewColumnHeader(headerText) {
+        return String(headerText || '')
+            .replace(/<br\s*\/?>/gi, ' ')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+    }
+
+    /**
+     * Resolves a view column by field id, header text, or column-like object.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number|Object} columnRef - Field id, header text, or column metadata.
+     * @returns {Object|null} Matching view column metadata.
+     */
+    getViewColumn(viewId, columnRef) {
+        const columns = this.getViewColumns(viewId);
+        if (!columns.length || !columnRef) return null;
+
+        if (typeof columnRef === 'object') {
+            const normalizedFieldId = this.normalizeFieldId(columnRef?.field?.key || columnRef?.id || '');
+            const normalizedHeader = this.normalizeViewColumnHeader(columnRef?.header || '');
+
+            return columns.find((column) => {
+                const columnFieldId = this.normalizeFieldId(column?.field?.key || column?.id || '');
+                const columnHeader = this.normalizeViewColumnHeader(column?.header || '');
+                return (normalizedFieldId && columnFieldId === normalizedFieldId)
+                    || (normalizedHeader && columnHeader === normalizedHeader);
+            }) || null;
+        }
+
+        const normalizedFieldId = this.normalizeFieldId(columnRef);
+        if (normalizedFieldId) {
+            const fieldMatch = columns.find((column) => {
+                return this.normalizeFieldId(column?.field?.key || column?.id || '') === normalizedFieldId;
+            });
+            if (fieldMatch) return fieldMatch;
+        }
+
+        const normalizedHeader = this.normalizeViewColumnHeader(columnRef);
+        if (!normalizedHeader) return null;
+
+        return columns.find((column) => {
+            return this.normalizeViewColumnHeader(column?.header || '') === normalizedHeader;
+        }) || null;
+    }
+
+    /**
+     * Resolves a view column field id from column header text.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string} headerText - Column header text to resolve.
+     * @returns {string} Matching field id, or an empty string.
+     */
+    getFieldIdFromHeader(viewId, headerText) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        const normalizedHeader = this.normalizeViewColumnHeader(headerText);
+        if (!normalizedViewId || !normalizedHeader) return '';
+
+        const cacheKey = `${normalizedViewId}::${normalizedHeader}`;
+        if (this._fieldIdByViewHeaderCache.has(cacheKey)) {
+            return this._fieldIdByViewHeaderCache.get(cacheKey);
+        }
+
+        const column = this.getViewColumn(normalizedViewId, normalizedHeader);
+        const resolvedFieldId = this.normalizeFieldId(column?.field?.key || column?.id || '');
+        this._fieldIdByViewHeaderCache.set(cacheKey, resolvedFieldId);
+        return resolvedFieldId;
+    }
+
+    /**
+     * Resolves the configured column header text for a field id on a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number} fieldId - Field id to resolve.
+     * @param {{ normalized?: boolean }} [options={}] - When true, returns a normalised plain-text header.
+     * @returns {string} Matching header text, or an empty string.
+     */
+    getHeaderFromFieldId(viewId, fieldId, options = {}) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        const normalizedFieldId = this.normalizeFieldId(fieldId);
+        if (!normalizedViewId || !normalizedFieldId) return '';
+
+        const useNormalizedHeader = Boolean(options?.normalized);
+        const cacheKey = `${normalizedViewId}::${normalizedFieldId}::${useNormalizedHeader ? 'normalized' : 'raw'}`;
+        if (this._viewHeaderByFieldIdCache.has(cacheKey)) {
+            return this._viewHeaderByFieldIdCache.get(cacheKey);
+        }
+
+        const column = this.getViewColumn(normalizedViewId, normalizedFieldId);
+        const rawHeader = String(column?.header || '').trim();
+        const resolvedHeader = useNormalizedHeader
+            ? this.normalizeViewColumnHeader(rawHeader)
+            : rawHeader;
+
+        this._viewHeaderByFieldIdCache.set(cacheKey, resolvedHeader);
+        return resolvedHeader;
+    }
+
+    /**
+     * Returns normalised Knack width metadata for a view column.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number|Object} columnRef - Field id, header text, or column metadata.
+     * @returns {{type: string, units: string, amount: number|null, amountText: string, isCustom: boolean, column: Object}|null} Width metadata.
+     */
+    getViewColumnWidth(viewId, columnRef) {
+        const column = this.getViewColumn(viewId, columnRef);
+        if (!column) return null;
+
+        const widthMeta = column?.width && typeof column.width === 'object' ? column.width : {};
+        const widthType = String(widthMeta?.type || '').trim().toLowerCase();
+        const widthUnits = String(widthMeta?.units || '').trim().toLowerCase();
+        const amountText = String(widthMeta?.amount ?? '').trim();
+        const parsedAmount = Number.parseFloat(amountText);
+
+        return {
+            type: widthType,
+            units: widthUnits,
+            amount: Number.isFinite(parsedAmount) ? parsedAmount : null,
+            amountText,
+            isCustom: widthType === 'custom',
+            column,
+        };
     }
 
     /**
