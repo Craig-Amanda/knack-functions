@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-21
+
+<!-- pr:50 Updates-to-Knack-Navigator-and-fix-for-bulk-actions-bug - CSWinnall -->
+- Added shared view-column index and selector helpers so apps can target table columns reliably, including columns affected by runtime DOM changes. Fixed bulk actions for update forms that rely on Knack record rules instead of visible form inputs. Added automatic rule-driven payload generation for bulk action update forms, including support for record-copy, current user, current date, and literal rule values. Prevented bulk form replication from failing when an update form has no visible editable fields but can still be resolved from form metadata and record rules.
+
 ## 2026-04-20
 
 <!-- pr:49 feat/viewCachesForHeaders&Widths - CSWinnall -->
