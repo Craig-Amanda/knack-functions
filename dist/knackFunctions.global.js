@@ -103,6 +103,20 @@ class KnackNavigator {
     }
 
     /**
+     * Normalises every field reference in a field map to its `_raw` companion key.
+     * @param {Object} [fieldMap={}] - Field map keyed by logical names.
+     * @returns {Object} Field map with normalised raw field ids.
+     */
+    normalizeRawFieldMap(fieldMap = {}) {
+        return Object.fromEntries(
+            Object.entries(fieldMap || {}).map(([fieldKey, fieldValue]) => [
+                fieldKey,
+                this.normalizeRawFieldId(fieldValue),
+            ])
+        );
+    }
+
+    /**
      * Returns the DOM wrapper for a Knack field inside a view.
      * @param {Element} viewRoot - Root element for the view.
      * @param {string|number} fieldId - Field id to resolve.

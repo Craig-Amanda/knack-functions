@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-04-23
+
+<!-- pr:51 feat/add-raw-fiel-map - CSWinnall -->
+- add `normalizeRawFieldMap(fieldMap)` to `KnackNavigator`
+- return a field map with each field id converted to its `_raw` companion key using the existing raw-field normalisation logic
+- support app code that wants to pre-normalise raw field maps once at the boundary instead of repeating per-field `_raw` conversion
+
 ## 2026-04-21
 
 <!-- pr:50 Updates-to-Knack-Navigator-and-fix-for-bulk-actions-bug - CSWinnall -->
