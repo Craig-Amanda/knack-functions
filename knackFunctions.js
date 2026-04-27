@@ -1777,320 +1777,6 @@ function normalizeBulkActionKeywordGroupsInput(keywordSource, keywordName = '_bu
 }
 
 /**
- * Returns true when a value should count as present for rule evaluation.
- * @param {*} value - Value to inspect.
- * @returns {boolean} Whether the value is meaningfully present.
- */
-function bulkActionHasMeaningfulValue(value) {
-    if (Array.isArray(value)) {
-        return value.some((entry) => bulkActionHasMeaningfulValue(entry));
-    }
-
-    if (value && typeof value === 'object') {
-        const connectionRef = knackValueResolver.toConnectionRef(value);
-        if (connectionRef?.id) return true;
-
-        return Object.values(value).some((entry) => bulkActionHasMeaningfulValue(entry));
-    }
-
-    if (typeof value === 'string') {
-        return value.trim() !== '';
-    }
-
-    return value !== undefined && value !== null;
-}
-
-/**
- * Normalises a value into a comparable primitive or primitive array.
- * @param {*} value - Source value.
- * @returns {string|Array<string>} Comparable value.
- */
-function bulkActionNormalizeComparableValue(value) {
-    if (Array.isArray(value)) {
-        return value
-            .flatMap((entry) => {
-                const normalized = bulkActionNormalizeComparableValue(entry);
-                return Array.isArray(normalized) ? normalized : [normalized];
-            })
-            .map((entry) => knackValueResolver.toStringSafe(entry).trim().toLowerCase())
-            .filter(Boolean);
-    }
-
-    if (value && typeof value === 'object') {
-        const connectionRef = knackValueResolver.toConnectionRef(value);
-        if (connectionRef?.id) {
-            return knackValueResolver.toStringSafe(connectionRef.id).trim().toLowerCase();
-        }
-
-        return knackValueResolver.toStringSafe(
-            value.id
-            ?? value.identifier
-            ?? value.value
-            ?? value.date
-            ?? value.iso_date
-            ?? value.time
-            ?? value.time_formatted
-        ).trim().toLowerCase();
-    }
-
-    return knackValueResolver.toStringSafe(value).trim().toLowerCase();
-}
-
-/**
- * Normalises a literal record-rule value into a request payload value.
- * @param {*} value - Rule literal value.
- * @param {string} fieldType - Destination Knack field type.
- * @returns {*} Request-ready value.
- */
-function bulkActionNormalizeRuleLiteralValue(value, fieldType) {
-    if (value === undefined || value === null) {
-        return bulkActionGetEmptyRequestValue(null, fieldType);
-    }
-
-    if (Array.isArray(value)) {
-        if (!value.length) {
-            return bulkActionGetEmptyRequestValue(null, fieldType);
-        }
-
-        if (fieldType === 'connection' || fieldType === 'multiple_choice') {
-            const requestValue = knackValueResolver.toRequestValue({
-                rawValue: value,
-                displayValue: value,
-                fieldType
-            });
-            return requestValue !== undefined ? requestValue : bulkActionGetEmptyRequestValue(null, fieldType);
-        }
-
-        const firstValue = value[0];
-        const requestValue = knackValueResolver.toRequestValue({
-            rawValue: firstValue,
-            displayValue: firstValue,
-            fieldType
-        });
-        if (requestValue !== undefined) return requestValue;
-
-        return bulkActionHasMeaningfulValue(firstValue)
-            ? firstValue
-            : bulkActionGetEmptyRequestValue(null, fieldType);
-    }
-
-    const requestValue = knackValueResolver.toRequestValue({
-        rawValue: value,
-        displayValue: value,
-        fieldType
-    });
-    if (requestValue !== undefined) return requestValue;
-
-    return bulkActionHasMeaningfulValue(value)
-        ? value
-        : bulkActionGetEmptyRequestValue(null, fieldType);
-}
-
-/**
- * Returns a current-date request value for a field.
- * @param {string} fieldType - Destination Knack field type.
- * @returns {*} Request-ready current date value.
- */
-function bulkActionGetCurrentDateRuleValue(fieldType) {
-    const now = new Date();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const year = String(now.getFullYear());
-    const dateValue = `${month}/${day}/${year}`;
-
-    const requestValue = knackValueResolver.toRequestValue({
-        rawValue: dateValue,
-        displayValue: dateValue,
-        fieldType
-    });
-
-    return requestValue !== undefined ? requestValue : dateValue;
-}
-
-/**
- * Returns the current user id for rule-driven updates.
- * @returns {string} Logged-in user id.
- */
-function bulkActionGetCurrentUserRuleValue() {
-    return knackValueResolver.toStringSafe(Knack?.getUserAttributes?.()?.id);
-}
-
-/**
- * Evaluates a single Knack record-rule criterion against a source record.
- * @param {Object} sourceRecord - Source record for the target row.
- * @param {Object} criterion - Knack criterion definition.
- * @returns {boolean} Whether the criterion matches.
- */
-function bulkActionRecordRuleCriterionMatches(sourceRecord, criterion = {}) {
-    const fieldKey = knackNavigator.normalizeFieldId(criterion?.field);
-    const operator = knackValueResolver.toStringSafe(criterion?.operator).trim().toLowerCase();
-    if (!fieldKey || !operator) return true;
-
-    const fieldType = knackValueResolver.getFieldType(fieldKey);
-    const leftValue = knackValueResolver.resolve(sourceRecord, fieldKey, {
-        mode: 'request',
-        fallback: sourceRecord?.[fieldKey]
-    });
-
-    if (operator === 'is blank') {
-        return !bulkActionHasMeaningfulValue(leftValue);
-    }
-
-    if (operator === 'is not blank') {
-        return bulkActionHasMeaningfulValue(leftValue);
-    }
-
-    const rightValue = bulkActionNormalizeRuleLiteralValue(criterion?.value, fieldType);
-    const normalizedLeft = bulkActionNormalizeComparableValue(leftValue);
-    const normalizedRight = bulkActionNormalizeComparableValue(rightValue);
-    const leftValues = Array.isArray(normalizedLeft) ? normalizedLeft : [normalizedLeft];
-    const rightValues = Array.isArray(normalizedRight) ? normalizedRight : [normalizedRight];
-
-    switch (operator) {
-        case 'is':
-            return rightValues.every((value) => leftValues.includes(value));
-        case 'is not':
-            return rightValues.every((value) => !leftValues.includes(value));
-        case 'contains':
-            return rightValues.every((value) => leftValues.some((entry) => entry.includes(value)));
-        case 'does not contain':
-            return rightValues.every((value) => leftValues.every((entry) => !entry.includes(value)));
-        default:
-            return true;
-    }
-}
-
-/**
- * Returns true when a source record matches all criteria for a Knack record rule.
- * @param {Object} sourceRecord - Source record for the target row.
- * @param {Array<Object>} criteria - Knack criteria list.
- * @returns {boolean} Whether all criteria match.
- */
-function bulkActionRecordRuleMatches(sourceRecord, criteria = []) {
-    return (Array.isArray(criteria) ? criteria : []).every((criterion) => bulkActionRecordRuleCriterionMatches(sourceRecord, criterion));
-}
-
-/**
- * Resolves a record-rule value into an update payload value.
- * @param {Object} [options={}] - Rule resolution options.
- * @returns {*} Request-ready field value.
- */
-function bulkActionResolveRecordRuleValue({ valueRule = {}, sourceRecord = null, submittedRecord = null } = {}) {
-    const fieldKey = knackNavigator.normalizeFieldId(valueRule?.field);
-    if (!fieldKey) return undefined;
-
-    const fieldType = knackValueResolver.getFieldType(fieldKey);
-    const ruleType = knackValueResolver.toStringSafe(valueRule?.type).trim().toLowerCase();
-
-    if (ruleType === 'record') {
-        const inputFieldKey = knackNavigator.normalizeFieldId(valueRule?.input || valueRule?.connection_field);
-        if (!inputFieldKey) {
-            return bulkActionGetEmptyRequestValue(null, fieldType);
-        }
-
-        const requestValue = knackValueResolver.resolve(sourceRecord, inputFieldKey, {
-            mode: 'request',
-            fallback: sourceRecord?.[inputFieldKey]
-        });
-
-        return requestValue !== undefined ? requestValue : bulkActionGetEmptyRequestValue(null, fieldType);
-    }
-
-    if (ruleType === 'user') {
-        const submittedValue = knackValueResolver.resolve(submittedRecord, fieldKey, { mode: 'request', fallback: undefined });
-        return submittedValue !== undefined ? submittedValue : bulkActionGetCurrentUserRuleValue();
-    }
-
-    if (ruleType === 'current_date') {
-        const submittedValue = knackValueResolver.resolve(submittedRecord, fieldKey, { mode: 'request', fallback: undefined });
-        return submittedValue !== undefined ? submittedValue : bulkActionGetCurrentDateRuleValue(fieldType);
-    }
-
-    return bulkActionNormalizeRuleLiteralValue(valueRule?.value, fieldType);
-}
-
-/**
- * Builds an update payload from Knack record rules for a target source record.
- * @param {Object} [options={}] - Rule payload options.
- * @returns {Object} Request payload derived from matching record rules.
- */
-function bulkActionBuildRecordRulePayload({ recordRules = [], sourceRecord = null, submittedRecord = null } = {}) {
-    if (!sourceRecord || typeof sourceRecord !== 'object') return {};
-
-    return (Array.isArray(recordRules) ? recordRules : []).reduce((payload, rule) => {
-        if (knackValueResolver.toStringSafe(rule?.action).trim().toLowerCase() !== 'record') {
-            return payload;
-        }
-
-        if (!bulkActionRecordRuleMatches(sourceRecord, rule?.criteria)) {
-            return payload;
-        }
-
-        const values = Array.isArray(rule?.values) ? rule.values : [];
-        values.forEach((valueRule) => {
-            const fieldKey = knackNavigator.normalizeFieldId(valueRule?.field);
-            if (!fieldKey) return;
-
-            const resolvedValue = bulkActionResolveRecordRuleValue({
-                valueRule,
-                sourceRecord,
-                submittedRecord
-            });
-
-            if (resolvedValue === undefined) return;
-            payload[fieldKey] = resolvedValue;
-        });
-
-        return payload;
-    }, {});
-}
-
-/**
- * Returns true when a form has declared runtime inputs in the view metadata.
- * @param {Object} viewObject - Knack view metadata.
- * @returns {boolean} Whether the form declares inputs.
- */
-function bulkActionFormHasDeclaredInputs(viewObject = {}) {
-    if (Array.isArray(viewObject?.inputs) && viewObject.inputs.length) {
-        return true;
-    }
-
-    return (Array.isArray(viewObject?.groups) ? viewObject.groups : []).some((group) => {
-        return (Array.isArray(group?.columns) ? group.columns : []).some((column) => {
-            return Array.isArray(column?.inputs) && column.inputs.length > 0;
-        });
-    });
-}
-
-/**
- * Creates a per-record callback for update forms that rely entirely on Knack record rules.
- * @param {string} formViewId - Target form view id.
- * @param {Object} viewObject - Target form metadata.
- * @returns {Function|null} Callback that derives payloads from record rules.
- */
-function bulkActionCreateRuleDrivenUpdateDataCallback(formViewId, viewObject = {}) {
-    const normalizedViewId = knackNavigator.normalizeViewId(formViewId);
-    const normalizedViewObject = viewObject && typeof viewObject === 'object'
-        ? viewObject
-        : knackNavigator.getViewObject(normalizedViewId);
-    const recordRules = Array.isArray(normalizedViewObject?.rules?.records)
-        ? normalizedViewObject.rules.records
-        : [];
-
-    if (!normalizedViewId || bulkActionFormHasDeclaredInputs(normalizedViewObject) || !recordRules.length) {
-        return null;
-    }
-
-    return function bulkActionRuleDrivenUpdateDataCallback(_payload = {}, context = {}) {
-        return bulkActionBuildRecordRulePayload({
-            recordRules,
-            sourceRecord: context?.sourceRecord,
-            submittedRecord: context?.record
-        });
-    };
-}
-
-/**
  * Parses bulk-action keyword groups into grid/form action configuration.
  * @param {*} keywordGroups - Raw keyword groups from the Knack keyword parser.
  * @param {Object} [options={}] - Parsing options and callback registries.
@@ -2212,10 +1898,6 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             }
         }
 
-        const autoRulePayloadCallback = !resolvedDataCallback
-            ? bulkActionCreateRuleDrivenUpdateDataCallback(formViewId, view)
-            : null;
-
         actions.push({
             key: `${operation}:${formViewId}`,
             label,
@@ -2223,7 +1905,7 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             target: formViewId,
             operation,
             recordFieldId: parsed.recordFieldId || defaultRecordFieldId,
-            dataCallback: resolvedDataCallback || autoRulePayloadCallback
+            dataCallback: resolvedDataCallback
         });
     });
 
@@ -5180,19 +4862,6 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         ? bulkActionNormalizeFieldKeys(bulkState?.formFieldKeys || bulkActionGetFormFieldKeys(formViewRef))
         : [];
     const excludeFieldKeys = mode === 'create' && recordFieldId ? [recordFieldId] : [];
-    const effectiveDataCallback = typeof action?.dataCallback === 'function'
-        ? action.dataCallback
-        : (mode === 'update' && !includeFieldKeys.length
-            ? bulkActionCreateRuleDrivenUpdateDataCallback(formViewRef)
-            : null);
-    const effectiveAction = effectiveDataCallback
-        ? { ...action, dataCallback: effectiveDataCallback }
-        : action;
-
-    if (mode === 'update' && !includeFieldKeys.length && typeof effectiveAction?.dataCallback !== 'function') {
-        throw new Error('Bulk form replication could not determine the visible form fields for update mode.');
-    }
-
     const basePayload = bulkActionBuildReplicateBasePayload({
         mode,
         bulkState,
@@ -5239,7 +4908,7 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         mode,
         remainingIds,
         basePayload,
-        action: effectiveAction,
+        action,
         sourceController,
         processedRecordId,
         sourceViewId,
