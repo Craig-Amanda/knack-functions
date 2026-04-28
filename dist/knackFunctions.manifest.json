@@ -1,7 +1,7 @@
 {
   "name": "knack-functions",
   "file": "dist/knackFunctions.global.min.js",
-  "sri": "sha384-nAlOgGkVdzLFxrgCTDCOjoNUDBX61Jo827HqVqnXePwTfeWQ1IQFqlqK9qnTto2b",
-  "commit": "5cfc7df",
-  "builtAt": "2026-04-23T10:51:19Z"
+  "sri": "sha384-wgfO3BvsuVVVH3K0vWoLG+ROS4cTRrgLXqaE/PbgbcP1mZLvOeDA08P10vIFZXPP",
+  "commit": "ee79cca",
+  "builtAt": "2026-04-28T07:43:52Z"
 }

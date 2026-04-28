@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-28
+
+<!-- pr:53 Fix/zero-field-bulk-update-payload - CSWinnall -->
+- Fix zero-field bulk update replication
+
 ## 2026-04-23
 
 <!-- pr:51 feat/add-raw-fiel-map - CSWinnall -->
