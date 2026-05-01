@@ -16127,7 +16127,14 @@ function addModalNavigationButtons() {
  * @param {boolean} [options.trim=true] - Whether to trim whitespace.
  * @param {boolean} [options.smartWords=true] - If true, don't capitalise short words (like "of", "and") in title mode.
  */
-function capitaliseInput(viewId, inputSelector, options = { mode: 'title', trim: true, smartWords: true }) {
+/**
+ * Capitalises an input value as the user types.
+ * @param {string} viewId - The parent Knack view id.
+ * @param {string} inputSelector - Selector for the target input inside the view.
+ * @param {{ mode?: 'title'|'all'|'sentence', trim?: boolean, smartWords?: boolean, preserveCapitalAfterPrefixes?: string[] }} [options] - Capitalisation options.
+ * @returns {void}
+ */
+function capitaliseInput(viewId, inputSelector, options = { mode: 'title', trim: true, smartWords: true, preserveCapitalAfterPrefixes: [] }) {
     let viewElement = document.getElementById(viewId);
     if (!viewElement) viewElement = document.querySelector(`#connection-form-view:has(input[value="${viewId}"])`);
     if (!viewElement) return;
@@ -16142,7 +16149,18 @@ function capitaliseInput(viewId, inputSelector, options = { mode: 'title', trim:
         let str = inputElement.value;
         if (!str) return;
 
-        const { mode = 'title', trim = true, smartWords = true } = options || {};
+        const {
+            mode = 'title',
+            trim = true,
+            smartWords = true,
+            preserveCapitalAfterPrefixes = [],
+        } = options || {};
+        const normalisedPrefixes = Array.isArray(preserveCapitalAfterPrefixes)
+            ? preserveCapitalAfterPrefixes
+                .map(prefix => String(prefix || '').trim())
+                .filter(Boolean)
+                .sort((firstPrefix, secondPrefix) => secondPrefix.length - firstPrefix.length)
+            : [];
 
         // Only trim on blur, not on input
         let isBlur = e && e.type === 'blur';
@@ -16164,6 +16182,25 @@ function capitaliseInput(viewId, inputSelector, options = { mode: 'title', trim:
                     }).replace(/(?<!^|[-'])\w/g, function (match) {
                         return match.toLowerCase();
                     });
+
+                    if (normalisedPrefixes.length) {
+                        normalisedPrefixes.some(function (prefix) {
+                            const prefixLength = prefix.length;
+                            if (capitalised.length <= prefixLength) {
+                                return false;
+                            }
+
+                            if (capitalised.slice(0, prefixLength).toLowerCase() !== prefix.toLowerCase()) {
+                                return false;
+                            }
+
+                            capitalised = capitalised.slice(0, prefixLength)
+                                + capitalised.charAt(prefixLength).toUpperCase()
+                                + capitalised.slice(prefixLength + 1);
+                            return true;
+                        });
+                    }
+
                     // Smart words logic
                     if (
                         smartWords &&
