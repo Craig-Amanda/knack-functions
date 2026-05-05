@@ -2,6 +2,11 @@
 
 ## 2026-05-05
 
+<!-- pr:55 Fix/bulk-action-selectable-rows - CSWinnall -->
+- Excluded summary, subtotal, aggregate, grouped, and no-data grid rows from bulk-action row selection helpers.
+- Removed bulk-action checkboxes from non-record rows before syncing checkbox state and basket contents.
+- Updated bulk-action selected-ID and master-checkbox calculations to operate only on selectable record rows.
+
 <!-- pr:54 update-date-handling-on-RIT - amandajane-mo -->
 - Update date handling on RIT
 
