@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-05
+
+<!-- pr:54 update-date-handling-on-RIT - amandajane-mo -->
+- Update date handling on RIT
+
 ## 2026-04-28
 
 <!-- pr:53 Fix/zero-field-bulk-update-payload - CSWinnall -->
