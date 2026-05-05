@@ -2517,6 +2517,56 @@ function bulkActionGetRowCheckboxRecordId(checkbox) {
 }
 
 /**
+ * Returns true when a grid row represents a selectable Knack record row.
+ * @param {Element|null} row - Candidate table row.
+ * @returns {boolean} Whether the row can participate in bulk-action selection.
+ */
+function bulkActionIsSelectableGridDataRow(row) {
+    if (!(row instanceof HTMLTableRowElement)) return false;
+
+    const classNames = Array.from(row.classList || []);
+    if (row.classList.contains('kn-tr-nodata')) return false;
+    if (row.classList.contains('kn-table-group')) return false;
+    if (row.classList.contains('kn-table-summary')) return false;
+    if (classNames.some((className) => /summary|subtotal|total|aggregate/i.test(className))) return false;
+    if (row.querySelector('.kn-table-summary')) return false;
+
+    return true;
+}
+
+/**
+ * Returns selectable bulk-action row checkboxes for a view element.
+ * @param {Element|null} viewElement - View root element.
+ * @param {string} rowCheckboxClass - Row checkbox class name.
+ * @returns {Array<HTMLInputElement>} Selectable row checkboxes.
+ */
+function bulkActionGetSelectableRowCheckboxes(viewElement, rowCheckboxClass) {
+    const normalizedClass = knackValueResolver.toStringSafe(rowCheckboxClass);
+    if (!viewElement || !normalizedClass) return [];
+
+    return Array.from(viewElement.querySelectorAll(`tbody .${normalizedClass}`)).filter((checkbox) => {
+        return checkbox instanceof HTMLInputElement && bulkActionIsSelectableGridDataRow(checkbox.closest('tr'));
+    });
+}
+
+/**
+ * Removes bulk-action checkboxes from non-record grid rows such as summaries.
+ * @param {Element|null} viewElement - View root element.
+ * @param {string} rowCheckboxClass - Row checkbox class name.
+ * @returns {void}
+ */
+function bulkActionRemoveNonSelectableRowCheckboxes(viewElement, rowCheckboxClass) {
+    const normalizedClass = knackValueResolver.toStringSafe(rowCheckboxClass);
+    if (!viewElement || !normalizedClass) return;
+
+    Array.from(viewElement.querySelectorAll(`tbody .${normalizedClass}`)).forEach((checkbox) => {
+        if (!(checkbox instanceof HTMLInputElement)) return;
+        if (bulkActionIsSelectableGridDataRow(checkbox.closest('tr'))) return;
+        checkbox.remove();
+    });
+}
+
+/**
  * Builds the session-storage key for a form replication workflow.
  * @param {string} namespace - Bulk-action namespace.
  * @param {string} formViewId - Target form view id.
@@ -4173,7 +4223,8 @@ function ensureBulkActionCheckboxes(viewId, selectionConfig, handlers = {}) {
     const rowCheckboxClass = knackValueResolver.toStringSafe(selectionConfig?.rowCheckboxClass);
     if (!viewElement || !rowCheckboxClass) return;
 
-    viewElement.querySelectorAll(`tbody .${rowCheckboxClass}`).forEach((checkbox) => {
+    bulkActionRemoveNonSelectableRowCheckboxes(viewElement, rowCheckboxClass);
+    bulkActionGetSelectableRowCheckboxes(viewElement, rowCheckboxClass).forEach((checkbox) => {
         bulkActionGetRowCheckboxRecordId(checkbox);
     });
 }
@@ -4279,7 +4330,8 @@ class BulkActionGridController {
         const viewElement = this.resolveViewElement();
         if (!viewElement) return [];
 
-        return Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}:checked`))
+        return bulkActionGetSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass)
+            .filter((checkbox) => checkbox.checked)
             .map((checkbox) => bulkActionGetRowCheckboxRecordId(checkbox))
             .filter(Boolean);
     }
@@ -4294,7 +4346,7 @@ class BulkActionGridController {
         const normalizedRecordId = knackValueResolver.toStringSafe(recordId);
         if (!viewElement || !normalizedRecordId) return null;
 
-        return Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`)).find((checkbox) => {
+        return bulkActionGetSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass).find((checkbox) => {
             return bulkActionGetRowCheckboxRecordId(checkbox) === normalizedRecordId;
         }) || null;
     }
@@ -4538,7 +4590,8 @@ class BulkActionGridController {
         if (!viewElement) return;
 
         const selectedIds = new Set(this.basketItems.map((item) => item.recordId));
-        viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`).forEach((checkbox) => {
+        bulkActionRemoveNonSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass);
+        bulkActionGetSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass).forEach((checkbox) => {
             const recordId = bulkActionGetRowCheckboxRecordId(checkbox);
             checkbox.checked = selectedIds.has(recordId);
         });
@@ -4554,7 +4607,7 @@ class BulkActionGridController {
     syncMasterCheckboxState(viewElement = this.resolveViewElement()) {
         if (!viewElement) return;
 
-        const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`));
+        const rowCheckboxes = bulkActionGetSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass);
         const checkedCount = rowCheckboxes.filter((checkbox) => checkbox.checked).length;
         const hasRows = rowCheckboxes.length > 0;
         const allChecked = hasRows && checkedCount === rowCheckboxes.length;
@@ -4574,7 +4627,8 @@ class BulkActionGridController {
         const viewElement = this.resolveViewElement();
         if (!viewElement) return;
 
-        const rowCheckboxes = Array.from(viewElement.querySelectorAll(`tbody .${this.bulkActionConfig.selection.rowCheckboxClass}`));
+        bulkActionRemoveNonSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass);
+        const rowCheckboxes = bulkActionGetSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass);
         const checkedIds = rowCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => bulkActionGetRowCheckboxRecordId(checkbox)).filter(Boolean);
         this.replaceBasketFromRecordIds(checkedIds);
     }
@@ -14442,6 +14496,41 @@ function getFormFieldCheckboxValues(fieldId, root = document) {
         const labelEl = inputEl.closest('label');
         return String(inputEl.value || labelEl?.textContent || '').trim();
     }).filter(Boolean);
+}
+
+/**
+ * Determines whether a Knack field wrapper currently has a user-entered value.
+ * @param {HTMLElement|null|undefined} fieldWrapper - Knack field wrapper element.
+ * @returns {boolean} True when the field contains a value.
+ */
+function fieldWrapperHasValue(fieldWrapper) {
+    if (!(fieldWrapper instanceof HTMLElement)) {
+        return false;
+    }
+
+    const checkedInput = fieldWrapper.querySelector('input[type="checkbox"]:checked, input[type="radio"]:checked');
+    if (checkedInput) {
+        return true;
+    }
+
+    const fileInput = fieldWrapper.querySelector('input[type="file"]');
+    if (fileInput?.files?.length) {
+        return true;
+    }
+
+    const typedInput = Array.from(fieldWrapper.querySelectorAll('textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), select'))
+        .find(function (inputElement) {
+            return knackValueResolver.toStringSafe(inputElement.value).trim();
+        });
+    if (typedInput) {
+        return true;
+    }
+
+    const hiddenInput = Array.from(fieldWrapper.querySelectorAll('input[type="hidden"]')).find(function (inputElement) {
+        return knackValueResolver.toStringSafe(inputElement.value).trim();
+    });
+
+    return Boolean(hiddenInput);
 }
 
 /** Replace text in given selector or td (using field ID) with that passed in when regex matched
