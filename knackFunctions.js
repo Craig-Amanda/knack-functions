@@ -11384,8 +11384,9 @@ function convertToDateObj (date) {
     return new Date(dateArr[2],	dateArr[1] - 1,	dateArr[0]);
 }
 
-/** Determine whether an element is visible in the DOM.
- * Accepts either an element reference or a selector string, Visibility checks include inline/computed styles and hidden ancestors.
+/** Determine whether an element is visibly rendered in the DOM.
+ * Accepts either an element reference or a selector string.
+ * Visibility checks include computed styles and whether the element has a rendered box.
  *
  * @param {HTMLElement|string} target - The element itself, or a selector string.
  * @param {ParentNode} [root=document] - Optional root to scope selector queries (e.g., a view container).
@@ -11399,10 +11400,7 @@ function isElementVisible(target, root = document) {
     const cs = window.getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden') return false;
 
-    // When the element or any ancestor has display:none, offsetParent is null.
-    if (el.offsetParent === null) return false;
-
-    return true;
+    return el.getClientRects().length > 0;
 }
 
 
