@@ -11422,8 +11422,9 @@ function convertToDateObj (date) {
     return new Date(dateArr[2],	dateArr[1] - 1,	dateArr[0]);
 }
 
-/** Determine whether an element is visible in the DOM.
- * Accepts either an element reference or a selector string, Visibility checks include inline/computed styles and hidden ancestors.
+/** Determine whether an element is visibly rendered in the DOM.
+ * Accepts either an element reference or a selector string.
+ * Visibility checks include computed styles and whether the element has a rendered box.
  *
  * @param {HTMLElement|string} target - The element itself, or a selector string.
  * @param {ParentNode} [root=document] - Optional root to scope selector queries (e.g., a view container).
@@ -11437,10 +11438,7 @@ function isElementVisible(target, root = document) {
     const cs = window.getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden') return false;
 
-    // When the element or any ancestor has display:none, offsetParent is null.
-    if (el.offsetParent === null) return false;
-
-    return true;
+    return el.getClientRects().length > 0;
 }
 
 
@@ -14569,6 +14567,204 @@ function fieldWrapperHasValue(fieldWrapper) {
     });
 
     return Boolean(hiddenInput);
+}
+
+/**
+ * Wire a form so a controlling input can temporarily hide empty required fields.
+ * Required fields are detected from Knack view metadata and rendered required markers.
+ * @param {string} viewId - Knack view id.
+ * @param {Object} [options={}] - Visibility configuration.
+ * @param {string|number} options.controllerFieldId - Field id for the controlling input.
+ * @param {Function} [options.isEnabled] - Optional predicate returning whether hiding is active.
+ * @param {Function} [options.fieldHasValue] - Optional predicate `(fieldWrap, context) => boolean`.
+ * @param {Function} [options.resolveVisibilityTarget] - Optional target resolver `(fieldWrap, context) => HTMLElement`.
+ * @param {Array<string|number>} [options.excludeFieldIds=[]] - Additional field ids to exclude.
+ * @param {string|string[]} [options.events=['change','input']] - Events that should recalculate visibility.
+ * @param {string} [options.delegate='input, select, textarea'] - Delegated selector for input changes.
+ * @param {string} [options.submitNamespace='conditionalRequiredFieldVisibility'] - Namespace for the submit handler.
+ * @returns {{viewElement: HTMLElement, formElement: HTMLFormElement, apply: Function}|null}
+ */
+function initialiseConditionalRequiredFieldVisibility(viewId, options = {}) {
+    const viewElement = getById(viewId);
+    const formElement = viewElement?.querySelector('form');
+    if (!(viewElement instanceof HTMLElement) || !(formElement instanceof HTMLFormElement)) {
+        return null;
+    }
+
+    const {
+        controllerFieldId,
+        isEnabled,
+        fieldHasValue,
+        resolveVisibilityTarget,
+        excludeFieldIds = [],
+        events = ['change', 'input'],
+        delegate = 'input, select, textarea',
+        submitNamespace = 'conditionalRequiredFieldVisibility',
+    } = options;
+
+    const getRequiredFieldIds = () => {
+        const normalizedViewId = knackNavigator.normalizeViewId(viewElement.id);
+        const viewModel = normalizedViewId ? Knack?.views?.[normalizedViewId]?.model : null;
+        const fieldDefinitions = Array.isArray(viewModel?.view?.fields)
+            ? viewModel.view.fields
+            : (Array.isArray(viewModel?.fields)
+                ? viewModel.fields
+                : (Array.isArray(viewModel?.attributes?.fields) ? viewModel.attributes.fields : []));
+
+        return new Set(fieldDefinitions.filter((fieldDefinition) => fieldDefinition?.required).map((fieldDefinition) => {
+            return knackNavigator.normalizeFieldId(
+                fieldDefinition?.key
+                || fieldDefinition?.id
+                || fieldDefinition?.field_key
+                || ''
+            );
+        }).filter(Boolean));
+    };
+
+    const hasVisibleInputValue = (fieldWrap) => {
+        if (!(fieldWrap instanceof HTMLElement)) {
+            return false;
+        }
+
+        const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
+        const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+        const hoursSelect = fieldWrap.querySelector('select[name="hours"]');
+        const minutesSelect = fieldWrap.querySelector('select[name="minutes"]');
+        if (dateInput || timeInput || hoursSelect || minutesSelect) {
+            return Boolean(getDateTimeParts(fieldWrap).date);
+        }
+
+        if (fieldWrap.querySelector('input[type="checkbox"]:checked, input[type="radio"]:checked')) {
+            return true;
+        }
+
+        const fileInput = fieldWrap.querySelector('input[type="file"]');
+        if (fileInput?.files?.length) {
+            return true;
+        }
+
+        const typedInput = Array.from(fieldWrap.querySelectorAll('textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), select'))
+            .find(function (inputElement) {
+                return String(inputElement.value || '').trim();
+            });
+
+        return Boolean(typedInput);
+    };
+
+    const getRequiredFieldWraps = (controllerFieldWrap) => {
+        const requiredFieldIds = getRequiredFieldIds();
+        const excludedIds = new Set([controllerFieldId, ...(Array.isArray(excludeFieldIds) ? excludeFieldIds : [excludeFieldIds])]
+            .map((fieldId) => knackNavigator.normalizeFieldId(fieldId))
+            .filter(Boolean));
+
+        return Array.from(viewElement.querySelectorAll('[id^="kn-input-field_"]')).filter((fieldWrap) => {
+            if (!(fieldWrap instanceof HTMLElement) || fieldWrap === controllerFieldWrap) return false;
+            if (fieldWrap.closest('.is-hidden, [hidden]')) return false;
+
+            const fieldId = knackNavigator.normalizeFieldId(fieldWrap.id.replace(/^kn-input-/, ''));
+            if (fieldId && excludedIds.has(fieldId)) return false;
+
+            return Boolean(
+                fieldWrap.querySelector('.kn-label .kn-required')
+                || fieldWrap.querySelector('[required], [aria-required="true"]')
+                || (fieldId ? requiredFieldIds.has(fieldId) : false)
+                || fieldWrap.querySelector('input[required], select[required], textarea[required]')
+            );
+        });
+    };
+
+    const resolveTarget = (fieldWrap, context) => {
+        if (typeof resolveVisibilityTarget === 'function') {
+            return resolveVisibilityTarget(fieldWrap, context);
+        }
+
+        return fieldWrap.closest('.kn-input') || fieldWrap;
+    };
+
+    const hideField = (fieldWrap, context) => {
+        const target = resolveTarget(fieldWrap, context);
+        if (!(target instanceof HTMLElement) || target.dataset.conditionalRequiredHidden === 'true') return;
+
+        target.dataset.conditionalRequiredHidden = 'true';
+        target.dataset.conditionalRequiredPreviousDisplay = target.style.display || '';
+        setVisibility(target, false);
+
+        fieldWrap.querySelectorAll('input, select, textarea, button').forEach((controlElement) => {
+            controlElement.dataset.conditionalRequiredWasDisabled = controlElement.disabled ? 'true' : 'false';
+            controlElement.disabled = true;
+        });
+    };
+
+    const restoreField = (fieldWrap, context) => {
+        const target = resolveTarget(fieldWrap, context);
+        if (!(target instanceof HTMLElement) || target.dataset.conditionalRequiredHidden !== 'true') return;
+
+        const previousDisplay = target.dataset.conditionalRequiredPreviousDisplay || '';
+        delete target.dataset.conditionalRequiredHidden;
+        delete target.dataset.conditionalRequiredPreviousDisplay;
+        target.style.display = previousDisplay;
+
+        fieldWrap.querySelectorAll('input, select, textarea, button').forEach((controlElement) => {
+            const wasDisabled = controlElement.dataset.conditionalRequiredWasDisabled === 'true';
+            controlElement.disabled = wasDisabled;
+            delete controlElement.dataset.conditionalRequiredWasDisabled;
+        });
+    };
+
+    const apply = () => {
+        const controllerFieldWrap = controllerFieldId == null
+            ? null
+            : knackNavigator.getFieldWrapper(viewElement, controllerFieldId);
+        if (controllerFieldId != null && !controllerFieldWrap) {
+            return [];
+        }
+
+        const context = { viewElement, formElement, controllerFieldWrap, controllerFieldId };
+        const visibilityEnabled = typeof isEnabled === 'function'
+            ? Boolean(isEnabled(context))
+            : (controllerFieldId != null && getFormFieldCheckboxValues(controllerFieldId, viewElement).length > 0);
+        const requiredFieldWraps = getRequiredFieldWraps(controllerFieldWrap);
+
+        requiredFieldWraps.forEach((fieldWrap) => {
+            const hasValue = typeof fieldHasValue === 'function'
+                ? Boolean(fieldHasValue(fieldWrap, context))
+                : hasVisibleInputValue(fieldWrap);
+
+            if (visibilityEnabled && !hasValue) {
+                hideField(fieldWrap, context);
+                return;
+            }
+
+            restoreField(fieldWrap, context);
+        });
+
+        return requiredFieldWraps;
+    };
+
+    apply();
+
+    addInputEventListener(formElement, apply, {
+        events,
+        delegate,
+    });
+
+    if (typeof window.jQuery === 'function') {
+        window.jQuery(formElement)
+            .off(`submit.${submitNamespace}`)
+            .on(`submit.${submitNamespace}`, function () {
+                apply();
+            });
+    }
+
+    return {
+        viewElement,
+        formElement,
+        apply,
+    };
+}
+
+if (typeof globalThis !== 'undefined' && typeof globalThis.initialiseConditionalRequiredFieldVisibility === 'undefined') {
+    globalThis.initialiseConditionalRequiredFieldVisibility = initialiseConditionalRequiredFieldVisibility;
 }
 
 /** Replace text in given selector or td (using field ID) with that passed in when regex matched
