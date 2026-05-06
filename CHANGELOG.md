@@ -2,6 +2,13 @@
 
 ## 2026-05-06
 
+<!-- pr:57 fix/bulk-action-selectable-rows - CSWinnall -->
+- add a reusable conditional required-field visibility helper for Knack forms in `knackFunctions.js`
+- detect required fields from Knack view metadata, rendered required markers, and required form controls
+- hide empty required fields while preserving restore state for display and disabled controls
+- reapply visibility rules on delegated form input events and before submit
+- support configuration hooks for enablement checks, value detection, visibility target resolution, excluded fields, and event wiring
+
 <!-- pr:56 hasRecordValue - amandajane-mo -->
 - Added recordHasValue(), a shared Knack record helper that checks whether a raw or formatted record field value contains meaningful data across strings, arrays, objects, dates, booleans, and numbers.
 
