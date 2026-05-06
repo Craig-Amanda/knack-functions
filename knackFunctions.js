@@ -7266,6 +7266,36 @@ function normaliseText(value) {
 }
 
 /**
+ * Checks whether a Knack record field value contains meaningful data.
+ * Handles formatted values, raw arrays, raw objects, booleans, and numbers from record payloads.
+ * @param {*} recordValue - The raw or formatted record field value from Knack.
+ * @returns {boolean} True when the value contains data.
+ */
+function recordHasValue(recordValue) {
+    if (Array.isArray(recordValue)) {
+        return recordValue.some(value => recordHasValue(value));
+    }
+
+    if (recordValue instanceof Date) {
+        return !Number.isNaN(recordValue.getTime());
+    }
+
+    if (recordValue && typeof recordValue === 'object') {
+        return Object.values(recordValue).some(value => recordHasValue(value));
+    }
+
+    if (typeof recordValue === 'boolean') {
+        return true;
+    }
+
+    if (typeof recordValue === 'number') {
+        return Number.isFinite(recordValue);
+    }
+
+    return String(recordValue ?? '').trim() !== '';
+}
+
+/**
  * Applies menu-based filters to any target view with app-configurable behavior.
  * Designed for generic use across table/list/details/calendar targets.
  *
