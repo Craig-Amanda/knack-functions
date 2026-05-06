@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-06
+
+<!-- pr:56 hasRecordValue - amandajane-mo -->
+- Added recordHasValue(), a shared Knack record helper that checks whether a raw or formatted record field value contains meaningful data across strings, arrays, objects, dates, booleans, and numbers.
+
 ## 2026-05-05
 
 <!-- pr:55 Fix/bulk-action-selectable-rows - CSWinnall -->
