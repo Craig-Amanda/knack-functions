@@ -2249,21 +2249,13 @@ function createVersionRefreshController(options = {}) {
     }
 
     /**
-     * Evaluates and synchronises the cached iframe version sources.
-     * @returns {Promise<{ userVersion: string, targetVersion: string }>} Normalised cached iframe versions.
-     */
-    async function evaluateAndSyncCachedIframeVersion() {
-        return evaluateAndSyncIframeVersion(createCachedIframeVersionSnapshot());
-    }
-
-    /**
      * Caches a current-user record and then re-evaluates iframe version control.
      * @param {Object|Object[]|null} recordOrRecords - Current-user record payload.
      * @returns {Promise<{ userVersion: string, targetVersion: string }>} Normalised cached iframe versions.
      */
     async function cacheCurrentUserRecordAndSync(recordOrRecords) {
         cacheCurrentUserRecord(recordOrRecords);
-        return evaluateAndSyncCachedIframeVersion();
+        return evaluateAndSyncIframeVersion(createCachedIframeVersionSnapshot());
     }
 
     /**
@@ -2273,7 +2265,7 @@ function createVersionRefreshController(options = {}) {
      */
     async function cacheTargetVersionRecordsAndSync(records) {
         cacheTargetVersionRecords(records);
-        return evaluateAndSyncCachedIframeVersion();
+        return evaluateAndSyncIframeVersion(createCachedIframeVersionSnapshot());
     }
 
     /**
@@ -2400,7 +2392,6 @@ function createVersionRefreshController(options = {}) {
         evaluateIframeVersionState,
         syncIframeVersion,
         evaluateAndSyncIframeVersion,
-        evaluateAndSyncCachedIframeVersion,
         cacheCurrentUserRecordAndSync,
         cacheTargetVersionRecordsAndSync,
         postRefreshMessage,
