@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-05-07
+
+<!-- pr:58 feature/shared-version-refresh-controller - CSWinnall -->
+- Added a reusable version refresh controller to knack-functions for iframe-driven app version sync and safe deferred refresh.
+- Added shared version indicator rendering and controller helpers for cached record handling, target-version lookup, and refresh-state management.
+- Simplified Spot integration by moving generic version-control behaviour into shared library code.
+
 ## 2026-05-06
 
 <!-- pr:57 fix/bulk-action-selectable-rows - CSWinnall -->
