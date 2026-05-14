@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-05-14
+
+<!-- pr:59 feature/gap-menu-button-filters - CSWinnall -->
+- Added support for explicit rule keys and custom trigger-to-rule mapping.
+- Enabled ^GpplyMenuLinkFilters for non-anchor controls while preserving active-state handling.
+- Needed by GAP-Track Jobs Issued Works Status pills.
+
 ## 2026-05-07
 
 <!-- pr:58 feature/shared-version-refresh-controller - CSWinnall -->
