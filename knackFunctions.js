@@ -812,6 +812,18 @@ class KnackValueResolver {
     }
 
     /**
+     * Resolves a field to a normalised display string suitable for stable text comparisons.
+     * @param {Object} record - Knack record returned by the API.
+     * @param {string|number} fieldKey - Field key with or without `field_` prefix.
+     * @returns {string} Normalised comparable display value.
+     */
+    getComparableFieldDisplay(record, fieldKey) {
+        return this.normalizeComparableText(
+            this.toDisplayString(this.extractResponseFieldValue(record, fieldKey))
+        );
+    }
+
+    /**
      * Builds a POST/PUT payload using only non-raw field keys and type-aware values.
      * Source values can come from a full Knack record or a partial object containing field keys.
      * @param {Object} source - Record or payload-like object.
@@ -1461,6 +1473,15 @@ class KnackValueResolver {
         } catch (_) {
             return '';
         }
+    }
+
+    /**
+     * Normalises text for stable comparisons by collapsing repeated whitespace.
+     * @param {*} value - Value to normalise.
+     * @returns {string} Comparable text value.
+     */
+    normalizeComparableText(value) {
+        return this.toStringSafe(value).replace(/\s+/g, ' ').trim();
     }
 
     /**
