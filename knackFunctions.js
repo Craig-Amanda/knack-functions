@@ -8024,10 +8024,10 @@ function recordHasValue(recordValue) {
  * @param {object} params
  * @param {string|number} params.menuViewId - Source menu view id.
  * @param {string|number} params.targetViewId - Target view id to filter.
- * @param {Array<object>} [params.rules=[]] - Rule list keyed by button text.
+ * @param {Array<object>} [params.rules=[]] - Rule list keyed by button text or explicit ruleKey.
  * @param {object} [params.app={}] - App-specific behavior configuration.
  * @param {string} [params.app.namespace='kf'] - Namespace for data attributes / wire marker.
- * @param {string} [params.app.linkSelector='a'] - Link selector within menu view.
+ * @param {string} [params.app.linkSelector='a'] - Trigger selector within menu view.
  * @param {string} [params.app.buttonSelector='a.kf-menu-button'] - Selector used for active-state toggling.
  * @param {string} [params.app.activeClass='is-active'] - Active class name.
  * @param {boolean} [params.app.captureClick=false] - Bind menu click handler in capture phase.
@@ -8040,8 +8040,9 @@ function recordHasValue(recordValue) {
  * @param {number} [params.app.calendarFirstApplyRefetchMs=0] - Optional one-time first-apply refetch delay for calendars.
  * @param {(ctx: { rule: object, fieldId: string, operator: string, value: any }) => (object|null)} [params.app.buildFilter]
  *        Optional custom filter builder. Return null for "show all".
- * @param {(ctx: { targetId: string, filter: object|null, page: number }) => void} [params.app.onBeforeApply]
- * @param {(ctx: { targetId: string, filter: object|null, page: number, targetType: string }) => void} [params.app.onAfterApply]
+ * @param {(element: HTMLElement) => string} [params.app.getRuleKeyFromElement] - Optional rule-key resolver for non-text triggers.
+ * @param {(ctx: { targetId: string, filter: object|null, page: number, rule: object|null, triggerElement: HTMLElement|null }) => void} [params.app.onBeforeApply]
+ * @param {(ctx: { targetId: string, filter: object|null, page: number, targetType: string, rule: object|null, triggerElement: HTMLElement|null }) => void} [params.app.onAfterApply]
  * @param {(ctx: { targetId: string, error: Error }) => void} [params.app.onError]
  *
  * @example
@@ -8078,6 +8079,7 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
         calendarFirstApplyRetryMs: 180,
         calendarFirstApplyRefetchMs: 0,
         buildFilter: null,
+        getRuleKeyFromElement: null,
         onBeforeApply: null,
         onAfterApply: null,
         onError: null,
@@ -8116,10 +8118,30 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
         ? config.buildFilter
         : defaultBuildFilter;
 
+    const getRuleKeyForRule = (rule) => {
+        if (!rule || typeof rule !== 'object') return null;
+        if (rule.ruleKey !== undefined && rule.ruleKey !== null) return String(rule.ruleKey);
+
+        const buttonText = String(rule.buttonText || '').trim();
+        return buttonText.length ? buttonText : null;
+    };
+
+    const getRuleKeyFromElement = (element) => {
+        if (!(element instanceof HTMLElement)) return null;
+
+        if (typeof config.getRuleKeyFromElement === 'function') {
+            const customRuleKey = config.getRuleKeyFromElement(element);
+            return customRuleKey === undefined || customRuleKey === null ? null : String(customRuleKey);
+        }
+
+        const buttonText = element.textContent?.trim() || '';
+        return buttonText.length ? buttonText : null;
+    };
+
     const ruleMap = new Map(
         (Array.isArray(rules) ? rules : [])
-            .map((rule) => [String(rule?.buttonText || '').trim(), rule])
-            .filter(([label]) => Boolean(label))
+            .map((rule) => [getRuleKeyForRule(rule), rule])
+            .filter(([label]) => label !== null)
     );
     if (!ruleMap.size) return;
 
@@ -8164,14 +8186,14 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
         }
     };
 
-    const applyFilterInPlace = (filter, page = 1) => {
+    const applyFilterInPlace = (filter, page = 1, rule = null, triggerElement = null) => {
         const sceneHash = Knack.getSceneHash();
         const query = filter && Array.isArray(filter.rules) && filter.rules.length
             ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
             : `view_${targetViewKey}_page=${page}`;
 
         if (typeof config.onBeforeApply === 'function') {
-            try { config.onBeforeApply({ targetId, filter, page }); } catch (_) {}
+            try { config.onBeforeApply({ targetId, filter, page, rule, triggerElement }); } catch (_) {}
         }
 
         if (config.syncHash) {
@@ -8203,7 +8225,7 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
                     }
 
                     if (typeof config.onAfterApply === 'function') {
-                        try { config.onAfterApply({ targetId, filter, page, targetType }); } catch (_) {}
+                        try { config.onAfterApply({ targetId, filter, page, targetType, rule, triggerElement }); } catch (_) {}
                     }
 
                     if (Knack.hideSpinner) Knack.hideSpinner();
@@ -8223,12 +8245,12 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
         }
     };
 
-    const links = Array.from(viewElement.querySelectorAll(linkSelector));
-    links.forEach((link) => {
-        const text = link.textContent?.trim();
-        if (!text || !ruleMap.has(text)) return;
+    const triggers = Array.from(viewElement.querySelectorAll(linkSelector));
+    triggers.forEach((triggerElement) => {
+        const ruleKey = getRuleKeyFromElement(triggerElement);
+        if (ruleKey === null || !ruleMap.has(ruleKey)) return;
 
-        const rule = ruleMap.get(text);
+        const rule = ruleMap.get(ruleKey);
         const fieldId = rule?.fieldId ? knackNavigator.normalizeFieldId(rule.fieldId) : '';
         const operator = String(rule?.operator || '').trim();
         const value = rule?.value;
@@ -8236,26 +8258,32 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
         const filter = buildFilterFn({ rule, fieldId, operator, value });
 
         if (!filter) {
-            link.setAttribute('href', buildHref(''));
-            link.dataset.filterTarget = targetId;
-            link.dataset.filter = '';
-            link.dataset.filterPage = String(page);
+            if (triggerElement instanceof HTMLAnchorElement) {
+                triggerElement.setAttribute('href', buildHref(''));
+            }
+            triggerElement.dataset.filterTarget = targetId;
+            triggerElement.dataset.filter = '';
+            triggerElement.dataset.filterPage = String(page);
+            triggerElement.dataset.filterRuleKey = ruleKey;
             return;
         }
 
         const filterParam = encodeURIComponent(JSON.stringify(filter));
         const query = `view_${targetViewKey}_filters=${filterParam}&view_${targetViewKey}_page=${page}`;
-        link.setAttribute('href', buildHref(query));
-        link.dataset.filterTarget = targetId;
-        link.dataset.filter = JSON.stringify(filter);
-        link.dataset.filterPage = String(page);
+        if (triggerElement instanceof HTMLAnchorElement) {
+            triggerElement.setAttribute('href', buildHref(query));
+        }
+        triggerElement.dataset.filterTarget = targetId;
+        triggerElement.dataset.filter = JSON.stringify(filter);
+        triggerElement.dataset.filterPage = String(page);
+        triggerElement.dataset.filterRuleKey = ruleKey;
     });
 
     if (viewElement.getAttribute(wireAttr) === 'true') return;
 
     viewElement.addEventListener('click', (event) => {
-        const link = event.target.closest(linkSelector);
-        if (!link || link.dataset.filterTarget !== targetId) return;
+        const triggerElement = event.target.closest(linkSelector);
+        if (!(triggerElement instanceof HTMLElement) || triggerElement.dataset.filterTarget !== targetId) return;
 
         event.preventDefault();
         if (config.stopPropagation) {
@@ -8265,17 +8293,19 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
             event.stopImmediatePropagation();
         }
 
-        const page = Number(link.dataset.filterPage) || 1;
-        const filterJson = link.dataset.filter || '';
+        const page = Number(triggerElement.dataset.filterPage) || 1;
+        const filterJson = triggerElement.dataset.filter || '';
         const filter = filterJson ? JSON.parse(filterJson) : null;
+        const ruleKey = triggerElement.dataset.filterRuleKey;
+        const rule = typeof ruleKey === 'string' && ruleMap.has(ruleKey) ? ruleMap.get(ruleKey) : null;
 
-        applyFilterInPlace(filter, page);
+        applyFilterInPlace(filter, page, rule, triggerElement);
 
         if (config.buttonSelector) {
             viewElement.querySelectorAll(config.buttonSelector).forEach((btn) => {
                 btn.classList.remove(config.activeClass);
             });
-            link.classList.add(config.activeClass);
+            triggerElement.classList.add(config.activeClass);
         }
     }, !!config.captureClick);
 
