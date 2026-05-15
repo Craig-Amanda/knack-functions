@@ -16746,6 +16746,23 @@ function getRecordID(part = null) {
     return parts[parts.length - part];
 }
 
+/**
+ * Extracts the URL hash segment immediately before a given scene slug.
+ * Knack routes nested pages as: #area/parent-list/{parentId}/scene-slug/{recordId}/
+ * so finding the slug position and stepping back one gives the parent record ID.
+ * @param {string} sceneSlug - Scene slug to locate (e.g. 'edit-product-availability').
+ * @returns {string} The record ID segment before the slug, or empty string if not found.
+ */
+function getIdBeforeSceneSlug(sceneSlug) {
+    const hash = String(window.location.hash || '').replace(/^#/, '');
+    const parts = hash.split('/').filter(Boolean);
+    const slugIdx = parts.indexOf(sceneSlug);
+    if (slugIdx < 1) {
+        return '';
+    }
+    return parts[slugIdx - 1];
+}
+
 /****Display Notifications
  * @param {string} insertNotificationAfter - The selctor to attach the notification too
  * @param {string} notificationTxt - text of notification
