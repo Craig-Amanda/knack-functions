@@ -9908,13 +9908,27 @@ function updateUserFields(viewId, fieldIds) {
     });
 }
 
-/** Update date fields with the current date and time.
+/** Update date fields with the current date and optional current time.
  * @param {string} viewId - The ID of the view.
- * @param {Array} fieldIds - Array of date field IDs.*/
-function updateDateFields(viewId, fieldIds) {
+ * @param {Array<number|Object>} fieldIds - Array of field IDs or field configs.
+ * Field config supports: `{ fieldId, insertTime }` to override the default includeTime behaviour.
+ * @param {boolean} [includeTime=true] - When true, also set the time input for date_time fields.
+ * Per-field config can override via `insertTime` property.
+ */
+function updateDateFields(viewId, fieldIds, includeTime = true) {
     const currentDate = new Date();
-    fieldIds.forEach(foundFieldId => {
+
+    fieldIds.forEach((fieldEntry) => {
         if ($('#view_3404').length > 0) return false; // Submit Support Request Form
+
+        const isConfigObject = fieldEntry && typeof fieldEntry === 'object';
+        const foundFieldId = isConfigObject ? Number(fieldEntry.fieldId) : Number(fieldEntry);
+        if (!Number.isFinite(foundFieldId) || foundFieldId <= 0) return;
+
+        let shouldIncludeTime = includeTime;
+        if (isConfigObject && typeof fieldEntry.insertTime === 'boolean') {
+            shouldIncludeTime = fieldEntry.insertTime;
+        }
 
         const dateField = $(`#${viewId}-field_${foundFieldId}`);
         const timeField = $(`#${viewId}-field_${foundFieldId}-time`);
@@ -9923,8 +9937,10 @@ function updateDateFields(viewId, fieldIds) {
             dateField.val(getDateUKFormat(currentDate));
         }
 
-        if (!timeField.val()) {
-            const timeString = `${currentDate.getHours()}:${currentDate.getMinutes()}`;
+        if (shouldIncludeTime && !timeField.val()) {
+            const hours = String(currentDate.getHours()).padStart(2, '0');
+            const minutes = String(currentDate.getMinutes()).padStart(2, '0');
+            const timeString = `${hours}:${minutes}`;
             timeField.val(timeString);
         }
     });
