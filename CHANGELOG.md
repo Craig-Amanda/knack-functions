@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-15
+
+<!-- pr:60 Update-updateDateFields - amandajane-mo -->
+- Update updateDateFields
+
 ## 2026-05-14
 
 <!-- pr:59 feature/gap-menu-button-filters - CSWinnall -->
