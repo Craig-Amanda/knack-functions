@@ -9908,13 +9908,27 @@ function updateUserFields(viewId, fieldIds) {
     });
 }
 
-/** Update date fields with the current date and time.
+/** Update date fields with the current date and optional current time.
  * @param {string} viewId - The ID of the view.
- * @param {Array} fieldIds - Array of date field IDs.*/
-function updateDateFields(viewId, fieldIds) {
+ * @param {Array<number|Object>} fieldIds - Array of field IDs or field configs.
+ * Field config supports: `{ fieldId, insertTime }` to override the default includeTime behaviour.
+ * @param {boolean} [includeTime=true] - When true, also set the time input for date_time fields.
+ * Per-field config can override via `insertTime` property.
+ */
+function updateDateFields(viewId, fieldIds, includeTime = true) {
     const currentDate = new Date();
-    fieldIds.forEach(foundFieldId => {
+
+    fieldIds.forEach((fieldEntry) => {
         if ($('#view_3404').length > 0) return false; // Submit Support Request Form
+
+        const isConfigObject = fieldEntry && typeof fieldEntry === 'object';
+        const foundFieldId = isConfigObject ? Number(fieldEntry.fieldId) : Number(fieldEntry);
+        if (!Number.isFinite(foundFieldId) || foundFieldId <= 0) return;
+
+        let shouldIncludeTime = includeTime;
+        if (isConfigObject && typeof fieldEntry.insertTime === 'boolean') {
+            shouldIncludeTime = fieldEntry.insertTime;
+        }
 
         const dateField = $(`#${viewId}-field_${foundFieldId}`);
         const timeField = $(`#${viewId}-field_${foundFieldId}-time`);
@@ -9923,8 +9937,10 @@ function updateDateFields(viewId, fieldIds) {
             dateField.val(getDateUKFormat(currentDate));
         }
 
-        if (!timeField.val()) {
-            const timeString = `${currentDate.getHours()}:${currentDate.getMinutes()}`;
+        if (shouldIncludeTime && !timeField.val()) {
+            const hours = String(currentDate.getHours()).padStart(2, '0');
+            const minutes = String(currentDate.getMinutes()).padStart(2, '0');
+            const timeString = `${hours}:${minutes}`;
             timeField.val(timeString);
         }
     });
@@ -16728,6 +16744,23 @@ function getRecordID(part = null) {
     const parts = urlStr.split("/");
     if (!part) return parts[parts.length - 2];
     return parts[parts.length - part];
+}
+
+/**
+ * Extracts the URL hash segment immediately before a given scene slug.
+ * Knack routes nested pages as: #area/parent-list/{parentId}/scene-slug/{recordId}/
+ * so finding the slug position and stepping back one gives the parent record ID.
+ * @param {string} sceneSlug - Scene slug to locate (e.g. 'edit-product-availability').
+ * @returns {string} The record ID segment before the slug, or empty string if not found.
+ */
+function getIdBeforeSceneSlug(sceneSlug) {
+    const hash = String(window.location.hash || '').replace(/^#/, '');
+    const parts = hash.split('/').filter(Boolean);
+    const slugIdx = parts.indexOf(sceneSlug);
+    if (slugIdx < 1) {
+        return '';
+    }
+    return parts[slugIdx - 1];
 }
 
 /****Display Notifications
