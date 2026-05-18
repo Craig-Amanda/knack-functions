@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-18
+
+<!-- pr:61 Fix/multi-form-submit-lifecycle-hooks - CSWinnall -->
+- Added lifecycle callbacks to MultiFormSubmissionCoordinator so apps can hook into coordinated submit start, completion, failure, and settled states.
+
 ## 2026-05-15
 
 <!-- pr:60 Update-updateDateFields - amandajane-mo -->
