@@ -2226,7 +2226,15 @@ function createVersionRefreshController(options = {}) {
         const targetVersion = versionSnapshot.targetVersion;
         const currentUserVersion = versionSnapshot.userVersion;
 
-        if (!userId || !targetVersion || currentUserVersion === targetVersion || internalState.syncInFlight || typeof syncUserVersion !== 'function') {
+        // Do not treat an uncached current-user record as a version mismatch.
+        if (
+            !internalState.iframeCurrentUserRecord
+            || !userId
+            || !targetVersion
+            || currentUserVersion === targetVersion
+            || internalState.syncInFlight
+            || typeof syncUserVersion !== 'function'
+        ) {
             return;
         }
 
@@ -10939,6 +10947,10 @@ class MultiFormSubmissionCoordinator {
      * @param {string[]} config.autoSubmitViewIds - Array of view IDs for auto-submit forms
      * @param {boolean} [config.closeModalAfterSubmit=false] - Close modal after successful submission
      * @param {Function} [config.onAutoFormsComplete=null] - Callback after auto forms complete
+     * @param {Function} [config.onBeforeSubmit=null] - Callback before the coordinated submit starts
+     * @param {Function} [config.onSubmissionComplete=null] - Callback after the manual form submit is triggered
+     * @param {Function} [config.onSubmissionError=null] - Callback when the coordinated submit fails
+     * @param {Function} [config.onSubmissionSettled=null] - Callback after the coordinated submit finishes, success or failure
      * @param {Object} [config.timeouts] - Override default timeout values
      * @param {Object} [config.selectors] - Override default selector strings
      */
@@ -10947,6 +10959,10 @@ class MultiFormSubmissionCoordinator {
         this.autoSubmitViewIds = config.autoSubmitViewIds || [];
         this.closeModalAfterSubmit = config.closeModalAfterSubmit || false;
         this.onAutoFormsComplete = config.onAutoFormsComplete || null;
+        this.onBeforeSubmit = config.onBeforeSubmit || null;
+        this.onSubmissionComplete = config.onSubmissionComplete || null;
+        this.onSubmissionError = config.onSubmissionError || null;
+        this.onSubmissionSettled = config.onSubmissionSettled || null;
 
         this.timeouts = { ...MULTI_FORM_CONFIG.TIMEOUTS, ...(config.timeouts || {}) };
         this.selectors = { ...MULTI_FORM_CONFIG.SELECTORS, ...(config.selectors || {}) };
@@ -11114,6 +11130,13 @@ class MultiFormSubmissionCoordinator {
      * @private
      */
     async _handleFormSubmission(manualForm, manualSubmitBtn) {
+        if (this.onBeforeSubmit) {
+            this.onBeforeSubmit({
+                manualSubmitViewId: this.manualSubmitViewId,
+                autoSubmitViewIds: [...this.autoSubmitViewIds],
+            });
+        }
+
         manualSubmitBtn.disabled = true;
         this._setFormInputsDisabled(manualForm, true);
 
@@ -11130,7 +11153,23 @@ class MultiFormSubmissionCoordinator {
 
             await this._submitManualForm(manualForm);
 
+            if (this.onSubmissionComplete) {
+                this.onSubmissionComplete({
+                    manualSubmitViewId: this.manualSubmitViewId,
+                    autoSubmitViewIds: [...this.autoSubmitViewIds],
+                    outcomes,
+                });
+            }
+
         } catch (err) {
+            if (this.onSubmissionError) {
+                this.onSubmissionError(err, {
+                    manualSubmitViewId: this.manualSubmitViewId,
+                    autoSubmitViewIds: [...this.autoSubmitViewIds],
+                    outcomes,
+                });
+            }
+
             errorHandler.handleError(err, {
                 manualSubmitViewId: this.manualSubmitViewId,
                 autoSubmitViewIds: this.autoSubmitViewIds,
@@ -11139,6 +11178,14 @@ class MultiFormSubmissionCoordinator {
 
             this._setFormInputsDisabled(manualForm, false);
             manualSubmitBtn.disabled = false;
+        } finally {
+            if (this.onSubmissionSettled) {
+                this.onSubmissionSettled({
+                    manualSubmitViewId: this.manualSubmitViewId,
+                    autoSubmitViewIds: [...this.autoSubmitViewIds],
+                    outcomes,
+                });
+            }
         }
     }
 
