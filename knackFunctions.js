@@ -533,6 +533,93 @@ class KnackNavigator {
     }
 
     /**
+     * Returns the current Knack route scene trail for a view, oldest to newest.
+     * Where Knack exposes a route key on a scene entry, treat it as the record id for
+     * that slug. If the key is missing, fall back to the current URL hash.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {{ maxScenes?: number }} [options={}] - Optional trail limit.
+     * @returns {Array<{ sceneSlug: string, recordId: string, isCurrent: boolean, index: number }>} Scene trail.
+     */
+    getCurrentSceneTrail(viewId, options = {}) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return [];
+        }
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        if (!directScene) {
+            return [];
+        }
+
+        const rawTrail = Array.isArray(directScene?.scenes) ? directScene.scenes : [];
+        const normalizedTrail = rawTrail
+            .map((sceneEntry, index, sourceTrail) => {
+                const sceneSlug = String(sceneEntry?.slug || '').trim();
+                const directRecordId = String(sceneEntry?.key || sceneEntry?.scene_id || '').trim();
+                const recordId = directRecordId || (sceneSlug ? String(getIdBeforeSceneSlug(sceneSlug) || '').trim() : '');
+
+                return {
+                    sceneSlug,
+                    recordId,
+                    isCurrent: index === sourceTrail.length - 1,
+                    index,
+                };
+            })
+            .filter((sceneEntry) => sceneEntry.sceneSlug || sceneEntry.recordId);
+
+        const maxScenes = Number(options?.maxScenes);
+        if (Number.isFinite(maxScenes) && maxScenes > 0) {
+            return normalizedTrail.slice(-maxScenes);
+        }
+
+        return normalizedTrail;
+    }
+
+    /**
+     * Returns the currently rendered scene information for a view.
+     * Unlike `getSceneInfoForView`, this includes the current scene record id.
+     * When `historyIndex` is provided, returns the matching entry from the route trail,
+     * where `0` means the current scene, `1` the previous scene, and so on.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {number|{ historyIndex?: number }} [options={}] - Optional trail lookup.
+     * @returns {{ recordId: string, sceneId: string, sceneSlug: string }|null} Current scene info or null.
+     */
+    getCurrentSceneInfo(viewId, options = {}) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return null;
+        }
+
+        const historyIndex = typeof options === 'number'
+            ? options
+            : Number(options?.historyIndex || 0);
+        if (Number.isInteger(historyIndex) && historyIndex > 0) {
+            const trail = this.getCurrentSceneTrail(normalizedViewId);
+            const targetEntry = trail.at(-(historyIndex + 1));
+            if (!targetEntry) {
+                return null;
+            }
+
+            return {
+                recordId: targetEntry.recordId,
+                sceneId: '',
+                sceneSlug: targetEntry.sceneSlug,
+            };
+        }
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        if (!directScene) {
+            return null;
+        }
+
+        return {
+            recordId: String(directScene?.scene_id || '').trim(),
+            sceneId: this.normalizeSceneId(directScene?.key),
+            sceneSlug: String(directScene?.slug || '').trim(),
+        };
+    }
+
+    /**
      * Resolves field metadata from Knack object definitions.
      * @param {string|number} fieldKey - Field id to resolve.
      * @returns {Object|null} Field metadata.
@@ -16702,15 +16789,14 @@ function normaliseToElement(input) {
 
  /** Retrieves the current scene information for a given view ID.
  * @param {string} viewId - The ID of the view for which to retrieve the scene information.
+ * @param {number|{ historyIndex?: number }} [options] - Optional history lookup.
  * @returns {Object|null} An object containing the scene information, or null if the view ID is invalid:
  *   - recId: The scene's record ID.
  *   - sceneId: The scene's key.
  *   - sceneSlug: The scene's slug. */
-function getCurrentSceneInfo(viewId) {
+function getCurrentSceneInfo(viewId, options) {
     try {
-        const { scene } = Knack.views[viewId].model.view;
-        const { scene_id: recordId, key: sceneId, slug: sceneSlug } = scene;
-        return { recordId, sceneId, sceneSlug };
+        return knackNavigator.getCurrentSceneInfo(viewId, options);
     } catch (error) {
         console.error(`Error retrieving scene information for view ID ${viewId}:`, error);
         return null;
