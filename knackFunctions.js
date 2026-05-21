@@ -595,7 +595,8 @@ class KnackNavigator {
             : Number(options?.historyIndex || 0);
         if (Number.isInteger(historyIndex) && historyIndex > 0) {
             const trail = this.getCurrentSceneTrail(normalizedViewId);
-            const targetEntry = trail.at(-(historyIndex + 1));
+            const targetIndex = trail.length - (historyIndex + 1);
+            const targetEntry = targetIndex >= 0 ? trail[targetIndex] : null;
             if (!targetEntry) {
                 return null;
             }
@@ -16791,7 +16792,7 @@ function normaliseToElement(input) {
  * @param {string} viewId - The ID of the view for which to retrieve the scene information.
  * @param {number|{ historyIndex?: number }} [options] - Optional history lookup.
  * @returns {Object|null} An object containing the scene information, or null if the view ID is invalid:
- *   - recId: The scene's record ID.
+ *   - recordId: The scene's record ID.
  *   - sceneId: The scene's key.
  *   - sceneSlug: The scene's slug. */
 function getCurrentSceneInfo(viewId, options) {
