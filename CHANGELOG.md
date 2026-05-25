@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-05-25
+
+<!-- pr:62 feat/scene-trail-navigation - CSWinnall -->
+- Add scene trail helpers to Knack navigator
+
 ## 2026-05-18
 
 <!-- pr:61 Fix/multi-form-submit-lifecycle-hooks - CSWinnall -->

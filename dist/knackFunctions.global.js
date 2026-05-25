@@ -533,6 +533,94 @@ class KnackNavigator {
     }
 
     /**
+     * Returns the current Knack route scene trail for a view, oldest to newest.
+     * Where Knack exposes a route key on a scene entry, treat it as the record id for
+     * that slug. If the key is missing, fall back to the current URL hash.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {{ maxScenes?: number }} [options={}] - Optional trail limit.
+     * @returns {Array<{ sceneSlug: string, recordId: string, isCurrent: boolean, index: number }>} Scene trail.
+     */
+    getCurrentSceneTrail(viewId, options = {}) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return [];
+        }
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        if (!directScene) {
+            return [];
+        }
+
+        const rawTrail = Array.isArray(directScene?.scenes) ? directScene.scenes : [];
+        const normalizedTrail = rawTrail
+            .map((sceneEntry, index, sourceTrail) => {
+                const sceneSlug = String(sceneEntry?.slug || '').trim();
+                const directRecordId = String(sceneEntry?.key || sceneEntry?.scene_id || '').trim();
+                const recordId = directRecordId || (sceneSlug ? String(getIdBeforeSceneSlug(sceneSlug) || '').trim() : '');
+
+                return {
+                    sceneSlug,
+                    recordId,
+                    isCurrent: index === sourceTrail.length - 1,
+                    index,
+                };
+            })
+            .filter((sceneEntry) => sceneEntry.sceneSlug || sceneEntry.recordId);
+
+        const maxScenes = Number(options?.maxScenes);
+        if (Number.isFinite(maxScenes) && maxScenes > 0) {
+            return normalizedTrail.slice(-maxScenes);
+        }
+
+        return normalizedTrail;
+    }
+
+    /**
+     * Returns the currently rendered scene information for a view.
+     * Unlike `getSceneInfoForView`, this includes the current scene record id.
+     * When `historyIndex` is provided, returns the matching entry from the route trail,
+     * where `0` means the current scene, `1` the previous scene, and so on.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {number|{ historyIndex?: number }} [options={}] - Optional trail lookup.
+     * @returns {{ recordId: string, sceneId: string, sceneSlug: string }|null} Current scene info or null.
+     */
+    getCurrentSceneInfo(viewId, options = {}) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return null;
+        }
+
+        const historyIndex = typeof options === 'number'
+            ? options
+            : Number(options?.historyIndex || 0);
+        if (Number.isInteger(historyIndex) && historyIndex > 0) {
+            const trail = this.getCurrentSceneTrail(normalizedViewId);
+            const targetIndex = trail.length - (historyIndex + 1);
+            const targetEntry = targetIndex >= 0 ? trail[targetIndex] : null;
+            if (!targetEntry) {
+                return null;
+            }
+
+            return {
+                recordId: targetEntry.recordId,
+                sceneId: '',
+                sceneSlug: targetEntry.sceneSlug,
+            };
+        }
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        if (!directScene) {
+            return null;
+        }
+
+        return {
+            recordId: String(directScene?.scene_id || '').trim(),
+            sceneId: this.normalizeSceneId(directScene?.key),
+            sceneSlug: String(directScene?.slug || '').trim(),
+        };
+    }
+
+    /**
      * Resolves field metadata from Knack object definitions.
      * @param {string|number} fieldKey - Field id to resolve.
      * @returns {Object|null} Field metadata.
@@ -3240,9 +3328,7 @@ function bulkActionResolveElement(value) {
 function bulkActionFindViewRoot(viewId) {
     const normalizedViewId = knackNavigator.normalizeViewId(viewId);
     if (!normalizedViewId) return null;
-
-    return document.getElementById(normalizedViewId)
-        || document.querySelector(`#connection-form-view:has(input[value="${normalizedViewId}"])`);
+    return getViewRootElement(viewId);
 }
 
 /**
@@ -6256,6 +6342,44 @@ function getById(id, { context } = {}) {
     } catch (e) {
         return null;
     }
+}
+
+/**
+ * Resolves the root DOM element for a Knack view.
+ * Supports regular rendered views and connection form views.
+ * @param {*} viewRef - View id or view object.
+ * @returns {HTMLElement|null} Resolved view root element.
+ */
+function getViewRootElement(viewRef) {
+    const resolvedElement = resolveElement(viewRef);
+    if (resolvedElement instanceof Element) {
+        const closestViewRoot = resolvedElement.closest('.kn-view, #connection-form-view');
+        if (closestViewRoot instanceof HTMLElement) {
+            return closestViewRoot;
+        }
+    }
+
+    const normalizedViewId = knackNavigator.normalizeViewId(
+        typeof viewRef === 'string' || typeof viewRef === 'number'
+            ? viewRef
+            : viewRef?.key || resolvedElement?.id
+    );
+    if (!normalizedViewId) return null;
+
+    const renderedViewElement = getById(normalizedViewId);
+    if (renderedViewElement instanceof HTMLElement) {
+        return renderedViewElement;
+    }
+
+    const connectionFormView = getById('connection-form-view');
+    if (
+        connectionFormView instanceof HTMLElement
+        && connectionFormView.querySelector(`input[value="${normalizedViewId}"]`)
+    ) {
+        return connectionFormView;
+    }
+
+    return null;
 }
 
 /**
@@ -9889,9 +10013,12 @@ function getFieldId(input) { //knack
 /** Update user fields and date fields in the form.
     * @param {string} viewId - The ID of the view. */
 function updateFieldsInArrays(viewId) {
-    const viewSelector = $(`#${viewId}`).length > 0 ? viewId : `connection-form-view:has(input[value="${viewId}"])`;
-    const userFieldIds = FIELD_IDS_FOR_LOGGED_IN_USER.filter(fieldId => $(`#${viewSelector} #kn-input-field_${fieldId}`).length > 0);
-    const dateFieldIds = SET_CURRENT_DATE_FIELDS.filter(fieldId => $(`#${viewSelector} #kn-input-field_${fieldId}`).length > 0);
+    const viewElement = getViewRootElement(viewId);
+    if (!(viewElement instanceof HTMLElement)) return;
+
+    const viewContainer = $(viewElement);
+    const userFieldIds = FIELD_IDS_FOR_LOGGED_IN_USER.filter(fieldId => viewContainer.find(`#kn-input-field_${fieldId}`).length > 0);
+    const dateFieldIds = SET_CURRENT_DATE_FIELDS.filter(fieldId => viewContainer.find(`#kn-input-field_${fieldId}`).length > 0);
 
     if (userFieldIds.length > 0) {
         updateUserFields(viewId, userFieldIds);
@@ -11553,7 +11680,10 @@ function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, rendered
  * @param {string} connectionObject - The connection object to use for API calls. */
 async function addConnectionIdToRecord(viewId, conxFieldIdInput, connectionId = null, connectionObject) {
     const api = getKnackApiClient();
-    const viewElement = $(`#${viewId}`).length > 0 ? $(`#${viewId}`) : $(`#connection-form-view:has(input[value="${viewId}"])`);
+    const viewRootElement = getViewRootElement(viewId);
+    if (!(viewRootElement instanceof HTMLElement)) return;
+
+    const viewElement = $(viewRootElement);
 
     const connectionField = viewElement.find(`#kn-input-field_${conxFieldIdInput}`);
     const connectionSelect = connectionField.find('select');
@@ -16702,15 +16832,14 @@ function normaliseToElement(input) {
 
  /** Retrieves the current scene information for a given view ID.
  * @param {string} viewId - The ID of the view for which to retrieve the scene information.
+ * @param {number|{ historyIndex?: number }} [options] - Optional history lookup.
  * @returns {Object|null} An object containing the scene information, or null if the view ID is invalid:
- *   - recId: The scene's record ID.
+ *   - recordId: The scene's record ID.
  *   - sceneId: The scene's key.
  *   - sceneSlug: The scene's slug. */
-function getCurrentSceneInfo(viewId) {
+function getCurrentSceneInfo(viewId, options) {
     try {
-        const { scene } = Knack.views[viewId].model.view;
-        const { scene_id: recordId, key: sceneId, slug: sceneSlug } = scene;
-        return { recordId, sceneId, sceneSlug };
+        return knackNavigator.getCurrentSceneInfo(viewId, options);
     } catch (error) {
         console.error(`Error retrieving scene information for view ID ${viewId}:`, error);
         return null;
@@ -17303,8 +17432,7 @@ function addModalNavigationButtons() {
  * @returns {void}
  */
 function capitaliseInput(viewId, inputSelector, options = { mode: 'title', trim: true, smartWords: true, preserveCapitalAfterPrefixes: [] }) {
-    let viewElement = document.getElementById(viewId);
-    if (!viewElement) viewElement = document.querySelector(`#connection-form-view:has(input[value="${viewId}"])`);
+    const viewElement = getViewRootElement(viewId);
     if (!viewElement) return;
 
     const input = viewElement.querySelector(inputSelector);
@@ -17731,8 +17859,7 @@ function insertStaffName(target) {
  * updateLabelText('view_1234', 'form', 'field_5678', { params: [['New Label'], ['form']] });
  */
 function updateLabelText(viewId, viewType, fieldId, { params }) {
-    // Determine if we're working with a connection form or regular view
-    const viewElement = document.getElementById(viewId)
+    const viewElement = getViewRootElement(viewId);
 
     if (!viewElement) {
         console.warn(`View ${viewId} not found for updateLabelText`);
@@ -17742,11 +17869,11 @@ function updateLabelText(viewId, viewType, fieldId, { params }) {
 
     let labelTxt, type, selector;
     const selectors = {
-        form: `#${viewElement.id} #kn-input-${fieldId} .kn-label span:not(.kn-required)`,
-        details: `#${viewElement.id} .${fieldId} .kn-detail-label > span`,
-        list: `#${viewElement.id} .${fieldId} .kn-detail-label > span`,
-        table: `#${viewElement.id} th.${fieldId} > span > a > span:not(span.icon)`,
-        search: `#${viewElement.id} th.${fieldId} > span > a > span:not(span.icon)`
+        form: `#kn-input-${fieldId} .kn-label span:not(.kn-required)`,
+        details: `.${fieldId} .kn-detail-label > span`,
+        list: `.${fieldId} .kn-detail-label > span`,
+        table: `th.${fieldId} > span > a > span:not(span.icon)`,
+        search: `th.${fieldId} > span > a > span:not(span.icon)`
     };
 
     if (params.length === 2) {
@@ -17773,7 +17900,7 @@ function updateLabelText(viewId, viewType, fieldId, { params }) {
     );
 
     if (selector) {
-        const targetElement = document.querySelector(selector);
+        const targetElement = viewElement.querySelector(selector);
         if (targetElement) {
             targetElement.innerHTML = originalText || '';
         } else {
