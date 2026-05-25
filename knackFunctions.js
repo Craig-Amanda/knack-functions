@@ -6347,7 +6347,7 @@ function getById(id, { context } = {}) {
 /**
  * Resolves the root DOM element for a Knack view.
  * Supports regular rendered views and connection form views.
- * @param {*} viewRef - View id, key, element, or view object.
+ * @param {*} viewRef - View id or view object.
  * @returns {HTMLElement|null} Resolved view root element.
  */
 function getViewRootElement(viewRef) {
