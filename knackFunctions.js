@@ -3328,9 +3328,7 @@ function bulkActionResolveElement(value) {
 function bulkActionFindViewRoot(viewId) {
     const normalizedViewId = knackNavigator.normalizeViewId(viewId);
     if (!normalizedViewId) return null;
-
-    return document.getElementById(normalizedViewId)
-        || document.querySelector(`#connection-form-view:has(input[value="${normalizedViewId}"])`);
+    return getViewRootElement(viewId);
 }
 
 /**
@@ -6344,6 +6342,44 @@ function getById(id, { context } = {}) {
     } catch (e) {
         return null;
     }
+}
+
+/**
+ * Resolves the root DOM element for a Knack view.
+ * Supports regular rendered views and connection form views.
+ * @param {*} viewRef - View id, key, element, or view object.
+ * @returns {HTMLElement|null} Resolved view root element.
+ */
+function getViewRootElement(viewRef) {
+    const resolvedElement = resolveElement(viewRef);
+    if (resolvedElement instanceof Element) {
+        const closestViewRoot = resolvedElement.closest('.kn-view, #connection-form-view');
+        if (closestViewRoot instanceof HTMLElement) {
+            return closestViewRoot;
+        }
+    }
+
+    const normalizedViewId = knackNavigator.normalizeViewId(
+        typeof viewRef === 'string' || typeof viewRef === 'number'
+            ? viewRef
+            : viewRef?.key || resolvedElement?.id
+    );
+    if (!normalizedViewId) return null;
+
+    const renderedViewElement = getById(normalizedViewId);
+    if (renderedViewElement instanceof HTMLElement) {
+        return renderedViewElement;
+    }
+
+    const connectionFormView = getById('connection-form-view');
+    if (
+        connectionFormView instanceof HTMLElement
+        && connectionFormView.querySelector(`input[value="${normalizedViewId}"]`)
+    ) {
+        return connectionFormView;
+    }
+
+    return null;
 }
 
 /**
@@ -9977,9 +10013,12 @@ function getFieldId(input) { //knack
 /** Update user fields and date fields in the form.
     * @param {string} viewId - The ID of the view. */
 function updateFieldsInArrays(viewId) {
-    const viewSelector = $(`#${viewId}`).length > 0 ? viewId : `connection-form-view:has(input[value="${viewId}"])`;
-    const userFieldIds = FIELD_IDS_FOR_LOGGED_IN_USER.filter(fieldId => $(`#${viewSelector} #kn-input-field_${fieldId}`).length > 0);
-    const dateFieldIds = SET_CURRENT_DATE_FIELDS.filter(fieldId => $(`#${viewSelector} #kn-input-field_${fieldId}`).length > 0);
+    const viewElement = getViewRootElement(viewId);
+    if (!(viewElement instanceof HTMLElement)) return;
+
+    const viewContainer = $(viewElement);
+    const userFieldIds = FIELD_IDS_FOR_LOGGED_IN_USER.filter(fieldId => viewContainer.find(`#kn-input-field_${fieldId}`).length > 0);
+    const dateFieldIds = SET_CURRENT_DATE_FIELDS.filter(fieldId => viewContainer.find(`#kn-input-field_${fieldId}`).length > 0);
 
     if (userFieldIds.length > 0) {
         updateUserFields(viewId, userFieldIds);
@@ -11641,7 +11680,10 @@ function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, rendered
  * @param {string} connectionObject - The connection object to use for API calls. */
 async function addConnectionIdToRecord(viewId, conxFieldIdInput, connectionId = null, connectionObject) {
     const api = getKnackApiClient();
-    const viewElement = $(`#${viewId}`).length > 0 ? $(`#${viewId}`) : $(`#connection-form-view:has(input[value="${viewId}"])`);
+    const viewRootElement = getViewRootElement(viewId);
+    if (!(viewRootElement instanceof HTMLElement)) return;
+
+    const viewElement = $(viewRootElement);
 
     const connectionField = viewElement.find(`#kn-input-field_${conxFieldIdInput}`);
     const connectionSelect = connectionField.find('select');
@@ -17390,8 +17432,7 @@ function addModalNavigationButtons() {
  * @returns {void}
  */
 function capitaliseInput(viewId, inputSelector, options = { mode: 'title', trim: true, smartWords: true, preserveCapitalAfterPrefixes: [] }) {
-    let viewElement = document.getElementById(viewId);
-    if (!viewElement) viewElement = document.querySelector(`#connection-form-view:has(input[value="${viewId}"])`);
+    const viewElement = getViewRootElement(viewId);
     if (!viewElement) return;
 
     const input = viewElement.querySelector(inputSelector);
@@ -17818,8 +17859,7 @@ function insertStaffName(target) {
  * updateLabelText('view_1234', 'form', 'field_5678', { params: [['New Label'], ['form']] });
  */
 function updateLabelText(viewId, viewType, fieldId, { params }) {
-    // Determine if we're working with a connection form or regular view
-    const viewElement = document.getElementById(viewId)
+    const viewElement = getViewRootElement(viewId);
 
     if (!viewElement) {
         console.warn(`View ${viewId} not found for updateLabelText`);
@@ -17829,11 +17869,11 @@ function updateLabelText(viewId, viewType, fieldId, { params }) {
 
     let labelTxt, type, selector;
     const selectors = {
-        form: `#${viewElement.id} #kn-input-${fieldId} .kn-label span:not(.kn-required)`,
-        details: `#${viewElement.id} .${fieldId} .kn-detail-label > span`,
-        list: `#${viewElement.id} .${fieldId} .kn-detail-label > span`,
-        table: `#${viewElement.id} th.${fieldId} > span > a > span:not(span.icon)`,
-        search: `#${viewElement.id} th.${fieldId} > span > a > span:not(span.icon)`
+        form: `#kn-input-${fieldId} .kn-label span:not(.kn-required)`,
+        details: `.${fieldId} .kn-detail-label > span`,
+        list: `.${fieldId} .kn-detail-label > span`,
+        table: `th.${fieldId} > span > a > span:not(span.icon)`,
+        search: `th.${fieldId} > span > a > span:not(span.icon)`
     };
 
     if (params.length === 2) {
@@ -17860,7 +17900,7 @@ function updateLabelText(viewId, viewType, fieldId, { params }) {
     );
 
     if (selector) {
-        const targetElement = document.querySelector(selector);
+        const targetElement = viewElement.querySelector(selector);
         if (targetElement) {
             targetElement.innerHTML = originalText || '';
         } else {
