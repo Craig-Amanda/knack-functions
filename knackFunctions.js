@@ -2174,6 +2174,14 @@ function createVersionRefreshController(options = {}) {
      * Creates or renews a refresh hold and cancels any scheduled reload.
      * @param {string} [holdId=''] - Identifier for the hold so it can be released later.
      * @returns {string} Normalised hold identifier.
+     * @example
+     * const holdId = controller.holdRefresh('post-submit-api');
+     *
+     * try {
+     *     await saveRecord();
+     * } finally {
+     *     controller.releaseRefresh(holdId);
+     * }
      */
     function holdRefresh(holdId = '') {
         const normalizedHoldId = knackValueResolver.toStringSafe(holdId) || `hold_${Date.now()}_${internalState.refreshHoldIds.size + 1}`;
@@ -2217,6 +2225,10 @@ function createVersionRefreshController(options = {}) {
     /**
      * Releases every active refresh hold.
      * @returns {number} Number of released holds.
+     * @example
+     * window.dispatchEvent(new CustomEvent('kf-version-refresh-release', {
+     *     detail: { all: true },
+     * }));
      */
     function releaseAllRefreshHolds() {
         const holdCount = internalState.refreshHoldIds.size;
@@ -2236,6 +2248,10 @@ function createVersionRefreshController(options = {}) {
      * Handles a global refresh-hold event from app code.
      * @param {CustomEvent|Event} event - Browser event containing an optional hold id in detail.
      * @returns {void}
+     * @example
+     * window.dispatchEvent(new CustomEvent('kf-version-refresh-hold', {
+     *     detail: { holdId: 'post-submit-api' },
+     * }));
      */
     function handleRefreshHoldEvent(event) {
         const detail = event?.detail;
@@ -2247,6 +2263,10 @@ function createVersionRefreshController(options = {}) {
      * Handles a global refresh-release event from app code.
      * @param {CustomEvent|Event} event - Browser event containing a hold id in detail, or detail.all to release every hold.
      * @returns {void}
+     * @example
+     * window.dispatchEvent(new CustomEvent('kf-version-refresh-release', {
+     *     detail: { holdId: 'post-submit-api' },
+     * }));
      */
     function handleRefreshReleaseEvent(event) {
         const detail = event?.detail;
