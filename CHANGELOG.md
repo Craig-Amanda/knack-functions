@@ -2,6 +2,11 @@
 
 ## 2026-05-28
 
+<!-- pr:64 copilot/refresh-hold-events - CSWinnall -->
+- add shared refresh hold and release controls to the version refresh controller
+- support global hold and release events so app code can defer forced reloads around async work
+- keep the targeted event contract strict with detail.holdId, with detail.all available for release-all cleanup
+
 <!-- pr:63 fix/multi-form-submit-coordinator-close - CSWinnall -->
 - Improve `MultiFormSubmissionCoordinator` so it only auto-submits managed views that are active in the current rendered flow, allowing the same coordinator to handle standalone and coordinated submit paths.
 - Wait for the manual form's confirmed submit outcome before settling and use the shared modal close helper so configured modal closes fire reliably after successful coordinated submits.
