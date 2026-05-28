@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-28
+
+<!-- pr:63 fix/multi-form-submit-coordinator-close - CSWinnall -->
+- Improve `MultiFormSubmissionCoordinator` so it only auto-submits managed views that are active in the current rendered flow, allowing the same coordinator to handle standalone and coordinated submit paths.
+- Wait for the manual form's confirmed submit outcome before settling and use the shared modal close helper so configured modal closes fire reliably after successful coordinated submits.
+
 ## 2026-05-25
 
 <!-- pr:62 feat/scene-trail-navigation - CSWinnall -->
