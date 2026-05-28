@@ -2757,6 +2757,20 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
 }
 
 /**
+ * Removes HTML markup from bulk-action labels so basket text stays readable.
+ * @param {*} value - Label value to normalise.
+ * @returns {string} Plain-text label.
+ */
+function bulkActionNormaliseLabelText(value) {
+    return knackValueResolver.toStringSafe(value)
+        .replace(/<br\s*\/?>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
  * Normalises stored basket items so each item has a valid string record id.
  * @param {Array<Object>} [items=[]] - Basket items to normalise.
  * @returns {Array<Object>} Normalised basket items.
@@ -2764,7 +2778,11 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
 function bulkActionNormalizeBasketItems(items = []) {
     return (Array.isArray(items) ? items : [])
         .filter((item) => knackValueResolver.toStringSafe(item?.recordId))
-        .map((item) => ({ ...item, recordId: knackValueResolver.toStringSafe(item.recordId) }));
+        .map((item) => ({
+            ...item,
+            recordId: knackValueResolver.toStringSafe(item.recordId),
+            label: bulkActionNormaliseLabelText(item?.label) || knackValueResolver.toStringSafe(item?.recordId)
+        }));
 }
 
 const BULK_ACTION_DEFAULT_CONFIG = {
@@ -2985,7 +3003,7 @@ function createBulkActionBasketStore(options = {}) {
 
         const envelope = loadEnvelope();
         if (!envelope) return [];
-        memory.items = envelope.items.slice();
+        memory.items = bulkActionNormalizeBasketItems(envelope.items);
         memory.storedAt = Number(envelope.storedAt || 0);
         return memory.items.slice();
     }
@@ -5147,7 +5165,10 @@ class BulkActionGridController {
             const recordId = knackValueResolver.toStringSafe(record?.id);
             if (!recordId) return;
             this.recordById.set(recordId, record);
-            this.labelById.set(recordId, this.bulkActionsApi.getRecordLabel(record, this.labelFieldIds) || recordId);
+            this.labelById.set(
+                recordId,
+                bulkActionNormaliseLabelText(this.bulkActionsApi.getRecordLabel(record, this.labelFieldIds)) || recordId
+            );
         });
     }
 
@@ -11061,7 +11082,7 @@ const MULTI_FORM_CONFIG = {
  * const coordinator = new MultiFormSubmissionCoordinator({
  *     manualSubmitViewId: 'view_123',
  *     autoSubmitViewIds: ['view_456'],
- *     closeModalAfterSubmit: true,
+ *     closeModalAfterSubmit: ({ autoSubmitViewIds }) => autoSubmitViewIds.length > 0,
  *     onAutoFormsComplete: (outcomes) => {
  *         console.log('Auto forms completed:', outcomes);
  *     }
@@ -11072,10 +11093,10 @@ class MultiFormSubmissionCoordinator {
      * @param {Object} config - Configuration object
      * @param {string} config.manualSubmitViewId - View ID of the manual (primary) form
      * @param {string[]} config.autoSubmitViewIds - Array of view IDs for auto-submit forms
-     * @param {boolean} [config.closeModalAfterSubmit=false] - Close modal after successful submission
+     * @param {boolean|Function} [config.closeModalAfterSubmit=false] - Close modal after successful submission, or resolve that decision from submission context
      * @param {Function} [config.onAutoFormsComplete=null] - Callback after auto forms complete
      * @param {Function} [config.onBeforeSubmit=null] - Callback before the coordinated submit starts
-     * @param {Function} [config.onSubmissionComplete=null] - Callback after the manual form submit is triggered
+     * @param {Function} [config.onSubmissionComplete=null] - Callback after the manual form submits successfully
      * @param {Function} [config.onSubmissionError=null] - Callback when the coordinated submit fails
      * @param {Function} [config.onSubmissionSettled=null] - Callback after the coordinated submit finishes, success or failure
      * @param {Object} [config.timeouts] - Override default timeout values
@@ -11084,7 +11105,7 @@ class MultiFormSubmissionCoordinator {
     constructor(config) {
         this.manualSubmitViewId = config.manualSubmitViewId;
         this.autoSubmitViewIds = config.autoSubmitViewIds || [];
-        this.closeModalAfterSubmit = config.closeModalAfterSubmit || false;
+        this.closeModalAfterSubmit = config.closeModalAfterSubmit ?? false;
         this.onAutoFormsComplete = config.onAutoFormsComplete || null;
         this.onBeforeSubmit = config.onBeforeSubmit || null;
         this.onSubmissionComplete = config.onSubmissionComplete || null;
@@ -11122,6 +11143,32 @@ class MultiFormSubmissionCoordinator {
     }
 
     /**
+     * Return all view ids managed by this coordinator.
+     * @returns {string[]}
+     */
+    getManagedViewIds() {
+        return [this.manualSubmitViewId, ...this.autoSubmitViewIds].filter(Boolean);
+    }
+
+    /**
+     * Determine whether a view id is managed by this coordinator.
+     * @param {string} viewId
+     * @returns {boolean}
+     */
+    isManagedView(viewId) {
+        return this.getManagedViewIds().includes(viewId);
+    }
+
+    /**
+     * Return the currently participating auto-submit view ids.
+     * Hidden or missing auto forms are treated as inactive for this submission.
+     * @returns {string[]}
+     */
+    getActiveAutoSubmitViewIds() {
+        return this.autoSubmitViewIds.filter((viewId) => this._isAutoSubmitViewParticipating(viewId));
+    }
+
+    /**
      * Generate unique event namespace for jQuery events
      * @private
      * @param {string} eventName - Base event name (e.g., 'knack-view-render')
@@ -11130,6 +11177,45 @@ class MultiFormSubmissionCoordinator {
      */
     _getEventNamespace(eventName, viewId) {
         return `${eventName}.${viewId}.${this.instanceId}`;
+    }
+
+    /**
+     * Determine whether one configured auto-submit view is currently participating.
+     * @private
+     * @param {string} viewId
+     * @returns {boolean}
+     */
+    _isAutoSubmitViewParticipating(viewId) {
+        const viewElement = document.getElementById(viewId);
+        if (!(viewElement instanceof HTMLElement)) return false;
+
+        const computedStyle = window.getComputedStyle(viewElement);
+        if (viewElement.hidden || computedStyle.display === 'none' || computedStyle.visibility === 'hidden') {
+            return false;
+        }
+
+        return !!viewElement.querySelector(this.selectors.FORM);
+    }
+
+    /**
+     * Build the current submission context for callbacks and modal-close policy.
+     * @private
+     * @param {Object} [contextOverrides={}]
+     * @returns {Object}
+     */
+    _createSubmissionContext(contextOverrides = {}) {
+        const activeAutoSubmitViewIds = this.getActiveAutoSubmitViewIds();
+        return {
+            manualSubmitViewId: this.manualSubmitViewId,
+            autoSubmitViewIds: [...this.autoSubmitViewIds],
+            activeAutoSubmitViewIds,
+            hasAutoSubmitForms: this.autoSubmitViewIds.length > 0,
+            hasActiveAutoSubmitForms: activeAutoSubmitViewIds.length > 0,
+            managedViewIds: this.getManagedViewIds(),
+            submittedViewId: this.manualSubmitViewId,
+            coordinator: this,
+            ...contextOverrides,
+        };
     }
 
     /**
@@ -11258,16 +11344,15 @@ class MultiFormSubmissionCoordinator {
      */
     async _handleFormSubmission(manualForm, manualSubmitBtn) {
         if (this.onBeforeSubmit) {
-            this.onBeforeSubmit({
-                manualSubmitViewId: this.manualSubmitViewId,
-                autoSubmitViewIds: [...this.autoSubmitViewIds],
-            });
+            this.onBeforeSubmit(this._createSubmissionContext());
         }
 
         manualSubmitBtn.disabled = true;
         this._setFormInputsDisabled(manualForm, true);
 
         let outcomes = [];
+        let manualOutcome = null;
+        let modalClosed = false;
         try {
             outcomes = await this._submitAutoForms();
 
@@ -11278,23 +11363,27 @@ class MultiFormSubmissionCoordinator {
             this._setFormInputsDisabled(manualForm, false);
             manualSubmitBtn.disabled = false;
 
-            await this._submitManualForm(manualForm);
+            manualOutcome = await this._submitManualForm(manualForm);
+            modalClosed = await this._closeModalAfterSuccessfulSubmit({
+                manualForm,
+                manualOutcome,
+                outcomes,
+            });
 
             if (this.onSubmissionComplete) {
-                this.onSubmissionComplete({
-                    manualSubmitViewId: this.manualSubmitViewId,
-                    autoSubmitViewIds: [...this.autoSubmitViewIds],
+                this.onSubmissionComplete(this._createSubmissionContext({
                     outcomes,
-                });
+                    manualOutcome,
+                    modalClosed,
+                }));
             }
 
         } catch (err) {
             if (this.onSubmissionError) {
-                this.onSubmissionError(err, {
-                    manualSubmitViewId: this.manualSubmitViewId,
-                    autoSubmitViewIds: [...this.autoSubmitViewIds],
+                this.onSubmissionError(err, this._createSubmissionContext({
                     outcomes,
-                });
+                    manualOutcome,
+                }));
             }
 
             errorHandler.handleError(err, {
@@ -11307,13 +11396,46 @@ class MultiFormSubmissionCoordinator {
             manualSubmitBtn.disabled = false;
         } finally {
             if (this.onSubmissionSettled) {
-                this.onSubmissionSettled({
-                    manualSubmitViewId: this.manualSubmitViewId,
-                    autoSubmitViewIds: [...this.autoSubmitViewIds],
+                this.onSubmissionSettled(this._createSubmissionContext({
                     outcomes,
-                });
+                    manualOutcome,
+                    modalClosed,
+                }));
             }
         }
+    }
+
+    /**
+     * Resolve whether the modal should close after a successful coordinated submit.
+     * @private
+     * @param {Object} context
+     * @returns {boolean|Promise<boolean>}
+     */
+    async _shouldCloseModalAfterSubmit(context = {}) {
+        if (typeof this.closeModalAfterSubmit === 'function') {
+            return Boolean(await this.closeModalAfterSubmit(this._createSubmissionContext(context)));
+        }
+
+        return this.closeModalAfterSubmit === true;
+    }
+
+    /**
+     * Close the active modal when configured to do so after a successful manual submit.
+     * @private
+     * @param {Object} context
+     * @returns {Promise<boolean>}
+     */
+    async _closeModalAfterSuccessfulSubmit(context = {}) {
+        const shouldCloseModal = await this._shouldCloseModalAfterSubmit(context);
+        if (!shouldCloseModal) {
+            return false;
+        }
+
+        await new Promise((resolve) => {
+            setTimeout(resolve, this.timeouts.MODAL_CLOSE_DELAY);
+        });
+
+        return bulkActionCloseModalIfOpen();
     }
 
     /**
@@ -11359,8 +11481,9 @@ class MultiFormSubmissionCoordinator {
      */
     async _submitAutoForms() {
         const outcomes = [];
+        const activeAutoSubmitViewIds = this.getActiveAutoSubmitViewIds();
 
-        for (const autoViewId of this.autoSubmitViewIds) {
+        for (const autoViewId of activeAutoSubmitViewIds) {
             if (this.submittedForms.has(autoViewId)) {
                 outcomes.push({
                     success: true,
@@ -11571,17 +11694,14 @@ class MultiFormSubmissionCoordinator {
      */
     async _submitManualForm(manualForm) {
         return new Promise((resolve, reject) => {
-            setTimeout(() => {
+            setTimeout(async () => {
                 try {
+                    const manualOutcomePromise = this._waitForFormSubmitOutcome(this.manualSubmitViewId);
                     $(manualForm).submit();
 
-                    if (this.closeModalAfterSubmit && document.querySelector(this.selectors.MODAL)) {
-                        setTimeout(() => {
-                            document.querySelector(this.selectors.MODAL_CLOSE)?.click();
-                        }, this.timeouts.MODAL_CLOSE_DELAY);
-                    }
+                    const outcome = await manualOutcomePromise;
 
-                    resolve();
+                    resolve(outcome);
                 } catch (submitErr) {
                     errorHandler.handleError(submitErr, {
                         manualSubmitViewId: this.manualSubmitViewId
@@ -11660,7 +11780,7 @@ class MultiFormSubmissionCoordinator {
  * @param {string} manualSubmitViewId - The view ID of the manual (main) form.
  * @param {string[]} autoSubmitViewIds - Array of view IDs for forms to be auto-submitted before the manual form.
  * @param {string} renderedViewId - The view ID of the form that has just rendered.
- * @param {boolean} [closeModalAfterSubmit=false] - If true, closes modal after successful submission.
+ * @param {boolean|Function} [closeModalAfterSubmit=false] - If true, closes the modal after successful submission, or resolve that decision from submission context.
  * @returns {MultiFormSubmissionCoordinator} The coordinator instance
  */
 function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, renderedViewId, closeModalAfterSubmit = false) {
