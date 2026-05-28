@@ -1921,6 +1921,8 @@ function createVersionRefreshController(options = {}) {
         reload = function () {
             window.location.reload();
         },
+        refreshHoldEventName = 'kf-version-refresh-hold',
+        refreshReleaseEventName = 'kf-version-refresh-release',
         reloadDelayMs = 1200,
         recentReloadWindowMs = 15000,
     } = options;
@@ -1932,6 +1934,7 @@ function createVersionRefreshController(options = {}) {
         pendingRequestActive: false,
         reloadTimerId: 0,
         pendingObserver: null,
+        refreshHoldIds: new Set(),
         syncInFlight: false,
     };
 
@@ -2160,6 +2163,103 @@ function createVersionRefreshController(options = {}) {
     }
 
     /**
+     * Returns whether a pending refresh is currently blocked by an app-level hold.
+     * @returns {boolean} True when one or more refresh holds are active.
+     */
+    function hasActiveRefreshHold() {
+        return internalState.refreshHoldIds.size > 0;
+    }
+
+    /**
+     * Creates or renews a refresh hold and cancels any scheduled reload.
+     * @param {string} [holdId=''] - Identifier for the hold so it can be released later.
+     * @returns {string} Normalised hold identifier.
+     */
+    function holdRefresh(holdId = '') {
+        const normalizedHoldId = knackValueResolver.toStringSafe(holdId) || `hold_${Date.now()}_${internalState.refreshHoldIds.size + 1}`;
+        internalState.refreshHoldIds.add(normalizedHoldId);
+
+        if (internalState.reloadTimerId) {
+            window.clearTimeout(internalState.reloadTimerId);
+            internalState.reloadTimerId = 0;
+        }
+
+        if (internalState.pendingRequestActive) {
+            ensurePendingRefreshWatch();
+            showDeferredRefreshNotice(readState().targetVersion);
+        }
+
+        return normalizedHoldId;
+    }
+
+    /**
+     * Releases a refresh hold and resumes pending refresh checks when safe.
+     * @param {string} holdId - Hold identifier returned by holdRefresh.
+     * @returns {boolean} True when the hold existed and was removed.
+     */
+    function releaseRefresh(holdId) {
+        const normalizedHoldId = knackValueResolver.toStringSafe(holdId);
+        if (!normalizedHoldId) {
+            return false;
+        }
+
+        const removed = internalState.refreshHoldIds.delete(normalizedHoldId);
+        if (removed && internalState.pendingRequestActive && !internalState.reloadTimerId) {
+            ensurePendingRefreshWatch();
+            if (canRefreshPageNow()) {
+                runRefreshIfSafe();
+            }
+        }
+
+        return removed;
+    }
+
+    /**
+     * Releases every active refresh hold.
+     * @returns {number} Number of released holds.
+     */
+    function releaseAllRefreshHolds() {
+        const holdCount = internalState.refreshHoldIds.size;
+        internalState.refreshHoldIds.clear();
+
+        if (holdCount && internalState.pendingRequestActive && !internalState.reloadTimerId) {
+            ensurePendingRefreshWatch();
+            if (canRefreshPageNow()) {
+                runRefreshIfSafe();
+            }
+        }
+
+        return holdCount;
+    }
+
+    /**
+     * Handles a global refresh-hold event from app code.
+     * @param {CustomEvent|Event} event - Browser event containing an optional hold id in detail.
+     * @returns {void}
+     */
+    function handleRefreshHoldEvent(event) {
+        const detail = event?.detail;
+        const holdId = knackValueResolver.toStringSafe(detail?.holdId);
+        holdRefresh(holdId);
+    }
+
+    /**
+     * Handles a global refresh-release event from app code.
+     * @param {CustomEvent|Event} event - Browser event containing a hold id in detail, or detail.all to release every hold.
+     * @returns {void}
+     */
+    function handleRefreshReleaseEvent(event) {
+        const detail = event?.detail;
+        if (detail?.all) {
+            releaseAllRefreshHolds();
+            return;
+        }
+
+        const holdId = knackValueResolver.toStringSafe(detail?.holdId);
+        releaseRefresh(holdId);
+    }
+
+    /**
      * Resets pending state while preserving the stored user version.
      * @returns {void}
      */
@@ -2173,6 +2273,7 @@ function createVersionRefreshController(options = {}) {
         }, storedState));
         internalState.deferredNoticeTargetVersion = '';
         internalState.pendingRequestActive = false;
+        internalState.refreshHoldIds.clear();
         stopPendingRefreshWatch();
         if (internalState.reloadTimerId) {
             window.clearTimeout(internalState.reloadTimerId);
@@ -2204,7 +2305,7 @@ function createVersionRefreshController(options = {}) {
                 return;
             }
 
-            if (canRefreshPageNow()) {
+            if (!hasActiveRefreshHold() && canRefreshPageNow()) {
                 stopPendingRefreshWatch();
                 runRefreshIfSafe();
             }
@@ -2400,7 +2501,7 @@ function createVersionRefreshController(options = {}) {
             return;
         }
 
-        if (!canRefreshPageNow()) {
+        if (hasActiveRefreshHold() || !canRefreshPageNow()) {
             ensurePendingRefreshWatch();
             showDeferredRefreshNotice(targetVersion);
             return;
@@ -2491,6 +2592,16 @@ function createVersionRefreshController(options = {}) {
         runRefreshIfSafe();
     }
 
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        if (refreshHoldEventName) {
+            window.addEventListener(refreshHoldEventName, handleRefreshHoldEvent);
+        }
+
+        if (refreshReleaseEventName) {
+            window.addEventListener(refreshReleaseEventName, handleRefreshReleaseEvent);
+        }
+    }
+
     return {
         normalizeVersion,
         createIframeVersionSnapshot,
@@ -2505,6 +2616,10 @@ function createVersionRefreshController(options = {}) {
         readState,
         writeState,
         storeUserVersion,
+        holdRefresh,
+        releaseRefresh,
+        releaseAllRefreshHolds,
+        hasActiveRefreshHold,
         resetState,
         evaluateIframeVersionState,
         syncIframeVersion,
@@ -2513,6 +2628,8 @@ function createVersionRefreshController(options = {}) {
         cacheTargetVersionRecordsAndSync,
         postRefreshMessage,
         runRefreshIfSafe,
+        handleRefreshHoldEvent,
+        handleRefreshReleaseEvent,
         handleRefreshMessage,
     };
 }
