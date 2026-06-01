@@ -15621,6 +15621,58 @@ function getFormFieldCheckboxValues(fieldId, root = document) {
 }
 
 /**
+ * Returns whether an input/select/textarea contains a meaningful user value.
+ * Ignores Chosen search placeholder inputs that can contain text like "Select".
+ * @param {HTMLElement} inputElement - Form control element.
+ * @returns {boolean} True when the control has a meaningful value.
+ */
+function elementHasMeaningfulValue(inputElement) {
+    if (!(inputElement instanceof HTMLElement)) {
+        return false;
+    }
+
+    if (inputElement.closest('.chzn-container .search-field, .chosen-container .search-field')) {
+        return false;
+    }
+
+    if (inputElement instanceof HTMLSelectElement) {
+        if (inputElement.multiple) {
+            return Array.from(inputElement.selectedOptions || []).some(function (optionElement) {
+                return knackValueResolver.toStringSafe(optionElement.value).trim();
+            });
+        }
+
+        return Boolean(knackValueResolver.toStringSafe(inputElement.value).trim());
+    }
+
+    return Boolean(knackValueResolver.toStringSafe(inputElement.value).trim());
+}
+
+/**
+ * Returns whether a hidden input value represents actual selected data.
+ * Handles empty connection payloads such as `[]` and `%5B%5D`.
+ * @param {string} value - Hidden input value.
+ * @returns {boolean} True when value represents data.
+ */
+function hiddenInputHasMeaningfulValue(value) {
+    const rawValue = knackValueResolver.toStringSafe(value).trim();
+    if (!rawValue) {
+        return false;
+    }
+
+    let decodedValue = rawValue;
+    try {
+        decodedValue = decodeURIComponent(rawValue);
+    } catch (error) {
+        decodedValue = rawValue;
+    }
+
+    const compactValue = String(decodedValue).replace(/\s+/g, '');
+    const lowerValue = compactValue.toLowerCase();
+    return compactValue !== '[]' && lowerValue !== 'null' && lowerValue !== 'undefined';
+}
+
+/**
  * Determines whether a Knack field wrapper currently has a user-entered value.
  * @param {HTMLElement|null|undefined} fieldWrapper - Knack field wrapper element.
  * @returns {boolean} True when the field contains a value.
@@ -15642,14 +15694,14 @@ function fieldWrapperHasValue(fieldWrapper) {
 
     const typedInput = Array.from(fieldWrapper.querySelectorAll('textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), select'))
         .find(function (inputElement) {
-            return knackValueResolver.toStringSafe(inputElement.value).trim();
+            return elementHasMeaningfulValue(inputElement);
         });
     if (typedInput) {
         return true;
     }
 
     const hiddenInput = Array.from(fieldWrapper.querySelectorAll('input[type="hidden"]')).find(function (inputElement) {
-        return knackValueResolver.toStringSafe(inputElement.value).trim();
+        return hiddenInputHasMeaningfulValue(inputElement.value);
     });
 
     return Boolean(hiddenInput);
@@ -15731,7 +15783,7 @@ function initialiseConditionalRequiredFieldVisibility(viewId, options = {}) {
 
         const typedInput = Array.from(fieldWrap.querySelectorAll('textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), select'))
             .find(function (inputElement) {
-                return String(inputElement.value || '').trim();
+                return elementHasMeaningfulValue(inputElement);
             });
 
         return Boolean(typedInput);
