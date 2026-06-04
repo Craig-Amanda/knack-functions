@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-04
+
+<!-- pr:65 Fix-hasValue-for-connection-selects-in-hide-required-fields - amandajane-mo -->
+- fixed bug with initialiseConditionalRequiredFieldVisibility
+
 ## 2026-05-28
 
 <!-- pr:64 copilot/refresh-hold-events - CSWinnall -->
