@@ -2,6 +2,11 @@
 
 ## 2026-06-04
 
+<!-- pr:66 copilot/knack-functions-2026-06-03 - CSWinnall -->
+- Bulk action form replication can now run a configured success callback after submitted or replicated records complete.
+- Success callback failures are surfaced through the bulk action error reporting path without blocking the main replication flow.
+- Connection reference resolution now uses the Knack record `id` value consistently for connection ids and metadata.
+
 <!-- pr:65 Fix-hasValue-for-connection-selects-in-hide-required-fields - amandajane-mo -->
 - fixed bug with initialiseConditionalRequiredFieldVisibility
 

@@ -1249,13 +1249,13 @@ class KnackValueResolver {
             return value
                 .map((item) => {
                     if (!item) return '';
-                    if (typeof item === 'object') return String(item.id || item.record_id || item._id || '').trim();
+                    if (typeof item === 'object') return String(item.id || '').trim();
                     return String(item || '').trim();
                 })
                 .filter(Boolean);
         }
         if (typeof value === 'object') {
-            const id = String(value.id || value.record_id || value._id || '').trim();
+            const id = String(value.id || '').trim();
             return id ? [id] : [];
         }
         const primitiveId = String(value || '').trim();
@@ -1419,7 +1419,7 @@ class KnackValueResolver {
     toConnectionRef(value) {
         if (Array.isArray(value)) {
             const first = value[0];
-            const firstId = String(first?.id || first?.record_id || first?._id || '').trim();
+            const firstId = String(first?.id || '').trim();
             if (!firstId) return null;
             return {
                 id: firstId,
@@ -1428,7 +1428,7 @@ class KnackValueResolver {
         }
 
         if (value && typeof value === 'object') {
-            const id = String(value.id || value.record_id || value._id || '').trim();
+            const id = String(value.id || '').trim();
             if (!id) return null;
             return {
                 id,
@@ -2687,18 +2687,20 @@ function resolveBulkActionFieldId(value, viewId = '') {
  * @param {Array<*>} params - Raw keyword parameters.
  * @param {string} operation - Target form operation, create or update.
  * @param {Object} [options={}] - Optional parsing hooks.
- * @returns {{recordFieldId: string, dataCallbackName: string}} Parsed definition.
+ * @returns {{recordFieldId: string, dataCallbackName: string, successCallbackName: string}} Parsed definition.
  */
 function parseBulkActionDefinition(params, operation, options = {}) {
     const { resolveFieldId = (value) => knackNavigator.normalizeFieldId(value) } = options;
     const op = String(operation || '').toLowerCase() === 'update' ? 'update' : 'create';
     const third = params?.[2];
     const fourth = params?.[3];
+    const fifth = params?.[4];
 
     if (op === 'create') {
         return {
             recordFieldId: resolveFieldId(third),
-            dataCallbackName: knackValueResolver.toStringSafe(fourth)
+            dataCallbackName: knackValueResolver.toStringSafe(fourth),
+            successCallbackName: knackValueResolver.toStringSafe(fifth)
         };
     }
 
@@ -2706,13 +2708,15 @@ function parseBulkActionDefinition(params, operation, options = {}) {
     if (third != null && !thirdAsField) {
         return {
             recordFieldId: '',
-            dataCallbackName: knackValueResolver.toStringSafe(third)
+            dataCallbackName: knackValueResolver.toStringSafe(third),
+            successCallbackName: knackValueResolver.toStringSafe(fourth)
         };
     }
 
     return {
         recordFieldId: thirdAsField,
-        dataCallbackName: knackValueResolver.toStringSafe(fourth)
+        dataCallbackName: knackValueResolver.toStringSafe(fourth),
+        successCallbackName: knackValueResolver.toStringSafe(fifth)
     };
 }
 
@@ -2763,6 +2767,7 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
         resolveView = (viewId) => knackNavigator.getViewObject(viewId),
         gridActionRegistry = null,
         dataCallbackRegistry = null,
+        successCallbackRegistry = null,
         globalScope = typeof globalThis !== 'undefined' ? globalThis : null,
         keywordName = '_bulk_actions',
         sourceViewId = ''
@@ -2874,6 +2879,16 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             }
         }
 
+        const resolvedSuccessCallback = parsed.successCallbackName
+            ? bulkActionResolveRegistryCallback(parsed.successCallbackName, successCallbackRegistry, globalScope)
+            : null;
+        if (parsed.successCallbackName) {
+            if (!resolvedSuccessCallback) {
+                warnings.push({ type: 'action', message: `Missing success callback: ${parsed.successCallbackName}`, params });
+                return;
+            }
+        }
+
         actions.push({
             key: `${operation}:${formViewId}`,
             label,
@@ -2881,7 +2896,8 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             target: formViewId,
             operation,
             recordFieldId: parsed.recordFieldId || defaultRecordFieldId,
-            dataCallback: resolvedDataCallback
+            dataCallback: resolvedDataCallback,
+            successCallback: resolvedSuccessCallback
         });
     });
 
@@ -4232,6 +4248,24 @@ async function bulkActionPrepareReplicateOperations({ mode = 'create', remaining
 }
 
 /**
+ * Invokes a bulk-action success callback without interrupting the main flow when the callback fails.
+ * @param {Function|null} callback
+ * @param {Object} [context={}]
+ * @param {Object} [meta={}]
+ * @param {Object} [options={}]
+ * @returns {Promise<void>}
+ */
+async function bulkActionInvokeSuccessCallback(callback, context = {}, meta = {}, options = {}) {
+    if (typeof callback !== 'function') return;
+
+    try {
+        await callback(context);
+    } catch (error) {
+        bulkActionReportError(error, meta, 'Bulk action success callback failed', options);
+    }
+}
+
+/**
  * Falls back to sequential single-record writes when batch APIs are unavailable.
  * @param {Object} [options={}] - Fallback replication options.
  * @returns {Promise<Array<string>>} Failed record ids.
@@ -4244,15 +4278,34 @@ async function bulkActionReplicateFallback({ mode = 'create', operations = [], a
         const targetId = knackValueResolver.toStringSafe(operation?.id);
         if (!targetId) continue;
         let didFail = false;
+        let result = null;
 
         try {
             if (mode === 'update') {
-                await api.updateRecord(sceneId, apiViewId, targetId, operation.data);
+                result = await api.updateRecord(sceneId, apiViewId, targetId, operation.data);
             } else {
-                await api.createRecord(sceneId, apiViewId, operation.data);
+                result = await api.createRecord(sceneId, apiViewId, operation.data);
             }
 
             sourceStore?.removeItems?.([targetId]);
+
+            void bulkActionInvokeSuccessCallback(options?.successCallback, {
+                stage: 'replicated',
+                mode,
+                targetId,
+                sourceViewId,
+                targetViewId: apiViewId,
+                sceneId,
+                record: result?.record || result || null,
+                requestData: operation?.data,
+                progress: null
+            }, {
+                sourceViewId,
+                targetViewId: apiViewId,
+                targetId,
+                mode,
+                stage: 'replicated'
+            }, options);
         } catch (error) {
             didFail = true;
             failedIds.push(targetId);
@@ -5921,6 +5974,27 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
     });
     const sceneId = knackNavigator.normalizeSceneId(action?.sceneId || knackNavigator.getSceneInfoForView(action?.target)?.key);
     const apiViewId = knackNavigator.normalizeViewId(action?.target);
+    const preparedOperationById = new Map();
+
+    if (processedRecordId) {
+        void bulkActionInvokeSuccessCallback(action?.successCallback, {
+            stage: 'submitted',
+            mode,
+            targetId: processedRecordId,
+            sourceViewId,
+            targetViewId: apiViewId,
+            sceneId,
+            record,
+            requestData: basePayload,
+            bulkState
+        }, {
+            sourceViewId,
+            targetViewId: apiViewId,
+            targetId: processedRecordId,
+            mode,
+            stage: 'submitted'
+        }, options);
+    }
 
     if (processedRecordId) {
         sourceStore.removeItems([processedRecordId]);
@@ -5976,16 +6050,45 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         }
     }
 
-    const onBatchProgress = (progress = {}) => {
-        if (!sourceController) return;
+    preparedOperations.forEach((operation) => {
+        const operationId = knackValueResolver.toStringSafe(operation?.id);
+        if (!operationId) return;
+        preparedOperationById.set(operationId, operation);
+    });
 
+    const onBatchProgress = (progress = {}) => {
         const targetId = mode === 'update'
             ? knackValueResolver.toStringSafe(progress.recordId)
             : knackValueResolver.toStringSafe(preparedOperations[Number(progress.index)]?.id);
 
         if (targetId && !progress.error) {
             sourceStore.removeItems([targetId]);
+
+            const requestData = mode === 'update'
+                ? preparedOperationById.get(targetId)?.data
+                : preparedOperations[Number(progress.index)]?.data;
+
+            void bulkActionInvokeSuccessCallback(action?.successCallback, {
+                stage: 'replicated',
+                mode,
+                targetId,
+                sourceViewId,
+                targetViewId: apiViewId,
+                sceneId,
+                record: progress.record || null,
+                requestData,
+                bulkState,
+                progress
+            }, {
+                sourceViewId,
+                targetViewId: apiViewId,
+                targetId,
+                mode,
+                stage: 'replicated'
+            }, options);
         }
+
+        if (!sourceController) return;
 
         if (targetId && progress.error) {
             failedIds.push(targetId);
@@ -6030,7 +6133,10 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
                 sourceStore,
                 sourceController,
                 sourceViewId,
-                options
+                options: {
+                    ...options,
+                    successCallback: action?.successCallback
+                }
             });
             failedIds.push(...fallbackFailedIds);
         }
@@ -13036,7 +13142,7 @@ class KnackAPI {
 
         // Format URL for child records
         // For view-based API, we use the pattern:
-        // /pages/{scene_slug}/views/{view_key}/records?{scene_slug}_id={record_id}
+        // /pages/{scene_slug}/views/{view_key}/records?{scene_slug}_id={recordId}
         const url = this._formatApiUrl(sceneId, viewId);
 
         // Add the parent record ID as a parameter
