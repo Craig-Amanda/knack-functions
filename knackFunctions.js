@@ -8822,18 +8822,32 @@ function renderMenuButtons({ root, menuItems = [], buttonClass = '' } = {}) {
  * @param {string} buttonColour - The color to set for the button */
 function updateButtonColourOnFormComplete(completedField, mappingObject, buttonColour) {
     const formsCompleted = getValueFromDetail(completedField);
+    console.log('Forms completed value:', formsCompleted);
     if (!formsCompleted || !formsCompleted.length) return;
 
     const formsCompletedArray = formsCompleted.split(',');
-    for (const form of formsCompletedArray) {
-        const viewId = mappingObject[form.trim()];
-        if (viewId) {
-            ktl.core.waitSelector(`#view_${viewId} .view-header:has(.ktlHideShowButton), #view_${viewId} a.knViewLink`).then(() => {
-                $(`#view_${viewId} .view-header:has(.ktlHideShowButton), #view_${viewId} a.knViewLink`).css('background-color', buttonColour);
-            }).catch(error => {
-                console.error(`Error waiting for selector in view_${viewId}:`, error);
-            });
+    for (const rawForm of formsCompletedArray) {
+        const form = rawForm.trim();
+        if (!form) {
+            console.log('Skipping empty entry from formsCompletedArray');
+            continue;
         }
+
+        const viewId = mappingObject[form];
+        if (!viewId) {
+            console.log(`No mapping found for form "${form}"`);
+            continue;
+        }
+
+        console.log(`Found mapping for form "${form}" -> view_${viewId}: waiting for selector`);
+        // include the hide/show button itself so its own background is updated
+        const selector = `#view_${viewId} .ktlHideShowButton, #view_${viewId} .view-header:has(.ktlHideShowButton), #view_${viewId} a.knViewLink`;
+        ktl.core.waitSelector(selector).then(() => {
+            $(selector).css('background-color', buttonColour);
+            console.log(`Set background-color for view_${viewId} to ${buttonColour}`);
+        }).catch(error => {
+            console.error(`Error waiting for selector in view_${viewId}:`, error);
+        });
     }
 }
 
