@@ -8825,15 +8825,20 @@ function updateButtonColourOnFormComplete(completedField, mappingObject, buttonC
     if (!formsCompleted || !formsCompleted.length) return;
 
     const formsCompletedArray = formsCompleted.split(',');
-    for (const form of formsCompletedArray) {
-        const viewId = mappingObject[form.trim()];
-        if (viewId) {
-            ktl.core.waitSelector(`#view_${viewId} .view-header:has(.ktlHideShowButton), #view_${viewId} a.knViewLink`).then(() => {
-                $(`#view_${viewId} .view-header:has(.ktlHideShowButton), #view_${viewId} a.knViewLink`).css('background-color', buttonColour);
-            }).catch(error => {
-                console.error(`Error waiting for selector in view_${viewId}:`, error);
-            });
-        }
+    for (const rawForm of formsCompletedArray) {
+        const form = rawForm.trim();
+        if (!form) continue;
+
+        const viewId = mappingObject[form];
+        if (!viewId) continue;
+
+        // include the hide/show button itself so its own background is updated
+        const selector = `#view_${viewId} .ktlHideShowButton, #view_${viewId} .view-header:has(.ktlHideShowButton), #view_${viewId} a.knViewLink`;
+        ktl.core.waitSelector(selector).then(() => {
+            $(selector).css('background-color', buttonColour);
+        }).catch(error => {
+            console.error(`Error waiting for selector in view_${viewId}:`, error);
+        });
     }
 }
 
