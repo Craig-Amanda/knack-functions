@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-05
+
+<!-- pr:67 Fix-Update-Button-Colour - amandajane-mo -->
+- Fix Update Button Colour
+
 ## 2026-06-04
 
 <!-- pr:66 copilot/knack-functions-2026-06-03 - CSWinnall -->
