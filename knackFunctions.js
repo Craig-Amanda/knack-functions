@@ -51,6 +51,7 @@ class KnackNavigator {
         this._viewColumnSelectorCache = new Map();
         this._fieldMetaCache = new Map();
         this._fieldTypeCache = new Map();
+        this._fieldChoiceOptionsCache = new Map();
     }
 
     /**
@@ -665,6 +666,55 @@ class KnackNavigator {
         const fieldType = String(fieldMeta?.type || '').trim().toLowerCase();
         this._fieldTypeCache.set(key, fieldType);
         return fieldType;
+    }
+
+    /**
+     * Resolves choice labels for a select-style field from Knack object metadata.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {Array<string>} Ordered choice labels from field metadata.
+     */
+    getFieldChoiceOptions(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return [];
+        if (this._fieldChoiceOptionsCache.has(key)) {
+            return this._fieldChoiceOptionsCache.get(key);
+        }
+
+        const fieldMeta = this.getFieldMeta(key);
+        const optionEntries = Array.isArray(fieldMeta?.options) ? fieldMeta.options : [];
+
+        const choiceOptions = [];
+        const seen = new Set();
+
+        const pushChoice = (value) => {
+            const label = String(value ?? '').trim();
+            if (!label || seen.has(label)) return;
+            seen.add(label);
+            choiceOptions.push(label);
+        };
+
+        optionEntries.forEach((entry) => {
+            if (entry === null || entry === undefined) return;
+
+            if (typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean') {
+                pushChoice(entry);
+                return;
+            }
+
+            if (typeof entry !== 'object') return;
+
+            const candidate = entry.label
+                ?? entry.name
+                ?? entry.value
+                ?? entry.text
+                ?? entry.title
+                ?? '';
+
+            pushChoice(candidate);
+        });
+
+        this._fieldChoiceOptionsCache.set(key, choiceOptions);
+        return choiceOptions;
     }
 
     /**
@@ -6528,6 +6578,7 @@ function createKnackBulkActions(options = {}) {
     const api = {
         normalizeFieldId: knackNavigator.normalizeFieldId.bind(knackNavigator),
         normalizeViewId: knackNavigator.normalizeViewId.bind(knackNavigator),
+        getFieldChoiceOptions: knackNavigator.getFieldChoiceOptions.bind(knackNavigator),
         getFieldValueMeta: knackValueResolver.getFieldValueMeta.bind(knackValueResolver),
         getRecordLabel: knackValueResolver.getRecordLabel.bind(knackValueResolver),
         classifyFailure: classifyBulkActionFailure,
@@ -6562,6 +6613,7 @@ function createKnackBulkActions(options = {}) {
 const KnackBulkActions = {
     normalizeFieldId: knackNavigator.normalizeFieldId.bind(knackNavigator),
     normalizeViewId: knackNavigator.normalizeViewId.bind(knackNavigator),
+    getFieldChoiceOptions: knackNavigator.getFieldChoiceOptions.bind(knackNavigator),
     getFieldValueMeta: knackValueResolver.getFieldValueMeta.bind(knackValueResolver),
     getRecordLabel: knackValueResolver.getRecordLabel.bind(knackValueResolver),
     classifyFailure: classifyBulkActionFailure,
