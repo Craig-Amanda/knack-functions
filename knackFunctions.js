@@ -118,6 +118,25 @@ class KnackNavigator {
     }
 
     /**
+     * Normalises every view reference in a view map.
+     * @param {Object} [viewMap={}] - View map keyed by logical names where each value is a view id or array of view ids.
+     * @returns {Object} View map with normalised view ids (string or array).
+     */
+    normaliseViewMap(viewMap = {}) {
+        return Object.fromEntries(
+            Object.entries(viewMap || {}).map(([key, value]) => {
+                if (Array.isArray(value)) {
+                    const normalized = value.map((v) => this.normalizeViewId(v)).filter(Boolean);
+                    // Return a single string (first normalized id) or empty string
+                    return [key, normalized[0] || ''];
+                }
+
+                return [key, this.normalizeViewId(value) || ''];
+            })
+        );
+    }
+
+    /**
      * Returns the DOM wrapper for a Knack field inside a view.
      * @param {Element} viewRoot - Root element for the view.
      * @param {string|number} fieldId - Field id to resolve.
