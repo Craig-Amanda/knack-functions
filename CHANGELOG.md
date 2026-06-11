@@ -2,6 +2,9 @@
 
 ## 2026-06-11
 
+<!-- pr:69 normaliseViewMap - CSWinnall -->
+- Add `normaliseViewMap` helper to `knackNavigator` to normalise configured view maps and return the first valid view id for each key.
+
 <!-- pr:68 feat/knack-functions-changes-2026-06-11 - CSWinnall -->
 - Added: `getFieldChoiceOptions(fieldKey)` helper that returns ordered, deduplicated choice labels from field metadata.
 - Exposed: helper on public `api` and `KnackBulkActions` (bindings added in `knackFunctions.js`).
