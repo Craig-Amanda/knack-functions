@@ -51,6 +51,7 @@ class KnackNavigator {
         this._viewColumnSelectorCache = new Map();
         this._fieldMetaCache = new Map();
         this._fieldTypeCache = new Map();
+        this._fieldChoiceOptionsCache = new Map();
     }
 
     /**
@@ -665,6 +666,55 @@ class KnackNavigator {
         const fieldType = String(fieldMeta?.type || '').trim().toLowerCase();
         this._fieldTypeCache.set(key, fieldType);
         return fieldType;
+    }
+
+    /**
+     * Resolves choice labels for a select-style field from Knack object metadata.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {Array<string>} Ordered choice labels from field metadata.
+     */
+    getFieldChoiceOptions(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return [];
+        if (this._fieldChoiceOptionsCache.has(key)) {
+            return this._fieldChoiceOptionsCache.get(key);
+        }
+
+        const fieldMeta = this.getFieldMeta(key);
+        const optionEntries = Array.isArray(fieldMeta?.options) ? fieldMeta.options : [];
+
+        const choiceOptions = [];
+        const seen = new Set();
+
+        const pushChoice = (value) => {
+            const label = String(value ?? '').trim();
+            if (!label || seen.has(label)) return;
+            seen.add(label);
+            choiceOptions.push(label);
+        };
+
+        optionEntries.forEach((entry) => {
+            if (entry === null || entry === undefined) return;
+
+            if (typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean') {
+                pushChoice(entry);
+                return;
+            }
+
+            if (typeof entry !== 'object') return;
+
+            const candidate = entry.label
+                ?? entry.name
+                ?? entry.value
+                ?? entry.text
+                ?? entry.title
+                ?? '';
+
+            pushChoice(candidate);
+        });
+
+        this._fieldChoiceOptionsCache.set(key, choiceOptions);
+        return choiceOptions;
     }
 
     /**
@@ -6528,6 +6578,7 @@ function createKnackBulkActions(options = {}) {
     const api = {
         normalizeFieldId: knackNavigator.normalizeFieldId.bind(knackNavigator),
         normalizeViewId: knackNavigator.normalizeViewId.bind(knackNavigator),
+        getFieldChoiceOptions: knackNavigator.getFieldChoiceOptions.bind(knackNavigator),
         getFieldValueMeta: knackValueResolver.getFieldValueMeta.bind(knackValueResolver),
         getRecordLabel: knackValueResolver.getRecordLabel.bind(knackValueResolver),
         classifyFailure: classifyBulkActionFailure,
@@ -6562,6 +6613,7 @@ function createKnackBulkActions(options = {}) {
 const KnackBulkActions = {
     normalizeFieldId: knackNavigator.normalizeFieldId.bind(knackNavigator),
     normalizeViewId: knackNavigator.normalizeViewId.bind(knackNavigator),
+    getFieldChoiceOptions: knackNavigator.getFieldChoiceOptions.bind(knackNavigator),
     getFieldValueMeta: knackValueResolver.getFieldValueMeta.bind(knackValueResolver),
     getRecordLabel: knackValueResolver.getRecordLabel.bind(knackValueResolver),
     classifyFailure: classifyBulkActionFailure,
@@ -8190,11 +8242,18 @@ async function waitSelector({
 }
 
 /**
- * Updates the "Add Option" button and default value for a Knack select field.
- * @param {HTMLElement} fieldEle - The field container element
- * @param {string} btnStr - The button label
- * @param {string} defaultVal - The default value for the select
- * @param {boolean} disableInitially - Whether to disable the button initially
+ * Updates the "Add Option" button and default/placeholder text for a select field.
+ * This updates the underlying `<select>` `data-placeholder`, any placeholder `<option>`,
+ * and the visible elements rendered by Chosen/Chosen-like containers. When `disableInitially`
+ * is true the add-option button is kept disabled until the user interacts with the select.
+ *
+ * The function includes a short retry loop to update Chosen's visible elements because
+ * Chosen may re-render shortly after initialization and overwrite the display text.
+ *
+ * @param {HTMLElement} fieldEle - The field container element (e.g. `.kn-input`)
+ * @param {string} btnStr - The button label to show for the add-option link
+ * @param {string} defaultVal - The placeholder / default text to display for the select
+ * @param {boolean} disableInitially - Whether to disable the add-option button initially
  */
 const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
     // Find the .kn-add-option button
@@ -8213,23 +8272,30 @@ const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
     if (disableInitially) {
         addOption.classList.add(CLASS_DISABLED);
         if (container) {
-            // Enable when user interacts with the select field
+            // Enable when user interacts with the select field. Remove listeners once fired.
+            const searchInput = container.querySelector('.chzn-search input, .chosen-search input, .search-field input');
+            const select = fieldEle.querySelector('select');
+
             const enableButton = () => {
                 addOption.classList.remove(CLASS_DISABLED);
+                // Remove attached listeners to avoid leaks
+                container.removeEventListener('click', enableButton);
+                if (searchInput) {
+                    searchInput.removeEventListener('focus', enableButton);
+                    searchInput.removeEventListener('input', enableButton);
+                }
+                if (select) {
+                    select.removeEventListener('change', enableButton);
+                    select.removeEventListener('focus', enableButton);
+                }
             };
 
-            // Listen for multiple interaction events to ensure button gets enabled
+            // Attach listeners
             container.addEventListener('click', enableButton);
-
-            // Also listen for the Chosen dropdown opening
-            const searchInput = container.querySelector('.chzn-search input');
             if (searchInput) {
                 searchInput.addEventListener('focus', enableButton);
                 searchInput.addEventListener('input', enableButton);
             }
-
-            // Listen for changes on the actual select element
-            const select = fieldEle.querySelector('select');
             if (select) {
                 select.addEventListener('change', enableButton);
                 select.addEventListener('focus', enableButton);
@@ -8243,16 +8309,78 @@ const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
         }
     }
 
-    // Set default value for the select
-    if (defaultOpt) {
+    const selectEl = fieldEle.querySelector('select');
+
+    // Set default/placeholder on select element for Chosen and native selects
+    if (selectEl) {
+        selectEl.setAttribute('data-placeholder', defaultVal);
+
+        // If there's an explicit placeholder option, update its text/value
+        if (defaultOpt) {
+            if (defaultOpt.tagName && defaultOpt.tagName.toLowerCase() === 'option') {
+                defaultOpt.textContent = defaultVal;
+                defaultOpt.value = defaultOpt.value || '';
+            } else {
+                defaultOpt.value = defaultVal;
+            }
+        }
+    } else if (defaultOpt) {
         defaultOpt.value = defaultVal;
     }
 
-    // Add event listener for registration handler (one-time)
-    addOption.addEventListener('mousedown', function handler(e) {
+    // Update visible placeholder text for Chosen/Chosen-like containers
+    if (container) {
+        // Single-select chosen: update the display span and mark as default
+        const singleSpan = container.querySelector('.chzn-single span, .chosen-single span');
+        const singleAnchor = container.querySelector('.chzn-single, .chosen-single');
+        if (singleSpan) {
+            singleSpan.textContent = defaultVal;
+            if (singleAnchor) singleAnchor.classList.add('chzn-default', 'chosen-default');
+        }
+
+        // Multi-select chosen: update the default search-field input value
+        const multiDefaultInput = container.querySelector('.chzn-choices .search-field input.default, .chzn-choices .search-field input, .chosen-choices .search-field input.default, .chosen-choices .search-field input');
+        if (multiDefaultInput) {
+            try {
+                multiDefaultInput.value = defaultVal;
+                multiDefaultInput.setAttribute('value', defaultVal);
+            } catch (err) {
+                // ignore
+            }
+        }
+
+        // Update placeholder on the search input if present
+        const placeholderInput = container.querySelector('.chzn-search input, .chosen-search input, .search-field input');
+        if (placeholderInput && placeholderInput.placeholder !== undefined) {
+            placeholderInput.placeholder = defaultVal;
+        }
+
+        // Chosen may re-render after this function runs; retry a few times to ensure visible text is updated.
+        // Use named constants for clarity and keep retries bounded.
+        const MAX_TRIES = 6;
+        const TRY_INTERVAL = 100; // ms
+
+        const trySetChosenDisplay = (attempt = 0) => {
+            const singleSpanRetry = container.querySelector('.chzn-single span, .chosen-single span');
+            if (singleSpanRetry) singleSpanRetry.textContent = defaultVal;
+
+            const multiInputRetry = container.querySelector('.chzn-choices .search-field input.default, .chzn-choices .search-field input, .chosen-choices .search-field input.default, .chosen-choices .search-field input');
+            if (multiInputRetry) {
+                try { multiInputRetry.value = defaultVal; } catch (e) { /* ignore */ }
+            }
+
+            if (attempt < MAX_TRIES) {
+                setTimeout(() => trySetChosenDisplay(attempt + 1), TRY_INTERVAL);
+            }
+        };
+        trySetChosenDisplay();
+    }
+
+    // Add one-time event listener for registration handler. Use `once` so it auto-removes.
+    addOption.addEventListener('mousedown', (e) => {
         waitSelector({ selector: 'li.kn-form-col', timeout: 3000 })
-            .then(() => registrationHandler(e));
-        addOption.removeEventListener('mousedown', handler);
+            .then(() => registrationHandler(e))
+            .catch(() => {});
     }, { once: true });
 };
 

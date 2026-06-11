@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-11
+
+<!-- pr:68 feat/knack-functions-changes-2026-06-11 - CSWinnall -->
+- Added: `getFieldChoiceOptions(fieldKey)` helper that returns ordered, deduplicated choice labels from field metadata.
+- Exposed: helper on public `api` and `KnackBulkActions` (bindings added in `knackFunctions.js`).
+- Fix: `updateOptions` now sets `data-placeholder` on the `<select>`, updates any placeholder `<option>`, updates Chosen visible display (single and multi), and retries briefly to handle Chosen initialization.
+- Refactor: enable listeners for add-option button now remove themselves after first interaction; one-time `mousedown` handler simplified; JSDoc added.
+
 ## 2026-06-05
 
 <!-- pr:67 Fix-Update-Button-Colour - amandajane-mo -->
