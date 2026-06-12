@@ -695,45 +695,27 @@ class KnackNavigator {
     getFieldChoiceOptions(fieldKey) {
         const key = this.normalizeFieldId(fieldKey);
         if (!key) return [];
+
+        // Return cached non-empty value to preserve performance
         if (this._fieldChoiceOptionsCache.has(key)) {
-            return this._fieldChoiceOptionsCache.get(key);
+            const cached = this._fieldChoiceOptionsCache.get(key);
+            if (Array.isArray(cached) && cached.length) return cached;
+            // if cached is empty, fall through to rebuild from fresh metadata
         }
 
         const fieldMeta = this.getFieldMeta(key);
-        const optionEntries = Array.isArray(fieldMeta?.options) ? fieldMeta.options : [];
+        const optionEntries = Array.isArray(fieldMeta?.format?.options) ? fieldMeta.format.options : [];
 
-        const choiceOptions = [];
+        // Assume optionEntries is a plain list of primitives
+        const out = [];
         const seen = new Set();
-
-        const pushChoice = (value) => {
-            const label = String(value ?? '').trim();
-            if (!label || seen.has(label)) return;
-            seen.add(label);
-            choiceOptions.push(label);
-        };
-
-        optionEntries.forEach((entry) => {
-            if (entry === null || entry === undefined) return;
-
-            if (typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean') {
-                pushChoice(entry);
-                return;
-            }
-
-            if (typeof entry !== 'object') return;
-
-            const candidate = entry.label
-                ?? entry.name
-                ?? entry.value
-                ?? entry.text
-                ?? entry.title
-                ?? '';
-
-            pushChoice(candidate);
-        });
-
-        this._fieldChoiceOptionsCache.set(key, choiceOptions);
-        return choiceOptions;
+        for (const e of optionEntries) {
+            if (e == null) continue;
+            const v = String(e).trim();
+            if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+        }
+        if (out.length) this._fieldChoiceOptionsCache.set(key, out);
+        return out;
     }
 
     /**

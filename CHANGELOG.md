@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-12
+
+<!-- pr:71 knack-functions/use-format-options - CSWinnall -->
+- improved shared Knack choice option resolution to use `fieldMeta.format.options`
+- prevented empty cached choice option arrays from masking later-available metadata
+- kept the change limited to `knackFunctions.js` without generated artifact updates, per repo instructions
+
 ## 2026-06-11
 
 <!-- pr:69 normaliseViewMap - CSWinnall -->
