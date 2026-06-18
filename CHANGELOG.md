@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-18
+
+<!-- pr:72 Fix-updateOptions - amandajane-mo -->
+- Fix updateOptions so it no longer overwrites existing input values
+
 ## 2026-06-12
 
 <!-- pr:71 knack-functions/use-format-options - CSWinnall -->
