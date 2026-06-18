@@ -8311,6 +8311,12 @@ const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
     }
 
     const selectEl = fieldEle.querySelector('select');
+    // Preserve the rendered selection on edit forms and any prefilled selects.
+    // The custom prompt should only be pushed into Chosen when the field is blank.
+    const hasSelectedValue = selectEl
+        ? Array.from(selectEl.selectedOptions || []).some((option) => String(option?.value || '').trim())
+            || Boolean(String(selectEl.value || '').trim())
+        : false;
 
     // Set default/placeholder on select element for Chosen and native selects
     if (selectEl) {
@@ -8331,17 +8337,21 @@ const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
 
     // Update visible placeholder text for Chosen/Chosen-like containers
     if (container) {
+        // Only show the custom default text when Chosen does not already have a real selection.
+        // Otherwise we can overwrite the visible label while the underlying value remains selected.
         // Single-select chosen: update the display span and mark as default
         const singleSpan = container.querySelector('.chzn-single span, .chosen-single span');
         const singleAnchor = container.querySelector('.chzn-single, .chosen-single');
-        if (singleSpan) {
+        if (!hasSelectedValue && singleSpan) {
             singleSpan.textContent = defaultVal;
             if (singleAnchor) singleAnchor.classList.add('chzn-default', 'chosen-default');
+        } else if (hasSelectedValue && singleAnchor) {
+            singleAnchor.classList.remove('chzn-default', 'chosen-default');
         }
 
         // Multi-select chosen: update the default search-field input value
         const multiDefaultInput = container.querySelector('.chzn-choices .search-field input.default, .chzn-choices .search-field input, .chosen-choices .search-field input.default, .chosen-choices .search-field input');
-        if (multiDefaultInput) {
+        if (!hasSelectedValue && multiDefaultInput) {
             try {
                 multiDefaultInput.value = defaultVal;
                 multiDefaultInput.setAttribute('value', defaultVal);
@@ -8363,10 +8373,10 @@ const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
 
         const trySetChosenDisplay = (attempt = 0) => {
             const singleSpanRetry = container.querySelector('.chzn-single span, .chosen-single span');
-            if (singleSpanRetry) singleSpanRetry.textContent = defaultVal;
+            if (!hasSelectedValue && singleSpanRetry) singleSpanRetry.textContent = defaultVal;
 
             const multiInputRetry = container.querySelector('.chzn-choices .search-field input.default, .chzn-choices .search-field input, .chosen-choices .search-field input.default, .chosen-choices .search-field input');
-            if (multiInputRetry) {
+            if (!hasSelectedValue && multiInputRetry) {
                 try { multiInputRetry.value = defaultVal; } catch (e) { /* ignore */ }
             }
 
