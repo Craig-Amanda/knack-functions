@@ -2,6 +2,9 @@
 
 ## 2026-06-19
 
+<!-- pr:74 fix/multi-form-coordinator-destroy-cleanup - CSWinnall -->
+- Fix multi-form coordinator teardown so coordinated submit cleanup no longer throws when a stored cleanup callback is registered
+
 <!-- pr:73 feature/knack-functions-escape-html-helper - CSWinnall -->
 - Add a shared HTML escaping helper for safe text interpolation in generated markup
 
