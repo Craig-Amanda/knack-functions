@@ -12151,8 +12151,13 @@ class MultiFormSubmissionCoordinator {
         }
 
         // Clean up jQuery event handlers using stored namespaces
-        this.eventHandlers.forEach((eventNamespace) => {
-            $(document).off(eventNamespace);
+        this.eventHandlers.forEach((eventHandler) => {
+            if (typeof eventHandler === 'function') {
+                eventHandler();
+                return;
+            }
+
+            $(document).off(eventHandler);
         });
 
         this.eventHandlers.clear();
