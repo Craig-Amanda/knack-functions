@@ -17389,6 +17389,20 @@ function normaliseToElement(input) {
     return null;
 }
 
+/**
+ * Escapes plain text for safe interpolation into HTML markup.
+ * @param {string} value - Raw text value to escape.
+ * @returns {string} Escaped HTML-safe text.
+ */
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
  /** Retrieves the current scene information for a given view ID.
  * @param {string} viewId - The ID of the view for which to retrieve the scene information.
  * @param {number|{ historyIndex?: number }} [options] - Optional history lookup.

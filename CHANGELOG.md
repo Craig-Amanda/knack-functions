@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-19
+
+<!-- pr:73 feature/knack-functions-escape-html-helper - CSWinnall -->
+- Add a shared HTML escaping helper for safe text interpolation in generated markup
+
 ## 2026-06-18
 
 <!-- pr:72 Fix-updateOptions - amandajane-mo -->
