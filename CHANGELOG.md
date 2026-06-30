@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-30
+
+<!-- pr:75 feature/add-uk-postcode-normaliser - CSWinnall -->
+- add a reusable UK postcode normaliser to the shared Knack helper library
+- expand the helper output with outcode, inward, unit, sectorCompact, and isFullPostcode
+
 ## 2026-06-19
 
 <!-- pr:74 fix/multi-form-coordinator-destroy-cleanup - CSWinnall -->
