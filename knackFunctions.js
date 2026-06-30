@@ -12924,6 +12924,48 @@ function normaliseUkPostcode(value) {
 }
 
 /**
+ * Validate a UK mobile number entry.
+ * @param {*} value - Raw user-entered phone value.
+ * @param {{ allowIncomplete?: boolean }} [options={}] - Validation options.
+ * @returns {{isValid: boolean, message: string}} Validation outcome and message.
+ */
+function validateUkMobileNumber(value, options = {}) {
+    const mobileNumberMessage = 'Enter an 11-digit mobile number starting with 07.';
+    const invalidResult = (message = mobileNumberMessage) => ({ isValid: false, message });
+    const normalisedValue = knackValueResolver.normalizeComparableText(value).replace(/[()\-\s]+/g, '');
+    const allowIncomplete = Boolean(options?.allowIncomplete);
+    if (!normalisedValue) {
+        return { isValid: true, message: '' };
+    }
+
+    if (normalisedValue.startsWith('+44') || normalisedValue.startsWith('0044')) {
+        return invalidResult(`${mobileNumberMessage} Do not use +44 or 0044.`);
+    }
+
+    if (!/^\d+$/.test(normalisedValue)) {
+        return invalidResult();
+    }
+
+    if (!normalisedValue.startsWith('0')) {
+        return invalidResult();
+    }
+
+    if (normalisedValue.length > 1 && !normalisedValue.startsWith('07')) {
+        return invalidResult();
+    }
+
+    if (allowIncomplete && normalisedValue.length <= 11) {
+        return { isValid: true, message: '' };
+    }
+
+    if (!/^07\d{9}$/.test(normalisedValue)) {
+        return invalidResult();
+    }
+
+    return { isValid: true, message: '' };
+}
+
+/**
  * Returns the URL to open for a file type.
  * Uses direct asset URLs to avoid external viewer blank-screen/network issues.
  * @param {string} extension - File extension (lowercase, no dot)
