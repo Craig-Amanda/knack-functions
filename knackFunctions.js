@@ -12869,6 +12869,31 @@ function extractPostcode(address) {
 }
 
 /**
+ * Normalise a UK postcode into comparable full and sector values.
+ * @param {unknown} value - Raw postcode or address value.
+ * @returns {{ formatted: string, compact: string, sector: string }} Normalised postcode variants.
+ */
+function normaliseUkPostcode(value) {
+    const rawValue = String(value ?? '').trim().toUpperCase();
+    const extractedPostcode = extractPostcode(rawValue);
+    const compactFullPostcode = extractedPostcode.replace(/\s+/g, '').toUpperCase();
+    if (compactFullPostcode) {
+        const formatted = `${compactFullPostcode.slice(0, -3)} ${compactFullPostcode.slice(-3)}`.trim();
+        const sector = formatted.replace(/[A-Z]{2}$/i, '').trim();
+        return { formatted, compact: compactFullPostcode, sector };
+    }
+
+    const compactValue = rawValue.replace(/\s+/g, '');
+    const sectorMatch = compactValue.match(/^([A-Z]{1,2}\d[A-Z\d]?)(\d)$/i);
+    if (!sectorMatch) {
+        return { formatted: '', compact: '', sector: '' };
+    }
+
+    const sector = `${sectorMatch[1].toUpperCase()} ${sectorMatch[2]}`.trim();
+    return { formatted: sector, compact: compactValue.toUpperCase(), sector };
+}
+
+/**
  * Returns the URL to open for a file type.
  * Uses direct asset URLs to avoid external viewer blank-screen/network issues.
  * @param {string} extension - File extension (lowercase, no dot)
