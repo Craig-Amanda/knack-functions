@@ -12869,6 +12869,103 @@ function extractPostcode(address) {
 }
 
 /**
+ * Normalise a UK postcode into comparable full and sector values.
+ * @param {unknown} value - Raw postcode or address value.
+ * @returns {{ formatted: string, compact: string, sector: string, sectorCompact: string, outcode: string, inward: string, unit: string, isFullPostcode: boolean }} Normalised postcode variants.
+ */
+function normaliseUkPostcode(value) {
+    const rawValue = String(value ?? '').trim().toUpperCase();
+    const extractedPostcode = extractPostcode(rawValue);
+    const compactFullPostcode = extractedPostcode.replace(/\s+/g, '').toUpperCase();
+    if (compactFullPostcode) {
+        const formatted = `${compactFullPostcode.slice(0, -3)} ${compactFullPostcode.slice(-3)}`.trim();
+        const outcode = formatted.slice(0, -4).trim();
+        const inward = formatted.slice(-3).trim();
+        const sector = formatted.replace(/[A-Z]{2}$/i, '').trim();
+        const unit = inward.slice(-2);
+        return {
+            formatted,
+            compact: compactFullPostcode,
+            sector,
+            sectorCompact: sector.replace(/\s+/g, ''),
+            outcode,
+            inward,
+            unit,
+            isFullPostcode: true,
+        };
+    }
+
+    const compactValue = rawValue.replace(/\s+/g, '');
+    const sectorMatch = compactValue.match(/^([A-Z]{1,2}\d[A-Z\d]?)(\d)$/i);
+    if (!sectorMatch) {
+        return {
+            formatted: '',
+            compact: '',
+            sector: '',
+            sectorCompact: '',
+            outcode: '',
+            inward: '',
+            unit: '',
+            isFullPostcode: false,
+        };
+    }
+
+    const sector = `${sectorMatch[1].toUpperCase()} ${sectorMatch[2]}`.trim();
+    return {
+        formatted: sector,
+        compact: compactValue.toUpperCase(),
+        sector,
+        sectorCompact: compactValue.toUpperCase(),
+        outcode: sectorMatch[1].toUpperCase(),
+        inward: '',
+        unit: '',
+        isFullPostcode: false,
+    };
+}
+
+/**
+ * Validate a UK mobile number entry.
+ * @param {*} value - Raw user-entered phone value.
+ * @param {{ allowIncomplete?: boolean }} [options={}] - Validation options.
+ * @returns {{isValid: boolean, message: string}} Validation outcome and message.
+ */
+function validateUkMobileNumber(value, options = {}) {
+    const mobileNumberMessage = 'Enter an 11-digit mobile number starting with 07.';
+    const invalidResult = (message = mobileNumberMessage) => ({ isValid: false, message });
+    const normalisedValue = knackValueResolver.normalizeComparableText(value).replace(/[()\-\s]+/g, '');
+    const allowIncomplete = Boolean(options?.allowIncomplete);
+    if (!normalisedValue) {
+        return { isValid: true, message: '' };
+    }
+
+    if (normalisedValue.startsWith('+44') || normalisedValue.startsWith('0044')) {
+        return invalidResult(`${mobileNumberMessage} Do not use +44 or 0044.`);
+    }
+
+    if (!/^\d+$/.test(normalisedValue)) {
+        return invalidResult();
+    }
+
+    if (!normalisedValue.startsWith('0')) {
+        return invalidResult();
+    }
+
+    if (normalisedValue.length > 1 && !normalisedValue.startsWith('07')) {
+        return invalidResult();
+    }
+
+    if (allowIncomplete && normalisedValue.length <= 11) {
+        return { isValid: true, message: '' };
+    }
+
+    if (!/^07\d{9}$/.test(normalisedValue)) {
+        return invalidResult();
+    }
+
+    return { isValid: true, message: '' };
+}
+
+/**
  * Returns the URL to open for a file type.
  * Uses direct asset URLs to avoid external viewer blank-screen/network issues.
  * @param {string} extension - File extension (lowercase, no dot)
