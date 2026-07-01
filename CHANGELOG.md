@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-01
+
+<!-- pr:76 fix/bulk-form-replication-guards - CSWinnall -->
+- Bulk form replication now only includes visible writable form controls.
+- Create and update replication now share the submit-event payload path for safer no-data and blank-field handling.
+
 ## 2026-06-30
 
 <!-- pr:75 feature/add-uk-postcode-normaliser - CSWinnall -->

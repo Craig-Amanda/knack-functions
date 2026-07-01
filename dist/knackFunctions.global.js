@@ -4387,6 +4387,7 @@ function bulkActionGetFormFieldKeys(viewRef) {
 
     const visibleFieldIds = Array.from(viewElement.querySelectorAll(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.formField))
         .filter((element) => bulkActionIsVisibleFormField(element))
+        .filter((element) => bulkActionFieldWrapperHasWritableControl(element))
         .map((element) => String(element.id || '').replace(/^kn-input-/, ''));
 
     return bulkActionNormalizeFieldKeys(visibleFieldIds);
@@ -4441,6 +4442,25 @@ function bulkActionIsVisibleFormField(element) {
     }
 
     return bulkActionElementHasVisibleBox(resolvedElement);
+}
+
+/**
+ * Returns true when a field wrapper contains a writable form control.
+ * Read-only fields can reuse Knack's input wrapper ids, so wrapper presence alone is unsafe.
+ * @param {*} element - Field wrapper candidate.
+ * @returns {boolean} Whether the field can be submitted by the user.
+ */
+function bulkActionFieldWrapperHasWritableControl(element) {
+    const resolvedElement = bulkActionResolveElement(element);
+    if (!(resolvedElement instanceof Element)) return false;
+    if (resolvedElement.classList?.contains('kn-read-only')) return false;
+
+    return Boolean(
+        resolvedElement.querySelector('select:not([disabled])')
+        || resolvedElement.querySelector('textarea:not([disabled]):not([readonly])')
+        || resolvedElement.querySelector('input:not([type="hidden"]):not([disabled]):not([readonly])')
+        || resolvedElement.querySelector('input[type="hidden"][name]:not([disabled])')
+    );
 }
 
 /**
@@ -4505,7 +4525,10 @@ function bulkActionBuildSubmitEventRecordPayload({ record = null, includeFieldKe
  * @returns {Object} Request payload.
  */
 function bulkActionBuildDynamicRequestPayload(record, { excludeFieldKeys = [], includeFieldKeys = [] } = {}) {
-    const payload = knackValueResolver.buildRequestPayload(record, Array.isArray(includeFieldKeys) && includeFieldKeys.length ? includeFieldKeys : undefined);
+    const include = bulkActionNormalizeFieldKeys(includeFieldKeys);
+    if (!include.length) return {};
+
+    const payload = knackValueResolver.buildRequestPayload(record, include);
     const exclude = new Set((Array.isArray(excludeFieldKeys) ? excludeFieldKeys : []).map((fieldKey) => knackNavigator.normalizeFieldId(fieldKey)).filter(Boolean));
     exclude.forEach((fieldKey) => delete payload[fieldKey]);
     return payload;
@@ -4516,17 +4539,15 @@ function bulkActionBuildDynamicRequestPayload(record, { excludeFieldKeys = [], i
  * @param {Object} [options={}] - Replication payload options.
  * @returns {Object} Base replication payload.
  */
-function bulkActionBuildReplicateBasePayload({ mode = 'create', formViewRef = null, record = null, includeFieldKeys = [], excludeFieldKeys = [] } = {}) {
-    const dynamicPayload = bulkActionBuildDynamicRequestPayload(record, { includeFieldKeys, excludeFieldKeys });
-    if (mode !== 'update') {
-        return dynamicPayload;
-    }
-
-    return bulkActionBuildSubmitEventRecordPayload({
+function bulkActionBuildReplicateBasePayload({ formViewRef = null, record = null, includeFieldKeys = [], excludeFieldKeys = [] } = {}) {
+    const payload = bulkActionBuildSubmitEventRecordPayload({
         record,
         includeFieldKeys,
         formViewRef
     });
+    const exclude = new Set((Array.isArray(excludeFieldKeys) ? excludeFieldKeys : []).map((fieldKey) => knackNavigator.normalizeFieldId(fieldKey)).filter(Boolean));
+    exclude.forEach((fieldKey) => delete payload[fieldKey]);
+    return payload;
 }
 
 /**
@@ -6011,13 +6032,9 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
         : bulkActionResolveConnectionFieldRecordId(record, recordFieldId) || recordIds[0] || '';
 
     const formViewRef = options.formViewId || action.target;
-    const includeFieldKeys = mode === 'update'
-        ? bulkActionNormalizeFieldKeys(bulkState?.formFieldKeys || bulkActionGetFormFieldKeys(formViewRef))
-        : [];
+    const includeFieldKeys = bulkActionNormalizeFieldKeys(bulkState?.formFieldKeys || bulkActionGetFormFieldKeys(formViewRef));
     const excludeFieldKeys = mode === 'create' && recordFieldId ? [recordFieldId] : [];
     const basePayload = bulkActionBuildReplicateBasePayload({
-        mode,
-        bulkState,
         formViewRef,
         record,
         includeFieldKeys,
@@ -6310,17 +6327,15 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
             noticeClass: config.form.noticeClass
         });
 
-        if (String(bulkState.formMode || 'create').toLowerCase() === 'update') {
-            const form = viewElement.querySelector('form');
-            if (form && !form.dataset.knackBulkFieldKeysBound) {
-                form.addEventListener('submit', () => {
-                    bulkActionMergeFormFlowState(sessionKey, {
-                        activeFormViewId: renderedViewId,
-                        formFieldKeys: bulkActionGetFormFieldKeys(viewElement)
-                    });
-                }, true);
-                form.dataset.knackBulkFieldKeysBound = 'true';
-            }
+        const form = viewElement.querySelector('form');
+        if (form && !form.dataset.knackBulkFieldKeysBound) {
+            form.addEventListener('submit', () => {
+                bulkActionMergeFormFlowState(sessionKey, {
+                    activeFormViewId: renderedViewId,
+                    formFieldKeys: bulkActionGetFormFieldKeys(viewElement)
+                });
+            }, true);
+            form.dataset.knackBulkFieldKeysBound = 'true';
         }
 
         if (String(bulkState.formMode || 'create').toLowerCase() === 'update') return;
@@ -6397,10 +6412,6 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         const sourceController = sourceViewId ? bulkActionControllerStore.get(sourceViewId) || null : null;
         const latestBulkState = (() => {
             const persistedState = bulkActionReadFormFlowState(sessionKey) || bulkState;
-            if (String(bulkState.formMode || 'create').toLowerCase() !== 'update') {
-                return persistedState;
-            }
-
             const liveSubmitFieldKeys = (submitViewElement instanceof Element)
                 ? bulkActionGetFormFieldKeys(submitViewElement)
                 : [];
