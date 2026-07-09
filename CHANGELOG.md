@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-09
+
+<!-- pr:77 feature/asset-progress-and-html-formatting - CSWinnall -->
+- improve shared Knack asset upload handling with progress callbacks and shared retry logic
+- add a formatted HTML-to-text helper for report and summary style output
+- align field wrapper lookup with normalised Knack field ids
+
 ## 2026-07-01
 
 <!-- pr:76 fix/bulk-form-replication-guards - CSWinnall -->
