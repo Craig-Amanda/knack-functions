@@ -16239,6 +16239,49 @@ function getSelectedRadioValue(fieldId, root = document) {
 }
 
 /**
+ * Set the selected value for a Knack radio field.
+ * @param {string|number} fieldId - Knack field ID.
+ * @param {string} value - Radio value to apply.
+ * @param {ParentNode} [root=document] - Optional root element to scope the lookup.
+ * @returns {boolean} True when a matching radio was found and updated.
+ */
+function setSelectedRadioValue(fieldId, value, root = document) {
+    const container = getFieldWrapper(fieldId, root);
+    if (!(container instanceof HTMLElement)) {
+        return false;
+    }
+
+    const radioInputs = Array.from(container.querySelectorAll('input[type="radio"]'));
+    if (!radioInputs.length) {
+        return false;
+    }
+
+    const nextValue = String(value || '').trim();
+    if (!nextValue) {
+        return false;
+    }
+
+    const targetRadio = radioInputs.find(function (radioInput) {
+        return String(radioInput.value || '').trim() === nextValue;
+    });
+    if (!(targetRadio instanceof HTMLInputElement)) {
+        return false;
+    }
+
+    radioInputs.forEach(function (radioInput) {
+        radioInput.checked = radioInput === targetRadio;
+    });
+
+    targetRadio.dispatchEvent(new Event('input', { bubbles: true }));
+    targetRadio.dispatchEvent(new Event('change', { bubbles: true }));
+    if (typeof window.jQuery === 'function') {
+        window.jQuery(targetRadio).trigger('change');
+    }
+
+    return true;
+}
+
+/**
  * Gets the selected value/s for a Knack select field.
  * Returns a string for single selects and an array of strings for multi-selects.
  * @param {string|number} fieldId - Knack field ID
