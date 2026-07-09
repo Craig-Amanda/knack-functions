@@ -13502,6 +13502,7 @@ class KnackAPI {
      * @param {boolean} [options.autoUploadAssets=false] - Upload File/Blob values and replace with Knack asset IDs before create.
      * @param {string[]} [options.assetFieldIds] - Optional allow-list of asset field keys.
      * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field upload type override.
+     * @param {Function} [options.onAssetProgress] - Receives upload progress for auto-uploaded assets before record create.
     * @example
     * const fileInput = document.querySelector('#upload');
     * const file = fileInput?.files?.[0];
@@ -13554,6 +13555,7 @@ class KnackAPI {
     * @param {boolean} [options.autoUploadAssets=false] - Upload File/Blob values and replace with Knack asset IDs before create.
     * @param {string[]} [options.assetFieldIds] - Optional allow-list of asset field keys.
     * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field upload type override.
+    * @param {Function} [options.onAssetProgress] - Receives upload progress for auto-uploaded assets before record create.
      * @returns {Promise<{ total: number, created: number, failed: number, records: Array<Object> }>}
      * @public
      */
@@ -13628,6 +13630,7 @@ class KnackAPI {
      * @param {Object} [options]
      * @param {'file'|'image'} [options.assetType] - Optional override. Auto-detected from mime type when omitted.
      * @param {number} [options.timeout] - Optional timeout override.
+     * @param {Function} [options.onProgress] - Receives { loaded, total, percent, file, assetType } during upload.
      * @returns {Promise<Object>} Uploaded asset payload (must include id).
      * @public
      */
@@ -13652,17 +13655,17 @@ class KnackAPI {
         formData.append('files', file, uploadFileName);
 
         return this._enqueueWrite(async () => {
-            const result = await this._request(
-                url,
-                {
-                    method: 'POST',
-                    headers: this._buildUploadHeaders(),
-                    body: formData,
-                    rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
-                    onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
-                },
-                opts.timeout
-            );
+            const result = await this._uploadAssetRequest(url, formData, {
+                timeout: opts.timeout,
+                headers: this._buildUploadHeaders(),
+                onProgress: typeof opts.onProgress === 'function'
+                    ? ({ loaded, total, percent }) => {
+                        opts.onProgress({ loaded, total, percent, file, assetType });
+                    }
+                    : null,
+                rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
+                onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
+            });
 
             const asset = Array.isArray(result) ? result[0] : result;
             if (!asset || !asset.id) {
@@ -13674,9 +13677,128 @@ class KnackAPI {
     }
 
     /**
+     * Performs a multipart asset upload with retries and progress callbacks.
+     * @param {string} url
+     * @param {FormData} formData
+     * @param {Object} [options]
+     * @param {number} [options.timeout]
+     * @param {Object} [options.headers]
+     * @param {Function} [options.onProgress]
+     * @param {Function} [options.rateLimitHandler]
+     * @param {Function} [options.onRateLimit429]
+     * @returns {Promise<Object>}
+     * @private
+     */
+    async _uploadAssetRequest(url, formData, options = {}) {
+        this._checkKnack();
+
+        const opts = options || {};
+        const timeoutMs = Number.isFinite(opts.timeout) ? opts.timeout : this.options.timeout;
+        return this._runRetriedRequest(url, {
+            method: 'POST',
+            rateLimitHandler: opts.rateLimitHandler,
+            onRateLimit429: opts.onRateLimit429,
+            execute: async () => {
+                const result = await this._uploadAssetRequestOnce(url, formData, {
+                    headers: opts.headers,
+                    timeout: timeoutMs,
+                    onProgress: opts.onProgress
+                });
+                return { result, status: 200, headers: null };
+            }
+        });
+    }
+
+    /**
+     * Performs one multipart asset upload attempt with XMLHttpRequest so progress can be tracked.
+     * @param {string} url
+     * @param {FormData} formData
+     * @param {Object} [options]
+     * @param {Object} [options.headers]
+     * @param {number} [options.timeout]
+     * @param {Function} [options.onProgress]
+     * @returns {Promise<Object>}
+     * @private
+     */
+    _uploadAssetRequestOnce(url, formData, options = {}) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', url, true);
+            xhr.timeout = Number.isFinite(options.timeout) ? options.timeout : this.options.timeout;
+
+            Object.entries(options.headers || {}).forEach(([headerName, headerValue]) => {
+                if (headerValue != null && headerValue !== '') {
+                    xhr.setRequestHeader(headerName, headerValue);
+                }
+            });
+
+            xhr.upload.addEventListener('progress', (event) => {
+                const total = event.lengthComputable ? event.total : 0;
+                const loaded = Number(event.loaded) || 0;
+                const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+                if (typeof options.onProgress === 'function') {
+                    options.onProgress({ loaded, total, percent });
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                const responseText = typeof xhr.responseText === 'string' ? xhr.responseText : '';
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    const result = responseText ? (() => {
+                        try {
+                            return JSON.parse(responseText);
+                        } catch (error) {
+                            return responseText;
+                        }
+                    })() : {};
+                    resolve(result);
+                    return;
+                }
+
+                reject({
+                    status: xhr.status,
+                    statusText: xhr.statusText,
+                    responseText,
+                    headers: this._createHeaderReader(xhr.getAllResponseHeaders())
+                });
+            });
+
+            xhr.addEventListener('error', () => {
+                reject({
+                    status: xhr.status || 0,
+                    statusText: 'Network error',
+                    responseText: typeof xhr.responseText === 'string' ? xhr.responseText : '',
+                    headers: this._createHeaderReader(xhr.getAllResponseHeaders())
+                });
+            });
+
+            xhr.addEventListener('timeout', () => {
+                reject({
+                    status: 0,
+                    statusText: 'Request timeout',
+                    responseText: '',
+                    headers: this._createHeaderReader(xhr.getAllResponseHeaders())
+                });
+            });
+
+            xhr.addEventListener('abort', () => {
+                reject({
+                    status: 0,
+                    statusText: 'Request aborted',
+                    responseText: '',
+                    headers: this._createHeaderReader(xhr.getAllResponseHeaders())
+                });
+            });
+
+            xhr.send(formData);
+        });
+    }
+
+    /**
      * Replaces File/Blob field values with uploaded Knack asset IDs when autoUploadAssets is enabled.
      * @param {Object} recordData
      * @param {Object} [options]
+     * @param {Function} [options.onAssetProgress] - Receives { fieldKey, assetType, assetIndex, assetCount, loaded, total, percent, file }.
      * @returns {Promise<Object>}
      * @private
      */
@@ -13690,16 +13812,35 @@ class KnackAPI {
             ? new Set(options.assetFieldIds)
             : null;
         const typesByField = options.assetTypesByField || {};
+        const assetEntries = Object.entries(data).filter(([fieldKey, value]) => {
+            if (!(value instanceof Blob)) return false;
+            if (allowList && !allowList.has(fieldKey)) return false;
+            if (!allowList && !this._isAssetField(fieldKey)) return false;
+            return true;
+        });
+        const assetCount = assetEntries.length;
 
-        for (const [fieldKey, value] of Object.entries(data)) {
-            if (!(value instanceof Blob)) continue;
-            if (allowList && !allowList.has(fieldKey)) continue;
-            if (!allowList && !this._isAssetField(fieldKey)) continue;
+        for (const [assetIndex, [fieldKey, value]] of assetEntries.entries()) {
+            const resolvedAssetType = typesByField[fieldKey];
+            const inferredAssetType = (value?.type || '').startsWith('image/') ? 'image' : 'file';
 
-            const assetType = typesByField[fieldKey];
             const asset = await this.uploadAsset(value, {
                 timeout: options.timeout,
-                assetType
+                assetType: resolvedAssetType,
+                onProgress: typeof options.onAssetProgress === 'function'
+                    ? ({ loaded, total, percent, file, assetType }) => {
+                        options.onAssetProgress({
+                            fieldKey,
+                            assetType: assetType || resolvedAssetType || inferredAssetType,
+                            assetIndex,
+                            assetCount,
+                            loaded,
+                            total,
+                            percent,
+                            file
+                        });
+                    }
+                    : null
             });
             data[fieldKey] = asset.id;
         }
@@ -15659,27 +15800,17 @@ class KnackAPI {
     async _requestInner(url, options = {}, timeoutOverride) {
         this._checkKnack();
 
-        const maxRetries = this.options.maxRetries;
-        const maxAttempts = 1 + maxRetries;
-        const retryOnStatus = this.options.retryOnStatus;
-        const baseDelay = this.options.retryDelayBase;
-        const maxDelay = this.options.retryDelayMax;
-        const min429Delay = this.options.retryDelayMin429;
         const timeoutMs = Number.isFinite(timeoutOverride) ? timeoutOverride : this.options.timeout;
-
-        let attempt = 0;
         const { rateLimitHandler, onRateLimit429, headers, ...requestOptions } = options || {};
 
-        this._toggleSpinner(true);
-
-        try {
-            while (attempt < maxAttempts) {
-                attempt += 1;
+        return this._runRetriedRequest(url, {
+            method: (requestOptions.method || 'GET').toUpperCase(),
+            rateLimitHandler,
+            onRateLimit429,
+            execute: async () => {
                 const method = (requestOptions.method || 'GET').toUpperCase();
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-                const requestedAt = Date.now();
-                let usageRecorded = false;
 
                 try {
                     const fetchOptions = {
@@ -15694,101 +15825,123 @@ class KnackAPI {
 
                     const response = await fetch(url, fetchOptions);
                     const responseText = await response.text();
+                    if (!response.ok) {
+                        throw {
+                            status: response?.status,
+                            statusText: response?.statusText,
+                            responseText,
+                            headers: response?.headers
+                        };
+                    }
+
+                    const result = responseText ? (() => {
+                        try {
+                            return JSON.parse(responseText);
+                        } catch (error) {
+                            return responseText;
+                        }
+                    })() : {};
+
+                    this._log('API response', result);
+                    return { result, status: response?.status, headers: response?.headers };
+                } catch (error) {
+                    if (error?.name === 'AbortError') {
+                        throw {
+                            status: 0,
+                            statusText: 'Request timeout',
+                            responseText: '',
+                            headers: null
+                        };
+                    }
+                    throw error;
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+            }
+        });
+    }
+
+    /**
+     * Runs a retried request loop with shared logging and 429/backoff handling.
+     * @param {string} url
+     * @param {Object} options
+     * @param {string} options.method
+     * @param {Function} options.execute
+     * @param {Function} [options.rateLimitHandler]
+     * @param {Function} [options.onRateLimit429]
+     * @returns {Promise<*>}
+     * @private
+     */
+    async _runRetriedRequest(url, options = {}) {
+        const maxRetries = this.options.maxRetries;
+        const maxAttempts = 1 + maxRetries;
+        const retryOnStatus = this.options.retryOnStatus;
+        const baseDelay = this.options.retryDelayBase;
+        const maxDelay = this.options.retryDelayMax;
+        const min429Delay = this.options.retryDelayMin429;
+        const method = String(options.method || 'GET').toUpperCase();
+        const execute = typeof options.execute === 'function' ? options.execute : null;
+
+        if (!execute) {
+            throw new Error('KnackAPI error: _runRetriedRequest requires an execute callback.');
+        }
+
+        this._toggleSpinner(true);
+
+        try {
+            for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+                const requestedAt = Date.now();
+                try {
+                    const outcome = await execute(attempt);
+                    this._recordApiUsage({
+                        method,
+                        url,
+                        attempt,
+                        ok: true,
+                        status: Number.isFinite(outcome?.status) ? outcome.status : 200,
+                        headers: outcome?.headers || null,
+                        requestedAt,
+                        respondedAt: Date.now()
+                    });
+                    return outcome?.result;
+                } catch (error) {
+                    const normalizedError = error instanceof Error && error.status !== undefined
+                        ? error
+                        : this._buildRequestError(error);
+                    const status = normalizedError?.status;
 
                     this._recordApiUsage({
                         method,
                         url,
                         attempt,
-                        ok: response.ok,
-                        status: response?.status,
-                        headers: response?.headers,
+                        ok: false,
+                        status: Number.isFinite(status) ? status : null,
+                        headers: error?.headers || null,
                         requestedAt,
                         respondedAt: Date.now()
                     });
-                    usageRecorded = true;
-
-                    if (response.ok) {
-                        const result = responseText ? (() => {
-                            try {
-                                return JSON.parse(responseText);
-                            } catch (error) {
-                                return responseText;
-                            }
-                        })() : {};
-
-                        this._log('API response', result);
-                        return result;
-                    }
-
-                    const status = response?.status;
-
-                    if (status === 429 && typeof onRateLimit429 === 'function') {
-                        onRateLimit429();
-                    }
 
                     const isRetryable = retryOnStatus.includes(status);
+                    if (status === 429 && typeof options.onRateLimit429 === 'function') {
+                        options.onRateLimit429();
+                    }
                     if (!isRetryable || attempt >= maxAttempts) {
-                        throw this._buildRequestError({
-                            status,
-                            statusText: response?.statusText,
-                            responseText,
-                            headers: response?.headers
-                        });
+                        throw normalizedError;
                     }
 
                     const retryIndex = attempt - 1;
                     const backoffDelay = this._computeBackoffMs(baseDelay, maxDelay, retryIndex);
-                    const retryAfterDelay = this._getRetryAfterDelayMs(response);
+                    const retryAfterDelay = status === 429 ? this._getRetryAfterDelayMs(error) : 0;
                     const delay = status === 429
                         ? Math.max(backoffDelay, Number(min429Delay) || 0, retryAfterDelay)
                         : backoffDelay;
 
-                    if (status === 429 && typeof rateLimitHandler === 'function') {
-                        rateLimitHandler(delay);
+                    if (status === 429 && typeof options.rateLimitHandler === 'function') {
+                        options.rateLimitHandler(delay);
                     }
 
                     this._log('Retrying request', { status, attempt, delay }, 'warn');
                     await new Promise(resolve => setTimeout(resolve, delay));
-                } catch (error) {
-                    const isTimeout = error?.name === 'AbortError';
-
-                    if (!usageRecorded) {
-                        this._recordApiUsage({
-                            method,
-                            url,
-                            attempt,
-                            ok: false,
-                            status: Number.isFinite(error?.status) ? error.status : (isTimeout ? 0 : null),
-                            headers: error?.headers || null,
-                            requestedAt,
-                            respondedAt: Date.now()
-                        });
-                    }
-
-                    if (isTimeout) {
-                        throw this._buildRequestError({
-                            status: 0,
-                            statusText: 'Request timeout',
-                            responseText: ''
-                        });
-                    }
-
-                    if (error instanceof Error && error.status !== undefined) {
-                        throw error;
-                    }
-
-                    const status = error?.status;
-                    const isRetryable = retryOnStatus.includes(status);
-                    if (!isRetryable || attempt >= maxAttempts) {
-                        throw this._buildRequestError(error);
-                    }
-
-                    const retryIndex = attempt - 1;
-                    const delay = this._computeBackoffMs(baseDelay, maxDelay, retryIndex);
-                    this._log('Retrying request', { status, attempt, delay }, 'warn');
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                } finally {
-                    clearTimeout(timeoutId);
                 }
             }
         } finally {
@@ -15866,6 +16019,32 @@ class KnackAPI {
         }
 
         return 0;
+    }
+
+    /**
+     * Creates a minimal Headers-like reader from raw header text.
+     * @param {string} rawHeaders
+     * @returns {{ get: function(string): string|null }}
+     * @private
+     */
+    _createHeaderReader(rawHeaders = '') {
+        const headerMap = new Map();
+        String(rawHeaders || '')
+            .split(/\r?\n/)
+            .forEach((line) => {
+                const separatorIndex = line.indexOf(':');
+                if (separatorIndex <= 0) return;
+                const key = line.slice(0, separatorIndex).trim().toLowerCase();
+                const value = line.slice(separatorIndex + 1).trim();
+                if (key) headerMap.set(key, value);
+            });
+
+        return {
+            get(name = '') {
+                const key = String(name || '').trim().toLowerCase();
+                return key ? (headerMap.get(key) || null) : null;
+            }
+        };
     }
 
     /**
@@ -15979,6 +16158,30 @@ function removeHtml(htmlString) {
     return tempDiv.textContent;
 }
 
+/**
+ * Converts HTML into readable plain text while keeping simple line breaks.
+ * Use this when plain `removeHtml` is too aggressive and you want `<br>` and
+ * common block endings to stay readable in reports or summaries.
+ * @param {string} value - HTML or plain text value.
+ * @returns {string} Plain text with simple formatting preserved.
+ */
+function removeHtmlWithFormatting(value) {
+    const text = String(value || '').trim();
+    if (!text || text.indexOf('<') === -1 || typeof document === 'undefined') {
+        return text;
+    }
+
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = text
+        .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+        .replace(/<\/(p|div|li|h[1-6])>/gi, '\n');
+
+    return String(tempDiv.textContent || tempDiv.innerText || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 /** Searches for an element containing the exact text provided.
  * Can optionally filter by tag name and class name, within a specific root element.
  * @param {string} text - The exact text content to search for.
@@ -16014,7 +16217,12 @@ function findElementByText(text, root = document, filter = {}) {
  * @returns {HTMLElement|null} Matching field wrapper.
  */
 function getFieldWrapper(fieldId, root = document) {
-    const containerId = `kn-input-field_${fieldId}`;
+    const normalizedFieldId = knackNavigator.normalizeFieldId(fieldId);
+    if (!normalizedFieldId) {
+        return null;
+    }
+
+    const containerId = `kn-input-${normalizedFieldId}`;
     const container = root?.querySelector ? root.querySelector(`#${containerId}`) : document.getElementById(containerId);
     return container instanceof HTMLElement ? container : null;
 }
