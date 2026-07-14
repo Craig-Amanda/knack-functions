@@ -2,6 +2,9 @@
 
 ## 2026-07-14
 
+<!-- pr:79 fix/knack-functions-mqt-no-inline-edit - CSWinnall -->
+- make shared mqt quick toggles respect PSA no-inline-edit cells
+
 <!-- pr:78 feature/knack-functions-mqt-toggle - CSWinnall -->
 - Add an _mqt quick-toggle helper for two-option multiple-choice fields in knack-functions
 - Route quick-toggle record updates through the shared Knack API client
