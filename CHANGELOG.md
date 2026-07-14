@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-14
+
+<!-- pr:78 feature/knack-functions-mqt-toggle - CSWinnall -->
+- Add an _mqt quick-toggle helper for two-option multiple-choice fields in knack-functions
+- Route quick-toggle record updates through the shared Knack API client
+
 ## 2026-07-09
 
 <!-- pr:77 feature/asset-progress-and-html-formatting - CSWinnall -->
