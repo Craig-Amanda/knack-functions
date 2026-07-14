@@ -19820,7 +19820,7 @@ class CAMultiChoiceQuickToggle {
         if (!this.setupViewModel()) return;
 
         this.processFields();
-        if ($.isEmptyObject(this.fieldToggleConfig)) return;
+        if (this.isToggleQueueEmpty(this.fieldToggleConfig)) return;
 
         this.updateTableColors();
         this.setupCellClickHandlers();
@@ -19907,7 +19907,9 @@ class CAMultiChoiceQuickToggle {
             };
 
             if (this.inlineEditing && !col.ignore_edit) {
-                $(`#${this.viewId} td.${fieldId}.cell-edit`).addClass('mqtCellClickable');
+                this.getViewRoot()
+                    ?.querySelectorAll(`td.${fieldId}.cell-edit`)
+                    .forEach((cell) => cell.classList.add('mqtCellClickable'));
             }
         });
     }
@@ -19954,13 +19956,13 @@ class CAMultiChoiceQuickToggle {
     matchesViewTarget(fieldId, headerText) {
         if (!this.viewTargets.length) return false;
 
-        const normalizedFieldId = knackNavigator.normalizeFieldId(fieldId);
-        const normalizedHeader = knackNavigator.normalizeViewColumnHeader(headerText);
+        const normalisedFieldId = knackNavigator.normalizeFieldId(fieldId);
+        const normalisedHeader = knackNavigator.normalizeViewColumnHeader(headerText);
 
         return this.viewTargets.some((target) => {
             const targetFieldId = knackNavigator.normalizeFieldId(target);
-            if (targetFieldId && targetFieldId === normalizedFieldId) return true;
-            return knackNavigator.normalizeViewColumnHeader(target) === normalizedHeader;
+            if (targetFieldId && targetFieldId === normalisedFieldId) return true;
+            return knackNavigator.normalizeViewColumnHeader(target) === normalisedHeader;
         });
     }
 
@@ -19988,11 +19990,11 @@ class CAMultiChoiceQuickToggle {
                 const nextState = this.resolveSemanticChoice(row, fieldId, config);
                 if (nextState === null) return;
 
-                const cell = $(`#${this.viewId} tbody tr[id="${row.id}"] .${fieldId}`);
-                const currentStyle = cell.attr('style');
+                const cell = this.getViewRoot()?.querySelector(`tbody tr[id="${row.id}"] .${fieldId}`);
+                if (!(cell instanceof HTMLElement)) return;
+
                 const backgroundColor = nextState ? config.bgColorTrue : config.bgColorFalse;
-                const style = `background-color:${backgroundColor}`;
-                cell.attr('style', `${currentStyle ? currentStyle + '; ' : ''}${style}`);
+                cell.style.backgroundColor = backgroundColor;
             });
         });
     }
@@ -20002,7 +20004,13 @@ class CAMultiChoiceQuickToggle {
      * @returns {void}
      */
     setupCellClickHandlers() {
-        $(`#${this.viewId} .mqtCellClickable`).bindFirst('click', (e) => this.handleCellClick(e));
+        this.getViewRoot()
+            ?.querySelectorAll('.mqtCellClickable')
+            .forEach((cell) => {
+                if (!(cell instanceof HTMLElement) || cell.dataset.mqtBound === 'true') return;
+                cell.dataset.mqtBound = 'true';
+                cell.addEventListener('click', (e) => this.handleCellClick(e), true);
+            });
     }
 
     /**
@@ -20011,21 +20019,25 @@ class CAMultiChoiceQuickToggle {
      * @returns {void}
      */
     handleCellClick(e) {
-        if ($('.bulkEditCb:checked').length) return;
+        if (document.querySelector('.bulkEditCb:checked')) return;
 
         e.stopImmediatePropagation();
 
+        const eventTarget = e.target instanceof Element ? e.target : null;
+        const clickedCell = eventTarget?.closest('td');
         const fieldId = knackNavigator.normalizeFieldId(
-            $(e.target).data('field-key') || $(e.target).parent().data('field-key')
+            clickedCell?.getAttribute('data-field-key')
+            || eventTarget?.getAttribute('data-field-key')
+            || eventTarget?.parentElement?.getAttribute('data-field-key')
         );
         const fieldConfig = this.fieldToggleConfig[fieldId];
         if (!fieldConfig) return;
 
-        const viewElement = $(e.target).closest('.kn-search.kn-view[id], .kn-table.kn-view[id]');
-        if (!viewElement.length) return;
+        const viewElement = eventTarget?.closest('.kn-search.kn-view[id], .kn-table.kn-view[id]');
+        if (!(viewElement instanceof HTMLElement)) return;
 
-        const viewId = viewElement.attr('id');
-        const recId = $(e.target).closest('tr').attr('id');
+        const viewId = viewElement.id;
+        const recId = eventTarget?.closest('tr')?.id || '';
         const record = ktl.views.getDataFromRecId(viewId, recId);
         const value = this.getNextChoiceValue(record, fieldId, fieldConfig);
         if (value === undefined) return;
@@ -20037,10 +20049,11 @@ class CAMultiChoiceQuickToggle {
         const dt = Date.now();
         this.quickToggleObj[dt] = { viewId, fieldId, value, recId, processed: false };
 
-        const cell = $(e.target).closest('td');
-        cell.css('background-color', this.quickToggleParams.bgColorPending);
-        if (this.quickToggleParams.pendingClass) {
-            cell.addClass(this.quickToggleParams.pendingClass);
+        if (clickedCell instanceof HTMLElement) {
+            clickedCell.style.backgroundColor = this.quickToggleParams.bgColorPending;
+            if (this.quickToggleParams.pendingClass) {
+                clickedCell.classList.add(this.quickToggleParams.pendingClass);
+            }
         }
 
         clearTimeout(this.refreshTimer);
@@ -20058,12 +20071,12 @@ class CAMultiChoiceQuickToggle {
     resolveSemanticChoice(record, fieldId, fieldConfig) {
         const typedValue = knackValueResolver.resolve(record, fieldId, { mode: 'typed', fallback: undefined });
         const values = Array.isArray(typedValue) ? typedValue : [typedValue];
-        const normalizedValues = values
+        const normalisedValues = values
             .map((value) => String(value || '').trim().toLowerCase())
             .filter(Boolean);
 
-        if (normalizedValues.includes(String(fieldConfig.activeValue).trim().toLowerCase())) return true;
-        if (normalizedValues.includes(String(fieldConfig.inactiveValue).trim().toLowerCase())) return false;
+        if (normalisedValues.includes(String(fieldConfig.activeValue).trim().toLowerCase())) return true;
+        if (normalisedValues.includes(String(fieldConfig.inactiveValue).trim().toLowerCase())) return false;
         return null;
     }
 
@@ -20100,7 +20113,7 @@ class CAMultiChoiceQuickToggle {
 
         ktl.views.autoRefresh(false);
         this.qtScanItv = setInterval(() => {
-            if ($.isEmptyObject(this.quickToggleObj)) return;
+            if (this.isToggleQueueEmpty(this.quickToggleObj)) return;
 
             const dt = Object.keys(this.quickToggleObj)[0];
             const { processed } = this.quickToggleObj[dt];
@@ -20118,11 +20131,11 @@ class CAMultiChoiceQuickToggle {
      */
     doQuickToggle(dt) {
         const recObj = this.quickToggleObj[dt];
-        if ($.isEmptyObject(recObj) || !recObj.viewId || !recObj.fieldId) return;
+        if (this.isToggleQueueEmpty(recObj) || !recObj.viewId || !recObj.fieldId) return;
 
-        const normalizedViewId = knackNavigator.normalizeViewId(recObj.viewId);
-        const sceneId = knackNavigator.getSceneInfoForView(normalizedViewId)?.key || '';
-        if (!sceneId || !normalizedViewId) {
+        const normalisedViewId = knackNavigator.normalizeViewId(recObj.viewId);
+        const sceneId = knackNavigator.getSceneInfoForView(normalisedViewId)?.key || '';
+        if (!sceneId || !normalisedViewId) {
             ktl.views.autoRefresh();
             console.error('Multi-choice quick toggle operation failed: could not resolve scene or view id.', recObj);
             return;
@@ -20131,7 +20144,7 @@ class CAMultiChoiceQuickToggle {
         const apiData = { [recObj.fieldId]: recObj.value };
         const apiClient = getKnackApiClient();
 
-        apiClient.updateRecord(sceneId, normalizedViewId, recObj.recId, apiData)
+        apiClient.updateRecord(sceneId, normalisedViewId, recObj.recId, apiData)
             .then(() => {
                 if (this.quickToggleParams.showNotification) {
                     this.showProgress();
@@ -20140,7 +20153,7 @@ class CAMultiChoiceQuickToggle {
                 this.numToProcess--;
                 delete this.quickToggleObj[dt];
 
-                if ($.isEmptyObject(this.quickToggleObj)) {
+                if (this.isToggleQueueEmpty(this.quickToggleObj)) {
                     clearInterval(this.qtScanItv);
                     this.qtScanItv = null;
 
@@ -20174,6 +20187,24 @@ class CAMultiChoiceQuickToggle {
      */
     showProgress() {
         ktl.core.setInfoPopupText('Toggling... ' + this.numToProcess + ' items remaining.');
+    }
+
+    /**
+     * Returns the rendered root element for the current view.
+     * @returns {HTMLElement|null} View root element.
+     */
+    getViewRoot() {
+        const viewRoot = document.getElementById(this.viewId);
+        return viewRoot instanceof HTMLElement ? viewRoot : null;
+    }
+
+    /**
+     * Checks whether a plain object has any enumerable keys.
+     * @param {Object|null|undefined} value - Object to inspect.
+     * @returns {boolean} True when the object is empty or invalid.
+     */
+    isToggleQueueEmpty(value) {
+        return !value || typeof value !== 'object' || Object.keys(value).length === 0;
     }
 }
 
