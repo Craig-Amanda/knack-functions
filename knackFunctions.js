@@ -19909,7 +19909,10 @@ class CAMultiChoiceQuickToggle {
             if (this.inlineEditing && !col.ignore_edit) {
                 this.getViewRoot()
                     ?.querySelectorAll(`td.${fieldId}.cell-edit`)
-                    .forEach((cell) => cell.classList.add('mqtCellClickable'));
+                    .forEach((cell) => {
+                        if (!(cell instanceof HTMLElement) || cell.classList.contains('ktlNoInlineEdit')) return;
+                        cell.classList.add('mqtCellClickable');
+                    });
             }
         });
     }
@@ -20007,7 +20010,12 @@ class CAMultiChoiceQuickToggle {
         this.getViewRoot()
             ?.querySelectorAll('.mqtCellClickable')
             .forEach((cell) => {
-                if (!(cell instanceof HTMLElement) || cell.dataset.mqtBound === 'true') return;
+                if (!(cell instanceof HTMLElement)) return;
+                if (cell.classList.contains('ktlNoInlineEdit')) {
+                    cell.classList.remove('mqtCellClickable');
+                    return;
+                }
+                if (cell.dataset.mqtBound === 'true') return;
                 cell.dataset.mqtBound = 'true';
                 cell.addEventListener('click', (e) => this.handleCellClick(e), true);
             });
@@ -20021,10 +20029,12 @@ class CAMultiChoiceQuickToggle {
     handleCellClick(e) {
         if (document.querySelector('.bulkEditCb:checked')) return;
 
-        e.stopImmediatePropagation();
-
         const eventTarget = e.target instanceof Element ? e.target : null;
         const clickedCell = eventTarget?.closest('td');
+        if (clickedCell instanceof HTMLElement && clickedCell.classList.contains('ktlNoInlineEdit')) return;
+
+        e.stopImmediatePropagation();
+
         const fieldId = knackNavigator.normalizeFieldId(
             clickedCell?.getAttribute('data-field-key')
             || eventTarget?.getAttribute('data-field-key')
