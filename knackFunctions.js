@@ -19433,6 +19433,18 @@ function caQuickToggle({ key: viewId }, data = []) {
     caQuickToggle.init();
 }
 
+/**
+ * Enables quick toggle behaviour for two-option multiple-choice fields in table and search views.
+ * Supports either a view-level target reference or field-level keyword usage.
+ * @param {{ key: string }} view - Knack view metadata containing the view id.
+ * @param {Array<Object>} [data=[]] - Rendered Knack row data for the view.
+ * @returns {void}
+ */
+function caMultiChoiceQuickToggle({ key: viewId }, data = []) {
+    const caMultiChoiceQuickToggle = new CAMultiChoiceQuickToggle(viewId, data);
+    caMultiChoiceQuickToggle.init();
+}
+
 class CAQuickToggle {
     constructor(viewId, data) {
         // Core properties
@@ -19712,9 +19724,18 @@ class CAQuickToggle {
         const recObj = this.quickToggleObj[dt];
         if ($.isEmptyObject(recObj) || !recObj.viewId || !recObj.fieldId) return;
 
-        const apiData = { [recObj.fieldId]: recObj.value, ...recObj.additionalData };
+        const normalizedViewId = knackNavigator.normalizeViewId(recObj.viewId);
+        const sceneId = knackNavigator.getSceneInfoForView(normalizedViewId)?.key || '';
+        if (!sceneId || !normalizedViewId) {
+            ktl.views.autoRefresh();
+            console.error('Quick Toggle operation failed: could not resolve scene or view id.', recObj);
+            return;
+        }
 
-        ktl.core.knAPI(recObj.viewId, recObj.recId, apiData, 'PUT', [], false /*must be false otherwise spinner blocks click events*/)
+        const apiData = { [recObj.fieldId]: recObj.value, ...recObj.additionalData };
+        const apiClient = getKnackApiClient();
+
+        apiClient.updateRecord(sceneId, normalizedViewId, recObj.recId, apiData)
             .then(() => {
                 if (this.quickToggleParams.showNotification) {
                     this.showProgress();
@@ -19752,6 +19773,438 @@ class CAQuickToggle {
 
     showProgress() {
         ktl.core.setInfoPopupText('Toggling... ' + this.numToProcess + ' items remaining.');
+    }
+}
+
+/**
+ * Quick-toggle controller for two-option multiple-choice fields.
+ */
+class CAMultiChoiceQuickToggle {
+    /**
+     * Creates a controller for one rendered view.
+     * @param {string} viewId - Knack view id.
+     * @param {Array<Object>} data - Rendered Knack row data.
+     */
+    constructor(viewId, data) {
+        this.viewId = viewId;
+        this.data = data;
+        this.kw = '_mqt';
+        this.kwInstance = null;
+        this.viewModel = null;
+        this.viewType = '';
+        this.inlineEditing = false;
+        this.viewTargets = [];
+        this.fieldToggleConfig = {};
+        this.quickToggleParams = {
+            bgColorTrue: '#e2efda',
+            bgColorFalse: '#ffb557',
+            bgColorPending: '#ffe699',
+            showNotification: false,
+            showSpinner: false,
+            pendingClass: 'ktlProgress',
+        };
+        this.qtScanItv = null;
+        this.quickToggleObj = {};
+        this.numToProcess = 0;
+        this.refreshTimer = null;
+        this.viewsToRefresh = [];
+    }
+
+    /**
+     * Initialises the controller when the view and keyword configuration are valid.
+     * @returns {void}
+     */
+    init() {
+        if (!this.isValidInitialState()) return;
+        if (!this.setupKeywordInstances()) return;
+        if (!this.setupViewModel()) return;
+
+        this.processFields();
+        if (this.isToggleQueueEmpty(this.fieldToggleConfig)) return;
+
+        this.updateTableColors();
+        this.setupCellClickHandlers();
+    }
+
+    /**
+     * Confirms the view is in a usable render state.
+     * @returns {boolean} True when processing can continue.
+     */
+    isValidInitialState() {
+        return this.viewId && this.data.length > 0 && !ktl.scenes.isiFrameWnd();
+    }
+
+    /**
+     * Reads the view-level keyword instance and target references.
+     * @returns {boolean} True when processing can continue.
+     */
+    setupKeywordInstances() {
+        const keywordInstances = ktlKeywords[this.viewId] && ktlKeywords[this.viewId][this.kw];
+        if (Array.isArray(keywordInstances) && keywordInstances.length) {
+            this.kwInstance = keywordInstances[0];
+            const { options } = this.kwInstance;
+            if (!ktl.core.hasRoleAccess(options)) return false;
+            this.viewTargets = this.extractViewTargets(this.kwInstance);
+        }
+
+        return true;
+    }
+
+    /**
+     * Resolves the Knack view model and inline-edit capability.
+     * @returns {boolean} True when the view is a supported type.
+     */
+    setupViewModel() {
+        this.viewModel = Knack.router.scene_view.model.views._byId[this.viewId];
+        if (!this.viewModel) return false;
+
+        const viewAttr = this.viewModel.attributes;
+        this.viewType = viewAttr.type;
+        if (!['table', 'search'].includes(this.viewType)) return false;
+
+        this.inlineEditing = this.viewType === 'table'
+            ? Boolean(viewAttr.options && viewAttr.options.cell_editor)
+            : Boolean(viewAttr.cell_editor);
+
+        return true;
+    }
+
+    /**
+     * Scans view columns and records the eligible quick-toggle fields.
+     * @returns {void}
+     */
+    processFields() {
+        const viewAttr = this.viewModel.attributes;
+        const cols = this.viewType === 'table' ? viewAttr.columns : viewAttr.results.columns;
+        const fieldKeywords = {};
+
+        cols.forEach((col) => {
+            if (col.type !== 'field' || !col.field?.key) return;
+            if (col.connection) return;
+
+            const fieldId = knackNavigator.normalizeFieldId(col.field.key);
+            if (!fieldId) return;
+
+            const fieldType = knackNavigator.getFieldType(fieldId);
+            if (fieldType !== 'multiple_choice') return;
+
+            const toggleChoices = this.resolveToggleChoices(fieldId);
+            if (!toggleChoices) return;
+
+            ktl.fields.getFieldKeywords(fieldId, fieldKeywords);
+            const fieldKeywordInstances = fieldKeywords[fieldId] && fieldKeywords[fieldId][this.kw];
+            const isFieldKeywordEnabled = Array.isArray(fieldKeywordInstances) && fieldKeywordInstances.length > 0;
+            const isViewTargetEnabled = this.matchesViewTarget(fieldId, col.header);
+
+            if (!isFieldKeywordEnabled && !isViewTargetEnabled) return;
+
+            const fieldColors = this.resolveFieldColours(fieldKeywordInstances);
+            this.fieldToggleConfig[fieldId] = {
+                activeValue: toggleChoices.activeValue,
+                inactiveValue: toggleChoices.inactiveValue,
+                bgColorTrue: fieldColors.bgColorTrue,
+                bgColorFalse: fieldColors.bgColorFalse,
+            };
+
+            if (this.inlineEditing && !col.ignore_edit) {
+                this.getViewRoot()
+                    ?.querySelectorAll(`td.${fieldId}.cell-edit`)
+                    .forEach((cell) => cell.classList.add('mqtCellClickable'));
+            }
+        });
+    }
+
+    /**
+     * Extracts target field ids or headers from the first keyword parameter group.
+     * @param {Object|null} keywordInstance - Parsed KTL keyword instance.
+     * @returns {Array<string>} Normalised target references.
+     */
+    extractViewTargets(keywordInstance) {
+        const targetGroup = Array.isArray(keywordInstance?.params?.[0]) ? keywordInstance.params[0] : [];
+        return targetGroup
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+    }
+
+    /**
+     * Resolves field-specific colours from the field keyword, falling back to shared defaults.
+     * @param {Array<Object>|undefined} fieldKeywordInstances - Parsed field keyword instances.
+     * @returns {{ bgColorTrue: string, bgColorFalse: string }} Resolved colours.
+     */
+    resolveFieldColours(fieldKeywordInstances) {
+        const fieldColors = {
+            bgColorTrue: this.quickToggleParams.bgColorTrue,
+            bgColorFalse: this.quickToggleParams.bgColorFalse,
+        };
+
+        const colorGroup = Array.isArray(fieldKeywordInstances?.[0]?.params?.[0])
+            ? fieldKeywordInstances[0].params[0]
+            : [];
+
+        if (colorGroup[0]) fieldColors.bgColorTrue = colorGroup[0];
+        if (colorGroup[1]) fieldColors.bgColorFalse = colorGroup[1];
+
+        return fieldColors;
+    }
+
+    /**
+     * Matches a view target reference against a rendered field.
+     * @param {string} fieldId - Normalised field id.
+     * @param {string} headerText - Raw column header text.
+     * @returns {boolean} True when the field was explicitly targeted by the view keyword.
+     */
+    matchesViewTarget(fieldId, headerText) {
+        if (!this.viewTargets.length) return false;
+
+        const normalisedFieldId = knackNavigator.normalizeFieldId(fieldId);
+        const normalisedHeader = knackNavigator.normalizeViewColumnHeader(headerText);
+
+        return this.viewTargets.some((target) => {
+            const targetFieldId = knackNavigator.normalizeFieldId(target);
+            if (targetFieldId && targetFieldId === normalisedFieldId) return true;
+            return knackNavigator.normalizeViewColumnHeader(target) === normalisedHeader;
+        });
+    }
+
+    /**
+     * Resolves the two available choice labels from field metadata.
+     * @param {string} fieldId - Normalised field id.
+     * @returns {{ activeValue: string, inactiveValue: string }|null} Choice labels, or null when unsupported.
+     */
+    resolveToggleChoices(fieldId) {
+        const options = knackNavigator.getFieldChoiceOptions(fieldId);
+        if (options.length !== 2) return null;
+        return {
+            activeValue: options[0],
+            inactiveValue: options[1],
+        };
+    }
+
+    /**
+     * Applies state colours to every eligible rendered cell.
+     * @returns {void}
+     */
+    updateTableColors() {
+        this.data.forEach((row) => {
+            Object.entries(this.fieldToggleConfig).forEach(([fieldId, config]) => {
+                const nextState = this.resolveSemanticChoice(row, fieldId, config);
+                if (nextState === null) return;
+
+                const cell = this.getViewRoot()?.querySelector(`tbody tr[id="${row.id}"] .${fieldId}`);
+                if (!(cell instanceof HTMLElement)) return;
+
+                const backgroundColor = nextState ? config.bgColorTrue : config.bgColorFalse;
+                cell.style.backgroundColor = backgroundColor;
+            });
+        });
+    }
+
+    /**
+     * Marks eligible cells as clickable and binds the quick-toggle handler.
+     * @returns {void}
+     */
+    setupCellClickHandlers() {
+        this.getViewRoot()
+            ?.querySelectorAll('.mqtCellClickable')
+            .forEach((cell) => {
+                if (!(cell instanceof HTMLElement) || cell.dataset.mqtBound === 'true') return;
+                cell.dataset.mqtBound = 'true';
+                cell.addEventListener('click', (e) => this.handleCellClick(e), true);
+            });
+    }
+
+    /**
+     * Handles a click on a supported cell and queues the update.
+     * @param {Event} e - Click event.
+     * @returns {void}
+     */
+    handleCellClick(e) {
+        if (document.querySelector('.bulkEditCb:checked')) return;
+
+        e.stopImmediatePropagation();
+
+        const eventTarget = e.target instanceof Element ? e.target : null;
+        const clickedCell = eventTarget?.closest('td');
+        const fieldId = knackNavigator.normalizeFieldId(
+            clickedCell?.getAttribute('data-field-key')
+            || eventTarget?.getAttribute('data-field-key')
+            || eventTarget?.parentElement?.getAttribute('data-field-key')
+        );
+        const fieldConfig = this.fieldToggleConfig[fieldId];
+        if (!fieldConfig) return;
+
+        const viewElement = eventTarget?.closest('.kn-search.kn-view[id], .kn-table.kn-view[id]');
+        if (!(viewElement instanceof HTMLElement)) return;
+
+        const viewId = viewElement.id;
+        const recId = eventTarget?.closest('tr')?.id || '';
+        const record = ktl.views.getDataFromRecId(viewId, recId);
+        const value = this.getNextChoiceValue(record, fieldId, fieldConfig);
+        if (value === undefined) return;
+
+        if (!this.viewsToRefresh.includes(viewId)) {
+            this.viewsToRefresh.push(viewId);
+        }
+
+        const dt = Date.now();
+        this.quickToggleObj[dt] = { viewId, fieldId, value, recId, processed: false };
+
+        if (clickedCell instanceof HTMLElement) {
+            clickedCell.style.backgroundColor = this.quickToggleParams.bgColorPending;
+            if (this.quickToggleParams.pendingClass) {
+                clickedCell.classList.add(this.quickToggleParams.pendingClass);
+            }
+        }
+
+        clearTimeout(this.refreshTimer);
+        this.numToProcess++;
+        this.startQtScanning();
+    }
+
+    /**
+     * Resolves the current two-option state from the rendered record.
+     * @param {Object} record - Knack row record.
+     * @param {string} fieldId - Normalised field id.
+     * @param {{ activeValue: string, inactiveValue: string }} fieldConfig - Field toggle configuration.
+     * @returns {boolean|null} True for the first option, false for the second, null when unresolved.
+     */
+    resolveSemanticChoice(record, fieldId, fieldConfig) {
+        const typedValue = knackValueResolver.resolve(record, fieldId, { mode: 'typed', fallback: undefined });
+        const values = Array.isArray(typedValue) ? typedValue : [typedValue];
+        const normalisedValues = values
+            .map((value) => String(value || '').trim().toLowerCase())
+            .filter(Boolean);
+
+        if (normalisedValues.includes(String(fieldConfig.activeValue).trim().toLowerCase())) return true;
+        if (normalisedValues.includes(String(fieldConfig.inactiveValue).trim().toLowerCase())) return false;
+        return null;
+    }
+
+    /**
+     * Builds the next request value while preserving single-value versus array field shapes.
+     * @param {Object} record - Knack row record.
+     * @param {string} fieldId - Normalised field id.
+     * @param {{ activeValue: string, inactiveValue: string }} fieldConfig - Field toggle configuration.
+     * @returns {string|Array<string>|undefined} Knack request value for the next state.
+     */
+    getNextChoiceValue(record, fieldId, fieldConfig) {
+        const rawValue = record?.[`${fieldId}_raw`];
+        const currentState = this.resolveSemanticChoice(record, fieldId, fieldConfig);
+        const nextValue = currentState === true ? fieldConfig.inactiveValue : fieldConfig.activeValue;
+
+        if (Array.isArray(rawValue)) {
+            return [nextValue];
+        }
+
+        return nextValue;
+    }
+
+    /**
+     * Starts the queued PUT processing loop.
+     * @returns {void}
+     */
+    startQtScanning() {
+        if (this.quickToggleParams.showNotification) {
+            ktl.core.infoPopup();
+            this.showProgress();
+        }
+
+        if (this.qtScanItv) return;
+
+        ktl.views.autoRefresh(false);
+        this.qtScanItv = setInterval(() => {
+            if (this.isToggleQueueEmpty(this.quickToggleObj)) return;
+
+            const dt = Object.keys(this.quickToggleObj)[0];
+            const { processed } = this.quickToggleObj[dt];
+            if (!processed) {
+                this.quickToggleObj[dt].processed = true;
+                this.doQuickToggle(dt);
+            }
+        }, 500);
+    }
+
+    /**
+     * Sends the queued Knack update for one record.
+     * @param {string} dt - Queue key.
+     * @returns {void}
+     */
+    doQuickToggle(dt) {
+        const recObj = this.quickToggleObj[dt];
+        if (this.isToggleQueueEmpty(recObj) || !recObj.viewId || !recObj.fieldId) return;
+
+        const normalisedViewId = knackNavigator.normalizeViewId(recObj.viewId);
+        const sceneId = knackNavigator.getSceneInfoForView(normalisedViewId)?.key || '';
+        if (!sceneId || !normalisedViewId) {
+            ktl.views.autoRefresh();
+            console.error('Multi-choice quick toggle operation failed: could not resolve scene or view id.', recObj);
+            return;
+        }
+
+        const apiData = { [recObj.fieldId]: recObj.value };
+        const apiClient = getKnackApiClient();
+
+        apiClient.updateRecord(sceneId, normalisedViewId, recObj.recId, apiData)
+            .then(() => {
+                if (this.quickToggleParams.showNotification) {
+                    this.showProgress();
+                }
+
+                this.numToProcess--;
+                delete this.quickToggleObj[dt];
+
+                if (this.isToggleQueueEmpty(this.quickToggleObj)) {
+                    clearInterval(this.qtScanItv);
+                    this.qtScanItv = null;
+
+                    if (this.quickToggleParams.showSpinner) {
+                        Knack.showSpinner();
+                    }
+
+                    this.refreshTimer = setTimeout(() => {
+                        ktl.core.removeInfoPopup();
+                        ktl.views.refreshViewArray(this.viewsToRefresh)
+                            .then(() => {
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            })
+                            .catch(() => { });
+                    }, 500);
+                }
+            })
+            .catch((reason) => {
+                ktl.views.autoRefresh();
+                const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
+                console.error('Multi-choice quick toggle operation failed:', reason);
+                errorHandler.handleError(reason, { function: 'doQuickToggle' }, 'Multi-choice Quick Toggle Error');
+                alert(`Error code KEC_1025 while processing multi-choice quick toggle, reason: ${errorMsg}`);
+            });
+    }
+
+    /**
+     * Updates the shared progress popup text.
+     * @returns {void}
+     */
+    showProgress() {
+        ktl.core.setInfoPopupText('Toggling... ' + this.numToProcess + ' items remaining.');
+    }
+
+    /**
+     * Returns the rendered root element for the current view.
+     * @returns {HTMLElement|null} View root element.
+     */
+    getViewRoot() {
+        const viewRoot = document.getElementById(this.viewId);
+        return viewRoot instanceof HTMLElement ? viewRoot : null;
+    }
+
+    /**
+     * Checks whether a plain object has any enumerable keys.
+     * @param {Object|null|undefined} value - Object to inspect.
+     * @returns {boolean} True when the object is empty or invalid.
+     */
+    isToggleQueueEmpty(value) {
+        return !value || typeof value !== 'object' || Object.keys(value).length === 0;
     }
 }
 
