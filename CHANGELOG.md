@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-15
+
+<!-- pr:80 fix/race-condition-in-version-control - CSWinnall -->
+- prevent version control from entering repeated refresh loops while a user-version sync is still in progress
+- make pending version-refresh state reset cleanly once a reload is about to happen
+
 ## 2026-07-14
 
 <!-- pr:79 fix/knack-functions-mqt-no-inline-edit - CSWinnall -->
