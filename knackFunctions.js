@@ -2590,6 +2590,8 @@ function createVersionRefreshController(options = {}) {
 
         internalState.reloadTimerId = window.setTimeout(function () {
             internalState.reloadTimerId = 0;
+            internalState.pendingRequestActive = false;
+            stopPendingRefreshWatch();
             writeState(mergeStoredState({
                 targetVersion: '',
                 lastReloadedTarget: targetVersion,
@@ -2628,6 +2630,12 @@ function createVersionRefreshController(options = {}) {
         const storedState = readState();
         const userVersion = normalizeVersion(payload.userVersion);
         const targetVersion = normalizeVersion(payload.targetVersion);
+        const shouldWaitForUserVersionSync = Boolean(
+            normalizedSyncUserVersionFieldId
+            && userVersion
+            && targetVersion
+            && userVersion !== targetVersion
+        );
         if (userVersion) {
             storeUserVersion(userVersion);
         }
@@ -2649,6 +2657,12 @@ function createVersionRefreshController(options = {}) {
         }
 
         if (internalState.pendingRequestActive && storedState.targetVersion === targetVersion) {
+            if (shouldWaitForUserVersionSync) {
+                ensurePendingRefreshWatch();
+                showDeferredRefreshNotice(targetVersion);
+                return;
+            }
+
             ensurePendingRefreshWatch();
             runRefreshIfSafe();
             return;
@@ -2659,6 +2673,13 @@ function createVersionRefreshController(options = {}) {
             targetVersion,
             userVersion: userVersion || storedState.userVersion,
         }, storedState));
+
+        if (shouldWaitForUserVersionSync) {
+            ensurePendingRefreshWatch();
+            showDeferredRefreshNotice(targetVersion);
+            return;
+        }
+
         ensurePendingRefreshWatch();
         runRefreshIfSafe();
     }
