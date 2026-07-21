@@ -7406,6 +7406,21 @@ document.addEventListener('mousedown', function(e) {
 }, true); // Use capture phase
 
 /**
+ * Prevent KTL's view-refresh long press from handling interactions within an element.
+ * @param {HTMLElement|null} element - Element whose interactions should be excluded.
+ * @returns {void}
+ */
+function preventKtlLongPressRefresh(element) {
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+
+    ['click', 'mousedown', 'mousemove', 'mouseup'].forEach((eventName) => {
+        element.addEventListener(eventName, (event) => event.stopPropagation());
+    });
+}
+
+/**
  * Adds a "View More / View Less" toggle to table cells in a given view and field(s) if their text exceeds a threshold.
  * @param {string} viewId - The ID of the view containing the table.
  * @param {Object} fieldThresholds - Object where keys are character thresholds and values are arrays of field IDs.
