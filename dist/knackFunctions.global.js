@@ -4357,6 +4357,10 @@ async function bulkActionReplicateFallback({ mode = 'create', operations = [], a
                 result = await api.updateRecord(sceneId, apiViewId, targetId, operation.data);
             } else {
                 result = await api.createRecord(sceneId, apiViewId, operation.data);
+                const createdRecordId = knackValueResolver.toStringSafe(result?.record?.id || result?.id);
+                if (!createdRecordId) {
+                    throw new Error(`Create response did not include a record id for ${targetId}.`);
+                }
             }
 
             sourceStore?.removeItems?.([targetId]);
@@ -4398,130 +4402,67 @@ async function bulkActionReplicateFallback({ mode = 'create', operations = [], a
 }
 
 /**
- * Resolves the writable field ids present in a form.
- * @param {*} viewRef - View id, key, element, or view object.
+ * Resolves writable field ids from the rendered form's group inputs.
+ * @param {Object} view - Form view supplied by Knack's render event.
  * @returns {Array<string>} Form field ids.
  */
-function bulkActionGetFormFieldKeys(viewRef) {
-    const { viewElement } = bulkActionResolveViewContext(viewRef);
-    if (!viewElement) return [];
+function bulkActionGetFormFieldKeys(view) {
+    if (!bulkActionIsPlainObject(view)) return [];
 
-    const visibleFieldIds = Array.from(viewElement.querySelectorAll(BULK_ACTION_DEFAULT_CONFIG.constants.selectors.formField))
-        .filter((element) => bulkActionIsVisibleFormField(element))
-        .filter((element) => bulkActionFieldWrapperHasWritableControl(element))
-        .map((element) => String(element.id || '').replace(/^kn-input-/, ''));
-
-    return bulkActionNormalizeFieldKeys(visibleFieldIds);
-}
-
-/**
- * Returns true when an element or one of its descendants has a visible rendered box.
- * @param {Element} element - DOM element to inspect.
- * @returns {boolean} Whether the element can be seen by the user.
- */
-function bulkActionElementHasVisibleBox(element) {
-    if (!(element instanceof Element)) return false;
-
-    const candidates = [
-        element,
-        ...Array.from(element.querySelectorAll('*'))
-    ];
-
-    return candidates.some((candidate) => {
-        if (!(candidate instanceof Element)) return false;
-        if (candidate.hidden) return false;
-        if (candidate.closest(`.${CLASS_HIDDEN}, .${CLASS_DISPLAY_NONE}, [hidden], [aria-hidden="true"]`)) return false;
-
-        const computedStyle = window.getComputedStyle ? window.getComputedStyle(candidate) : null;
-        if (computedStyle) {
-            if (computedStyle.display === 'none' || computedStyle.visibility === 'hidden' || computedStyle.opacity === '0') {
-                return false;
-            }
-        }
-
-        const rects = candidate.getClientRects();
-        if (!rects.length) return false;
-
-        return Array.from(rects).some((rect) => rect.width > 0 && rect.height > 0);
+    const inputs = (Array.isArray(view.groups) ? view.groups : []).flatMap((group) => {
+        return (Array.isArray(group?.columns) ? group.columns : []).flatMap((column) => {
+            return Array.isArray(column?.inputs) ? column.inputs : [];
+        });
     });
-}
 
-/**
- * Returns true when a form field wrapper is visible to the user.
- * @param {*} element - Field wrapper candidate.
- * @returns {boolean} Whether the field is visible.
- */
-function bulkActionIsVisibleFormField(element) {
-    const resolvedElement = bulkActionResolveElement(element);
-    if (!(resolvedElement instanceof Element)) return false;
-    if (resolvedElement.hidden) return false;
-    if (resolvedElement.closest(`.${CLASS_HIDDEN}, .${CLASS_DISPLAY_NONE}, [hidden], [aria-hidden="true"]`)) return false;
-
-    const computedStyle = window.getComputedStyle ? window.getComputedStyle(resolvedElement) : null;
-    if (computedStyle && (computedStyle.display === 'none' || computedStyle.visibility === 'hidden')) {
-        return false;
-    }
-
-    return bulkActionElementHasVisibleBox(resolvedElement);
-}
-
-/**
- * Returns true when a field wrapper contains a writable form control.
- * Read-only fields can reuse Knack's input wrapper ids, so wrapper presence alone is unsafe.
- * @param {*} element - Field wrapper candidate.
- * @returns {boolean} Whether the field can be submitted by the user.
- */
-function bulkActionFieldWrapperHasWritableControl(element) {
-    const resolvedElement = bulkActionResolveElement(element);
-    if (!(resolvedElement instanceof Element)) return false;
-    if (resolvedElement.classList?.contains('kn-read-only')) return false;
-
-    return Boolean(
-        resolvedElement.querySelector('select:not([disabled])')
-        || resolvedElement.querySelector('textarea:not([disabled]):not([readonly])')
-        || resolvedElement.querySelector('input:not([type="hidden"]):not([disabled]):not([readonly])')
-        || resolvedElement.querySelector('input[type="hidden"][name]:not([disabled])')
+    return bulkActionNormalizeFieldKeys(
+        inputs
+            .filter((input) => bulkActionIsPlainObject(input))
+            .filter((input) => input.read_only !== true && input.editable !== false)
+            .filter((input) => !knackValueResolver.isReadOnlyFieldType(knackValueResolver.getFieldType(input.id)))
+            .map((input) => input.id)
     );
 }
 
 /**
- * Returns the empty request value that should be written for a field type.
- * @param {Element} fieldWrapper - Form field wrapper.
+ * Returns the empty request value that matches the rendered field value shape.
+ * @param {*} renderedValue - Request value resolved from the rendered record.
  * @param {string} [fieldType=''] - Knack field type.
  * @returns {string|boolean|Array<string>} Empty request value.
  */
-function bulkActionGetEmptyRequestValue(fieldWrapper, fieldType = '') {
+function bulkActionGetEmptyRequestValue(renderedValue, fieldType = '') {
     const normalizedFieldType = String(fieldType || '').trim().toLowerCase();
 
     if (normalizedFieldType === 'boolean') return false;
+    return Array.isArray(renderedValue) ? [] : '';
+}
 
-    if (normalizedFieldType === 'connection') {
-        const selectInput = fieldWrapper instanceof Element ? fieldWrapper.querySelector('select') : null;
-        return selectInput?.multiple ? [] : '';
-    }
+/**
+ * Captures the record data supplied with a form render event.
+ * @param {Object} renderData - Render event record data.
+ * @returns {Object|null} Rendered record snapshot.
+ */
+function bulkActionGetRenderedFormRecord(renderData) {
+    if (!renderData || typeof renderData !== 'object' || Array.isArray(renderData)) return null;
+    if (!renderData.id && !Object.keys(renderData).some((key) => /^field_\d+(_raw)?$/.test(String(key)))) return null;
 
-    if (normalizedFieldType === 'multiple_choice') {
-        const selectInput = fieldWrapper instanceof Element ? fieldWrapper.querySelector('select') : null;
-        const checkboxInputs = fieldWrapper instanceof Element
-            ? fieldWrapper.querySelectorAll('input[type="checkbox"]:not([disabled])')
-            : [];
-        return selectInput?.multiple || checkboxInputs.length > 1 ? [] : '';
-    }
-
-    return '';
+    return Object.entries(renderData).reduce((snapshot, [key, value]) => {
+        if (key === 'id' || /^field_\d+(_raw)?$/.test(String(key))) {
+            snapshot[key] = value;
+        }
+        return snapshot;
+    }, {});
 }
 
 /**
  * Builds an update payload from the knack-form-submit record for the visible form fields.
- * Visible fields missing from the submit payload are written as explicit empty values.
+ * Missing submitted values are treated as clears only when the rendered record had a value.
  * @param {Object} [options={}] - Payload options.
  * @returns {Object} Request payload built from the submit event record.
  */
-function bulkActionBuildSubmitEventRecordPayload({ record = null, includeFieldKeys = [], formViewRef = null } = {}) {
+function bulkActionBuildSubmitEventRecordPayload({ record = null, renderRecord = null, includeFieldKeys = [] } = {}) {
     const normalizedFieldKeys = bulkActionNormalizeFieldKeys(includeFieldKeys);
     if (!record || typeof record !== 'object' || !normalizedFieldKeys.length) return {};
-
-    const { viewElement } = bulkActionResolveViewContext(formViewRef);
 
     return normalizedFieldKeys.reduce((payload, fieldKey) => {
         const fieldType = knackValueResolver.getFieldType(fieldKey);
@@ -4532,8 +4473,10 @@ function bulkActionBuildSubmitEventRecordPayload({ record = null, includeFieldKe
             return payload;
         }
 
-        const fieldWrapper = viewElement ? knackNavigator.getFieldWrapper(viewElement, fieldKey) : null;
-        payload[fieldKey] = bulkActionGetEmptyRequestValue(fieldWrapper, fieldType);
+        const renderedValue = knackValueResolver.resolve(renderRecord, fieldKey, { mode: 'request', fallback: undefined });
+        if (renderedValue === undefined) return payload;
+
+        payload[fieldKey] = bulkActionGetEmptyRequestValue(renderedValue, fieldType);
 
         return payload;
     }, {});
@@ -4560,11 +4503,11 @@ function bulkActionBuildDynamicRequestPayload(record, { excludeFieldKeys = [], i
  * @param {Object} [options={}] - Replication payload options.
  * @returns {Object} Base replication payload.
  */
-function bulkActionBuildReplicateBasePayload({ formViewRef = null, record = null, includeFieldKeys = [], excludeFieldKeys = [] } = {}) {
+function bulkActionBuildReplicateBasePayload({ record = null, renderRecord = null, includeFieldKeys = [], excludeFieldKeys = [] } = {}) {
     const payload = bulkActionBuildSubmitEventRecordPayload({
         record,
-        includeFieldKeys,
-        formViewRef
+        renderRecord,
+        includeFieldKeys
     });
     const exclude = new Set((Array.isArray(excludeFieldKeys) ? excludeFieldKeys : []).map((fieldKey) => knackNavigator.normalizeFieldId(fieldKey)).filter(Boolean));
     exclude.forEach((fieldKey) => delete payload[fieldKey]);
@@ -4581,9 +4524,9 @@ function bulkActionResolveConnectionFieldRecordId(record, fieldKey) {
     const normalizedFieldKey = knackNavigator.normalizeFieldId(fieldKey);
     if (!record || !normalizedFieldKey) return '';
 
-    const rawReference = knackValueResolver.toConnectionRef(record?.[`${normalizedFieldKey}_raw`] ?? record?.[normalizedFieldKey]);
+    const rawReference = knackValueResolver.toConnectionRef(record?.[`${normalizedFieldKey}_raw`]);
     if (rawReference?.id) return rawReference.id;
-    return knackValueResolver.toStringSafe(record?.[normalizedFieldKey]);
+    return '';
 }
 
 /**
@@ -6049,15 +5992,19 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
     const apiClient = bulkActionResolveReplicationApi(api);
 
     const processedRecordId = mode === 'update'
-        ? knackValueResolver.toStringSafe(record?.id) || recordIds[0] || ''
-        : bulkActionResolveConnectionFieldRecordId(record, recordFieldId) || recordIds[0] || '';
+        ? knackValueResolver.toStringSafe(record?.id)
+        : bulkActionResolveConnectionFieldRecordId(record, recordFieldId);
 
-    const formViewRef = options.formViewId || action.target;
-    const includeFieldKeys = bulkActionNormalizeFieldKeys(bulkState?.formFieldKeys || bulkActionGetFormFieldKeys(formViewRef));
+    if (!processedRecordId || !recordIds.includes(processedRecordId)) {
+        throw new Error(`Submitted ${mode} record could not be matched to the selected basket items.`);
+    }
+
+    const includeFieldKeys = bulkActionNormalizeFieldKeys(bulkState?.formFieldKeys);
     const excludeFieldKeys = mode === 'create' && recordFieldId ? [recordFieldId] : [];
+    const renderRecord = bulkActionObjectOrEmpty(bulkState?.renderRecord);
     const basePayload = bulkActionBuildReplicateBasePayload({
-        formViewRef,
         record,
+        renderRecord,
         includeFieldKeys,
         excludeFieldKeys
     });
@@ -6177,13 +6124,13 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
             }, options);
         }
 
-        if (!sourceController) return;
-
         if (targetId && progress.error) {
             failedIds.push(targetId);
-            sourceController.setBasketItemFailure(targetId, progress.error);
+            sourceController?.setBasketItemFailure(targetId, progress.error);
             bulkActionReportError(progress.error, { sourceViewId, targetViewId: apiViewId, targetId, mode }, 'Bulk form replicate failed', options);
         }
+
+        if (!sourceController) return;
 
         const batchSuccess = mode === 'update'
             ? Number(progress.updated || 0)
@@ -6209,6 +6156,7 @@ async function replicateBulkActionSubmittedRecord({ action, bulkState, record, a
             } else {
                 await apiClient.createRecords(sceneId, apiViewId, preparedOperations.map((operation) => operation.data), {
                     continueOnError: true,
+                    requireRecordId: true,
                     onProgress: onBatchProgress
                 });
             }
@@ -6316,7 +6264,7 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         });
     };
 
-    $(document).on(viewRenderEvent, function (_, view) {
+    $(document).on(viewRenderEvent, function (_, view, renderData) {
         const bulkState = bulkActionReadFormFlowState(sessionKey);
         if (!bulkState) return;
         if (!workflowMatchesState(bulkState)) return;
@@ -6338,7 +6286,8 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
         bulkActionMergeFormFlowState(sessionKey, {
             tokenVerifiedAt: Date.now(),
             activeFormViewId: renderedViewId,
-            formFieldKeys: bulkActionGetFormFieldKeys(viewElement)
+            formFieldKeys: bulkActionGetFormFieldKeys(view),
+            renderRecord: bulkActionGetRenderedFormRecord(renderData)
         }, bulkState);
 
         bulkActionRenderFormNotice({
@@ -6347,17 +6296,6 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
             messages: action?.messages?.formReplicate || {},
             noticeClass: config.form.noticeClass
         });
-
-        const form = viewElement.querySelector('form');
-        if (form && !form.dataset.knackBulkFieldKeysBound) {
-            form.addEventListener('submit', () => {
-                bulkActionMergeFormFlowState(sessionKey, {
-                    activeFormViewId: renderedViewId,
-                    formFieldKeys: bulkActionGetFormFieldKeys(viewElement)
-                });
-            }, true);
-            form.dataset.knackBulkFieldKeysBound = 'true';
-        }
 
         if (String(bulkState.formMode || 'create').toLowerCase() === 'update') return;
 
@@ -6420,27 +6358,17 @@ function registerBulkActionFormReplicateWorkflow({ namespace = 'KNACK_BULK', act
 
         const stateToken = knackValueResolver.toStringSafe(bulkState.navToken);
         const hashToken = bulkActionGetHashQueryParam('coBulkToken');
-        const tokenVerifiedAt = Number(bulkState.tokenVerifiedAt || 0);
-        const tokenVerifiedRecently = tokenVerifiedAt && Date.now() - tokenVerifiedAt < config.constants.formFlowTtlMs;
-        if ((!stateToken || !hashToken || stateToken !== hashToken) && !tokenVerifiedRecently) return;
+        if (!stateToken || !hashToken || stateToken !== hashToken) return;
 
         const submitViewId = knackNavigator.normalizeViewId(view?.key);
         const activeFormViewId = knackNavigator.normalizeViewId(bulkState.activeFormViewId || formViewId);
         if (activeFormViewId && submitViewId !== activeFormViewId) return;
 
-        const submitViewElement = bulkActionFindViewRoot(submitViewId);
         const sourceViewId = knackNavigator.normalizeViewId(bulkState.sourceViewId);
         const sourceController = sourceViewId ? bulkActionControllerStore.get(sourceViewId) || null : null;
         const latestBulkState = (() => {
             const persistedState = bulkActionReadFormFlowState(sessionKey) || bulkState;
-            const liveSubmitFieldKeys = (submitViewElement instanceof Element)
-                ? bulkActionGetFormFieldKeys(submitViewElement)
-                : [];
-            const submitFieldKeys = bulkActionNormalizeFieldKeys(
-                liveSubmitFieldKeys.length
-                    ? liveSubmitFieldKeys
-                    : persistedState?.formFieldKeys
-            );
+            const submitFieldKeys = bulkActionNormalizeFieldKeys(persistedState?.formFieldKeys);
 
             return {
                 ...persistedState,
@@ -7404,6 +7332,21 @@ document.addEventListener('mousedown', function(e) {
         e.stopImmediatePropagation();
     }
 }, true); // Use capture phase
+
+/**
+ * Prevent KTL's view-refresh long press from handling interactions within an element.
+ * @param {HTMLElement|null} element - Element whose interactions should be excluded.
+ * @returns {void}
+ */
+function preventKtlLongPressRefresh(element) {
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+
+    ['click', 'mousedown', 'mousemove', 'mouseup'].forEach((eventName) => {
+        element.addEventListener(eventName, (event) => event.stopPropagation());
+    });
+}
 
 /**
  * Adds a "View More / View Less" toggle to table cells in a given view and field(s) if their text exceeds a threshold.
@@ -9088,6 +9031,7 @@ function escapeHTML(text) {
  * @param {'none'|'manual'|'auto'} [config.saveMode='manual'] - Save behaviour. `manual` renders a submit button, `auto` is reserved for save-as-you-go flows, `none` disables built-in save UI.
  * @param {string} [config.saveButtonText='Save'] - Text shown on the manual submit button.
  * @param {string} [config.saveButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-primary` button classes.
+ * @param {string} [config.actionContainerSelector=''] - Optional selector for a dedicated container in the view where table-generated Save and Clear controls render.
  * @param {boolean} [config.showClearButton=false] - Whether to render a clear button in the top-right table toolbar.
  * @param {string} [config.clearButtonText='Clear'] - Text shown on the clear button.
  * @param {string} [config.clearButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-secondary` clear button classes.
@@ -9095,6 +9039,8 @@ function escapeHTML(text) {
  * @param {string} [config.clearConfirmMessage='Are you sure you want to clear all rows? This will remove any unsaved table data.'] - Confirmation text shown before rows are cleared.
  * @param {Function|null} [config.onSubmit=null] - Called when the manual submit button is clicked or controller.submit() is invoked.
  * @param {Function|null} [config.onClear=null] - Called after the clear button is clicked or controller.clear() is invoked.
+ * @param {false|{header?: string, key?: string, buttonText?: string, buttonHtml?: string, buttonClassName?: string, ariaLabel?: string, title?: string, align?: string, maxWidth?: string|number|null}} [config.rowRemove=false] - Optional row-remove action column. The app remains responsible for persistence through `onRemoveRow`.
+ * @param {Function|null} [config.onRemoveRow=null] - Called after a row is removed through the row-remove action or `controller.removeRow()`.
  * @param {Array<{header?: string, key?: string|number, type?: string, editable?: boolean|Function, options?: Array|Function, className?: string, inputClassName?: string, align?: string, maxWidth?: string|number|null, allowHtml?: boolean, display?: Function, parse?: Function, openDateHintKey?: string, minDate?: string|Date|null, maxDate?: string|Date|null, dateFormat?: string}>} [config.columns=[]] - Column schema. Select options may be a static array, a function returning an array, or an async function/Promise resolving to an array. `type: 'search-select'` renders a searchable input backed by a datalist while still storing the selected option value. Select options are fetched once per column and cached for the current table instance.
  * @param {Array<string>} [config.headers=[]] - Optional headers when columns are omitted.
  * @param {Array<Object|Array>} [config.rows=[]] - Prefilled row data.
@@ -9111,6 +9057,7 @@ function renderInteractiveTable(config = {}) {
         saveMode: 'manual',
         saveButtonText: 'Save',
         saveButtonClassName: '',
+        actionContainerSelector: '',
         showClearButton: false,
         clearButtonText: 'Clear',
         clearButtonClassName: '',
@@ -9125,6 +9072,8 @@ function renderInteractiveTable(config = {}) {
         onChange: null,
         onSubmit: null,
         onClear: null,
+        rowRemove: false,
+        onRemoveRow: null,
         onRenderComplete: null,
         ...config,
     };
@@ -9144,6 +9093,11 @@ function renderInteractiveTable(config = {}) {
     const host = settings.containerSelector
         ? (viewEl.querySelector(settings.containerSelector) || viewEl)
         : viewEl;
+    const actionContainerSelector = String(settings.actionContainerSelector || '').trim();
+    const actionContainer = actionContainerSelector
+        ? viewEl.querySelector(actionContainerSelector)
+        : null;
+    const usesExternalActionContainer = actionContainer instanceof HTMLElement && actionContainer !== host;
 
     const cloneRow = (row) => {
         if (Array.isArray(row)) return row.slice();
@@ -9153,9 +9107,25 @@ function renderInteractiveTable(config = {}) {
 
     let rowsData = Array.isArray(settings.rows) ? settings.rows.map(cloneRow) : [];
 
+    const rowRemoveConfig = settings.rowRemove && typeof settings.rowRemove === 'object'
+        ? {
+            header: '',
+            key: '__kfRemoveRow',
+            buttonText: 'Remove',
+            buttonHtml: '',
+            buttonClassName: '',
+            ariaLabel: 'Remove row',
+            title: 'Remove row',
+            align: 'center',
+            maxWidth: 90,
+            ...settings.rowRemove,
+        }
+        : null;
+
     const normaliseColumns = () => {
+        let normalisedColumns;
         if (Array.isArray(settings.columns) && settings.columns.length) {
-            return settings.columns.map((column, index) => ({
+            normalisedColumns = settings.columns.map((column, index) => ({
                 header: '',
                 key: index,
                 type: 'text',
@@ -9174,27 +9144,47 @@ function renderInteractiveTable(config = {}) {
                 dateFormat: settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy',
                 ...column,
             }));
+        } else {
+            const headers = Array.isArray(settings.headers) ? settings.headers : [];
+            normalisedColumns = headers.map((header, index) => ({
+                header: String(header || ''),
+                key: index,
+                type: 'text',
+                editable: false,
+                options: [],
+                className: '',
+                inputClassName: '',
+                align: 'left',
+                maxWidth: null,
+                allowHtml: false,
+                display: null,
+                parse: null,
+                openDateHintKey: '',
+                minDate: null,
+                maxDate: null,
+                dateFormat: settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy',
+            }));
         }
 
-        const headers = Array.isArray(settings.headers) ? settings.headers : [];
-        return headers.map((header, index) => ({
-            header: String(header || ''),
-            key: index,
+        if (!rowRemoveConfig) return normalisedColumns;
+
+        return [...normalisedColumns, {
+            header: rowRemoveConfig.header,
+            key: rowRemoveConfig.key,
             type: 'text',
             editable: false,
-            options: [],
-            className: '',
-            inputClassName: '',
-            align: 'left',
-            maxWidth: null,
-            allowHtml: false,
-            display: null,
-            parse: null,
-            openDateHintKey: '',
-            minDate: null,
-            maxDate: null,
-            dateFormat: settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy',
-        }));
+            allowHtml: true,
+            align: rowRemoveConfig.align,
+            maxWidth: rowRemoveConfig.maxWidth,
+            display: (_, row, rowIndex) => {
+                if (!isRowPopulated(row, rowIndex)) return '';
+                const buttonContent = rowRemoveConfig.buttonHtml || escapeHTML(rowRemoveConfig.buttonText);
+                const buttonClassName = ['kfInteractiveTable__removeRow', rowRemoveConfig.buttonClassName]
+                    .filter(Boolean)
+                    .join(' ');
+                return `<button type="button" class="${escapeHTML(buttonClassName)}" data-kf-interactive-table-remove-row="true" aria-label="${escapeHTML(rowRemoveConfig.ariaLabel)}" title="${escapeHTML(rowRemoveConfig.title)}">${buttonContent}</button>`;
+            },
+        }];
     };
 
     const columns = normaliseColumns();
@@ -9614,13 +9604,22 @@ function renderInteractiveTable(config = {}) {
                 renderSearchSelectDropdown(inputEl, options, inputEl.value);
             });
 
-            optionButton.addEventListener('mousedown', (event) => {
+            let optionSelectionHandled = false;
+            const selectSearchOption = (event) => {
+                if (optionSelectionHandled) return;
+                optionSelectionHandled = true;
                 event.preventDefault();
                 event.stopPropagation();
+                inputEl._kfIgnoreBlurUntil = Date.now() + EDITOR_POINTER_BLUR_GUARD_MS;
                 inputEl.value = optionButton.dataset.label || '';
                 inputEl._kfSearchSelectedValue = optionButton.dataset.value || '';
                 closeEditor(inputEl, true);
-            });
+            };
+
+            // Pointer events fire before blur on modern browsers. Keep the mouse fallback
+            // for older environments so the selected option value is never lost to blur.
+            optionButton.addEventListener('pointerdown', selectSearchOption);
+            optionButton.addEventListener('mousedown', selectSearchOption);
 
             optionButton.addEventListener('click', (event) => {
                 event.preventDefault();
@@ -9744,7 +9743,11 @@ function renderInteractiveTable(config = {}) {
             return `<tr data-row-index="${rowIndex}">${cellsHtml}</tr>`;
         }).join('');
 
-        const headerActionsHtml = showClearButton
+        const clearButtonHtml = showClearButton
+            ? `<button class="${escapeHTML(clearButtonClass)}" type="button" data-kf-interactive-table-clear="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(clearButtonText)}</button>`
+            : '';
+
+        const headerActionsHtml = clearButtonHtml && !usesExternalActionContainer
             ? `<div class="kfInteractiveTable__toolbar" style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;"><button class="${escapeHTML(clearButtonClass)}" type="button" data-kf-interactive-table-clear="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(clearButtonText)}</button></div>`
             : '';
 
@@ -9754,11 +9757,14 @@ function renderInteractiveTable(config = {}) {
                 : '',
         ].filter(Boolean).join('');
 
-        const actionsHtml = actionButtons
+        const actionsHtml = actionButtons && !usesExternalActionContainer
             ? `<div class="kfInteractiveTable__actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">${actionButtons}</div>`
             : '';
 
         host.innerHTML = `${headerActionsHtml}<table class="${escapeHTML(tableClass)}"><thead><tr>${headersHtml}</tr></thead><tbody>${rowsHtml}</tbody></table>${actionsHtml}`;
+        if (usesExternalActionContainer) {
+            actionContainer.innerHTML = `${clearButtonHtml}${actionButtons}`;
+        }
     };
 
     const clearTable = async () => {
@@ -9805,6 +9811,39 @@ function renderInteractiveTable(config = {}) {
             } catch (err) {
                 console.error('renderInteractiveTable onClear error:', err);
                 throw err;
+            }
+        }
+    };
+
+    /**
+     * Removes a row and notifies the caller so it can queue any persistence work.
+     * @param {number} rowIndex
+     * @param {string} [source='api']
+     * @returns {void}
+     */
+    const removeRow = (rowIndex, source = 'api') => {
+        const index = Number(rowIndex);
+        if (!Number.isFinite(index) || index < 0 || index >= rowsData.length) return;
+
+        const removedRow = cloneRow(rowsData[index]);
+        if (!isRowPopulated(removedRow, index)) return;
+
+        rowsData.splice(index, 1);
+        ensureTrailingEmptyRow();
+        renderTable();
+
+        if (typeof settings.onRemoveRow === 'function') {
+            try {
+                settings.onRemoveRow({
+                    rowIndex: index,
+                    row: removedRow,
+                    data: getData(),
+                    rawData: getRawData(),
+                    source,
+                    controller,
+                });
+            } catch (err) {
+                console.error('renderInteractiveTable onRemoveRow error:', err);
             }
         }
     };
@@ -10238,16 +10277,24 @@ function renderInteractiveTable(config = {}) {
 
     const handleTableClick = (event) => {
         const submitButton = event.target.closest('[data-kf-interactive-table-submit="true"]');
-        if (submitButton && host.contains(submitButton)) {
+        if (submitButton && (host.contains(submitButton) || actionContainer?.contains(submitButton))) {
             event.preventDefault();
             void submitTable();
             return;
         }
 
         const clearButton = event.target.closest('[data-kf-interactive-table-clear="true"]');
-        if (clearButton && host.contains(clearButton)) {
+        if (clearButton && (host.contains(clearButton) || actionContainer?.contains(clearButton))) {
             event.preventDefault();
             void clearTable();
+            return;
+        }
+
+        const removeButton = event.target.closest('[data-kf-interactive-table-remove-row="true"]');
+        if (removeButton && host.contains(removeButton)) {
+            event.preventDefault();
+            const rowIndex = Number(removeButton.closest('tr[data-row-index]')?.getAttribute('data-row-index'));
+            removeRow(rowIndex, 'button');
             return;
         }
 
@@ -10261,10 +10308,13 @@ function renderInteractiveTable(config = {}) {
 
     const handleTableMouseDown = (event) => {
         const submitButton = event.target.closest('[data-kf-interactive-table-submit="true"]');
-        if (submitButton && host.contains(submitButton)) return;
+        if (submitButton && (host.contains(submitButton) || actionContainer?.contains(submitButton))) return;
 
         const clearButton = event.target.closest('[data-kf-interactive-table-clear="true"]');
-        if (clearButton && host.contains(clearButton)) return;
+        if (clearButton && (host.contains(clearButton) || actionContainer?.contains(clearButton))) return;
+
+        const removeButton = event.target.closest('[data-kf-interactive-table-remove-row="true"]');
+        if (removeButton && host.contains(removeButton)) return;
 
         const editor = event.target.closest('.kfInteractiveTable__editor');
         if (editor && host.contains(editor)) return;
@@ -10291,6 +10341,10 @@ function renderInteractiveTable(config = {}) {
     host.addEventListener('mousedown', handleTableMouseDown);
     host.addEventListener('click', handleTableClick);
     host.addEventListener('keydown', handleTableKeydown);
+    if (usesExternalActionContainer) {
+        actionContainer.addEventListener('mousedown', handleTableMouseDown);
+        actionContainer.addEventListener('click', handleTableClick);
+    }
 
     if (typeof settings.onRenderComplete === 'function') {
         try {
@@ -10358,11 +10412,19 @@ function renderInteractiveTable(config = {}) {
         async clear() {
             await clearTable();
         },
+        removeRow(rowIndex) {
+            removeRow(rowIndex);
+        },
         destroy() {
             selectOptionsCache.clear();
             host.removeEventListener('mousedown', handleTableMouseDown);
             host.removeEventListener('click', handleTableClick);
             host.removeEventListener('keydown', handleTableKeydown);
+            if (usesExternalActionContainer) {
+                actionContainer.removeEventListener('mousedown', handleTableMouseDown);
+                actionContainer.removeEventListener('click', handleTableClick);
+                actionContainer.innerHTML = '';
+            }
             host.innerHTML = '';
         },
     };
@@ -13573,6 +13635,7 @@ class KnackAPI {
      * @param {Function} [options.onProgress] - Receives {created, failed, total, index, record|error}
      * @param {number} [options.staggerMs=0] - Delay in ms between requests
      * @param {boolean} [options.continueOnError=false] - Continue processing remaining records when one fails
+     * @param {boolean} [options.requireRecordId=false] - Treat a create response without a record id as a failure.
     * @param {boolean} [options.autoUploadAssets=false] - Upload File/Blob values and replace with Knack asset IDs before create.
     * @param {string[]} [options.assetFieldIds] - Optional allow-list of asset field keys.
     * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field upload type override.
@@ -13612,6 +13675,9 @@ class KnackAPI {
                 execute: async (index) => {
                     try {
                         const record = await this.createRecord(sceneId, viewId, payloads[index], requestOptions);
+                        if (opts.requireRecordId && !this._extractRecordId(record)) {
+                            throw new Error(`Create response did not include a record id at index ${index}.`);
+                        }
                         created += 1;
                         createdRecords[index] = record;
                         if (typeof opts.onProgress === 'function') {

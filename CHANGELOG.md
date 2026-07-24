@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-24
+
+<!-- pr:82 feature/interactive-table-row-actions - CSWinnall -->
+- Interactive tables can provide a reusable row-remove action while leaving record persistence to the consuming app.
+- Bulk form replication now validates created-record IDs and handles rendered field data more reliably.
+
 ## 2026-07-15
 
 <!-- pr:80 fix/race-condition-in-version-control - CSWinnall -->
