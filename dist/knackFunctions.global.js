@@ -9011,6 +9011,36 @@ function escapeHTML(text) {
 }
 
 /**
+ * Adds the shared visual treatment for interactive-table row removal controls.
+ * @returns {void}
+ */
+function ensureInteractiveTableStyles() {
+    const styleId = 'kf-interactive-table-styles';
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+        .kfInteractiveTable__removeRow {
+            appearance: none;
+            border: 0;
+            background: transparent;
+            color: #c62828;
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+            padding: 4px 6px;
+        }
+
+        .kfInteractiveTable__removeRow:hover,
+        .kfInteractiveTable__removeRow:focus-visible {
+            color: #8e0000;
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+/**
  * Renders a generic interactive table into a Knack view and provides a small controller API.
  *
  * Use cases:
@@ -9049,6 +9079,8 @@ function escapeHTML(text) {
  * @returns {{getData: Function, setData: Function, updateCell: Function, destroy: Function}|null}
  */
 function renderInteractiveTable(config = {}) {
+    ensureInteractiveTableStyles();
+
     const settings = {
         viewId: '',
         containerSelector: '.view-content',
