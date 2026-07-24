@@ -66,6 +66,7 @@ The main options are:
 - `saveMode`: `'manual'`, `'none'`, or `'auto'`
 - `saveButtonText`: label for the manual submit button
 - `saveButtonClassName`: extra classes for the submit button
+- `actionContainerSelector`: optional selector for a dedicated container in the view where table-generated Save and Clear controls should render
 - `showClearButton`: render a clear button in the top-right table toolbar
 - `clearButtonText`: label for the clear button
 - `clearButtonClassName`: extra classes for the clear button
@@ -79,6 +80,8 @@ The main options are:
 - `onChange`: callback after a cell value changes
 - `onSubmit`: callback used when manual submit is triggered
 - `onClear`: callback used when the clear button is triggered
+- `rowRemove`: optional configuration for a generic row-remove action column
+- `onRemoveRow`: callback after a row is removed; use this to queue any app-specific API delete
 - `onRenderComplete`: callback after the first render
 
 ## Column configuration
@@ -100,6 +103,28 @@ Each column can define:
 - `openDateHintKey`: row key used to tell the datepicker which month/year to open on
 - `minDate` and `maxDate`: optional date bounds
 - `dateFormat`: optional datepicker format override
+
+## Row removal
+
+Set `rowRemove` to add a remove action to every populated row. The helper only updates its in-memory rows; persistence stays with the consuming app through `onRemoveRow`.
+
+```javascript
+const removedRecordIds = new Set();
+
+const tableController = renderInteractiveTable({
+    viewId: 'view_2214',
+    rows,
+    rowRemove: {
+        buttonHtml: '&#128465;',
+        buttonClassName: 'my-row-remove-icon',
+        ariaLabel: 'Remove row',
+        title: 'Remove row',
+    },
+    onRemoveRow: ({ row }) => {
+        if (row.recordId) removedRecordIds.add(row.recordId);
+    },
+});
+```
 
 ## Editable rules
 
@@ -351,6 +376,7 @@ The helper returns a controller with these methods:
 - `getData()`
 - `setData(nextRows)`
 - `updateCell(rowIndex, columnKeyOrIndex, value, options)`
+- `removeRow(rowIndex)`
 - `submit()`
 - `destroy()`
 
