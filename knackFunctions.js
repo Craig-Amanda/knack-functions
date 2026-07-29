@@ -6660,6 +6660,25 @@ function getViewRootElement(viewRef) {
 }
 
 /**
+ * Return a Knack form submit button for a view.
+ * @param {string|number|Object|HTMLElement} viewId - View id for a rendered Knack view.
+ * @returns {HTMLButtonElement|null} Submit button element, or null if not found.
+ */
+function getSubmitButton(viewId) {
+    const viewElement = getViewRootElement(viewId);
+    if (!(viewElement instanceof HTMLElement)) {
+        return null;
+    }
+
+    const submitButton = viewElement.querySelector('.kn-submit button.kn-button.is-primary[type="submit"]');
+    if (submitButton instanceof HTMLButtonElement) {
+        return submitButton;
+    }
+
+    return null;
+}
+
+/**
  * Extracts id and identifier from a Knack connection value.
  * @param {Array|Object|null|undefined} value - Connection field value
  * @returns {{id: string, identifier: string}|null} Extracted reference or null
@@ -11154,6 +11173,69 @@ function parseDateTimeParts(parts) {
     }
 
     return new Date(year, month - 1, day, hours, minutes, 0, 0);
+}
+
+/**
+ * Parse a Knack from/to date-time wrapper into local start and end dates.
+ * Supports both single and range layouts that expose one or two date/time inputs.
+ * @param {HTMLElement|null} fieldWrap
+ * @returns {{startDate: Date|null, endDate: Date|null}} Parsed inclusive range.
+ * Example return with times:
+ * { startDate: new Date(2026, 6, 24, 10, 0, 0, 0), endDate: new Date(2026, 6, 27, 23, 30, 0, 0) }
+ * Example return with date-only values:
+ * { startDate: new Date(2026, 6, 24, 0, 0, 0, 0), endDate: new Date(2026, 6, 27, 23, 59, 59, 999) }
+ */
+function parseFromToDate(fieldWrap) {
+    if (!(fieldWrap instanceof HTMLElement)) {
+        return { startDate: null, endDate: null };
+    }
+
+    const dateInputs = Array.from(fieldWrap.querySelectorAll('input.knack-date'));
+    const timeInputs = Array.from(fieldWrap.querySelectorAll('input.kn-time'));
+    const fromDateText = String(dateInputs?.[0]?.value || '').trim();
+    const hasExplicitToDateInput = dateInputs.length > 1;
+    const toDateText = hasExplicitToDateInput
+        ? String(dateInputs?.[1]?.value || '').trim()
+        : String(dateInputs?.[0]?.value || '').trim();
+    const fromTimeText = String(timeInputs?.[0]?.value || '').trim();
+    const toTimeText = String(timeInputs?.[1]?.value || '').trim();
+
+    if (!fromDateText || !toDateText) {
+        return { startDate: null, endDate: null };
+    }
+
+    if (hasExplicitToDateInput && !String(dateInputs?.[1]?.value || '').trim()) {
+        return { startDate: null, endDate: null };
+    }
+
+    const parseBoundaryDate = function (value, endOfDay = false) {
+        const parsedDate = parseDateObject(value);
+        if (!(parsedDate instanceof Date) || Number.isNaN(parsedDate.getTime())) {
+            return null;
+        }
+
+        return endOfDay
+            ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate(), 23, 59, 59, 999)
+            : new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate(), 0, 0, 0, 0);
+    };
+
+    const parsedStartDate = parseDateTimeParts({ date: fromDateText, time: fromTimeText }) || parseBoundaryDate(fromDateText, false);
+    const parsedEndDate = toTimeText
+        ? parseDateTimeParts({ date: toDateText, time: toTimeText }) || parseBoundaryDate(toDateText, true)
+        : parseBoundaryDate(toDateText, true);
+
+    if (!(parsedStartDate instanceof Date) || Number.isNaN(parsedStartDate.getTime()) || !(parsedEndDate instanceof Date) || Number.isNaN(parsedEndDate.getTime())) {
+        return { startDate: null, endDate: null };
+    }
+
+    if (parsedStartDate.getTime() > parsedEndDate.getTime()) {
+        return { startDate: parsedEndDate, endDate: parsedStartDate };
+    }
+
+    return {
+        startDate: parsedStartDate,
+        endDate: parsedEndDate,
+    };
 }
 
 /**
