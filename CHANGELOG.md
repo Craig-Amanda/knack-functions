@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-29
+
+<!-- pr:83 feature/shared-time-picker - CSWinnall -->
+- Apps can now attach an accessible shared time picker without relying on the browser-native control.
+
 ## 2026-07-24
 
 <!-- pr:82 feature/interactive-table-row-actions - CSWinnall -->
