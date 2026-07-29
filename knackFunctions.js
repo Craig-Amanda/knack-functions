@@ -7793,6 +7793,208 @@ function attachNativeDateInputPicker(inputOrSelector) {
 }
 
 /**
+ * Attaches an accessible, dependency-free time picker to one or more text inputs.
+ * The selected value is written as `HH:mm` and dispatched through normal input/change
+ * events, so it can be used with native fields as well as custom application forms.
+ *
+ * @param {HTMLElement|string|Array|NodeList} inputOrSelector - Input(s) or selector.
+ * @param {Object} [opts={}] - Picker options.
+ * @param {number} [opts.step=15] - Minutes between displayed choices; must divide 60.
+ * @param {string} [opts.placeholder='HH:MM'] - Input placeholder when none is set.
+ * @param {string|Function|null} [opts.minTime=null] - Earliest time, or a function returning one when the picker opens.
+ * @param {boolean} [opts.allowNextDay=false] - Keep earlier clock times as `+1 day` choices for overnight ranges.
+ * @param {Function|null} [opts.onChange=null] - Called with `(value, input)` after selection.
+ * @returns {Function} Removes the pickers and listeners.
+ */
+function attachTimePicker(inputOrSelector, opts = {}) {
+    const options = Object.assign({ step: 15, placeholder: 'HH:MM', minTime: null, allowNextDay: false, onChange: null }, opts || {});
+    const step = Number.isFinite(Number(options.step)) && Number(options.step) > 0 && 60 % Number(options.step) === 0
+        ? Number(options.step)
+        : 15;
+    const inputs = typeof inputOrSelector === 'string'
+        ? Array.from(document.querySelectorAll(inputOrSelector))
+        : (NodeList.prototype.isPrototypeOf(inputOrSelector) || Array.isArray(inputOrSelector))
+            ? Array.from(inputOrSelector)
+            : inputOrSelector instanceof HTMLElement ? [inputOrSelector] : [];
+    const cleanups = [];
+
+    if (!document.getElementById('shared-time-picker-styles')) {
+        const style = document.createElement('style');
+        style.id = 'shared-time-picker-styles';
+        style.textContent = `
+            .sharedTimePicker { position: fixed; z-index: 10050; width: min(380px, calc(100vw - 24px)); max-height: 280px; overflow: auto; padding: 8px; border: 1px solid #78919a; border-radius: 4px; background: #fff; box-shadow: 0 10px 28px rgba(0, 0, 0, .22); }
+            .sharedTimePicker[hidden] { display: none; }
+            .sharedTimePicker__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+            .sharedTimePicker__option { min-height: 32px; border: 1px solid #c9d8dc; border-radius: 3px; background: #fff; color: #18323c; font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
+            .sharedTimePicker__option:hover, .sharedTimePicker__option:focus { border-color: #007f86; background: #e8f7f8; outline: 0; }
+            .sharedTimePicker__option[aria-selected="true"] { border-color: #005f66; background: #007f86; color: #fff; font-weight: 700; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    const normaliseTime = function (value) {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        const match = raw.match(/^(?:([01]?\d|2[0-3])(?::?([0-5]\d)?)?)$/);
+        if (!match) return '';
+        const hour = Number(match[1]);
+        const minute = Number(match[2] || 0);
+        return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    };
+    const getMinutes = function (value) {
+        const normalized = normaliseTime(value);
+        if (!normalized) return null;
+        const [hours, minutes] = normalized.split(':').map(Number);
+        return (hours * 60) + minutes;
+    };
+
+    inputs.forEach(function (input, index) {
+        if (!(input instanceof HTMLInputElement)) return;
+        const pickerId = `shared-time-picker-${Date.now()}-${index}`;
+        const picker = document.createElement('div');
+        picker.className = 'sharedTimePicker';
+        picker.id = pickerId;
+        picker.hidden = true;
+        picker.setAttribute('role', 'listbox');
+        picker.setAttribute('aria-label', 'Choose a time');
+        const times = Array.from({ length: (24 * 60) / step }, function (_, timeIndex) {
+            const totalMinutes = timeIndex * step;
+            return { value: `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`, totalMinutes };
+        });
+        document.body.appendChild(picker);
+
+        input.type = 'text';
+        input.autocomplete = 'off';
+        input.placeholder = input.placeholder || options.placeholder;
+        input.setAttribute('aria-haspopup', 'listbox');
+        input.setAttribute('aria-controls', pickerId);
+        input.setAttribute('aria-expanded', 'false');
+        let suppressNextFocusOpen = false;
+
+        const positionPicker = function () {
+            const rect = input.getBoundingClientRect();
+            picker.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - Math.min(380, window.innerWidth - 24) - 12))}px`;
+            picker.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 292)}px`;
+        };
+        const closePicker = function () {
+            picker.hidden = true;
+            input.setAttribute('aria-expanded', 'false');
+        };
+        const renderOptions = function () {
+            const configuredMinTime = typeof options.minTime === 'function' ? options.minTime(input) : options.minTime;
+            const minimumMinutes = getMinutes(configuredMinTime);
+            const orderedTimes = minimumMinutes === null
+                ? times.map(function (time) { return { ...time, nextDay: false }; })
+                : options.allowNextDay
+                    ? times.map(function (time) {
+                        return { ...time, nextDay: time.totalMinutes < minimumMinutes };
+                    }).sort(function (left, right) {
+                        return (left.totalMinutes + (left.nextDay ? 1440 : 0)) - (right.totalMinutes + (right.nextDay ? 1440 : 0));
+                    })
+                    : times.filter(function (time) { return time.totalMinutes >= minimumMinutes; }).map(function (time) {
+                        return { ...time, nextDay: false };
+                    });
+            picker.innerHTML = `<div class="sharedTimePicker__grid">${orderedTimes.map(function (time) {
+                const label = `${time.value}${time.nextDay ? ' +1' : ''}`;
+                const accessibleLabel = `${time.value}${time.nextDay ? ', next day' : ''}`;
+                return `<button type="button" class="sharedTimePicker__option" role="option" data-time="${time.value}" aria-label="${accessibleLabel}" aria-selected="false">${label}</button>`;
+            }).join('')}</div>`;
+        };
+        const openPicker = function () {
+            renderOptions();
+            positionPicker();
+            picker.hidden = false;
+            input.setAttribute('aria-expanded', 'true');
+            const selected = normaliseTime(input.value);
+            picker.querySelectorAll('[data-time]').forEach(function (button) {
+                button.setAttribute('aria-selected', String(button.dataset.time === selected));
+            });
+        };
+        const writeValue = function (value) {
+            input.value = value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof options.onChange === 'function') options.onChange(value, input);
+        };
+        const focusInputWithoutOpeningPicker = function () {
+            suppressNextFocusOpen = true;
+            input.focus();
+        };
+        const onFocus = function () {
+            if (suppressNextFocusOpen) {
+                suppressNextFocusOpen = false;
+                return;
+            }
+            openPicker();
+        };
+        const onBlur = function () {
+            const normalised = normaliseTime(input.value);
+            if (input.value && normalised) input.value = normalised;
+        };
+        const onPickerClick = function (event) {
+            const button = event.target.closest('.sharedTimePicker__option[data-time]');
+            if (!button) return;
+            writeValue(button.dataset.time || '');
+            closePicker();
+            focusInputWithoutOpeningPicker();
+        };
+        const onPickerKeyDown = function (event) {
+            const options = Array.from(picker.querySelectorAll('.sharedTimePicker__option'));
+            const currentIndex = options.indexOf(event.target);
+            if (currentIndex < 0) return;
+            const moveFocus = function (index) {
+                event.preventDefault();
+                options[Math.max(0, Math.min(options.length - 1, index))]?.focus();
+            };
+            if (event.key === 'ArrowRight') moveFocus(currentIndex + 1);
+            else if (event.key === 'ArrowLeft') moveFocus(currentIndex - 1);
+            else if (event.key === 'ArrowDown') moveFocus(currentIndex + 4);
+            else if (event.key === 'ArrowUp') moveFocus(currentIndex - 4);
+            else if (event.key === 'Home') moveFocus(0);
+            else if (event.key === 'End') moveFocus(options.length - 1);
+            else if (event.key === 'Escape') {
+                event.preventDefault();
+                closePicker();
+                focusInputWithoutOpeningPicker();
+            } else if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                writeValue(event.target.dataset.time || '');
+                closePicker();
+                focusInputWithoutOpeningPicker();
+            }
+        };
+        const onDocumentPointerDown = function (event) {
+            if (event.target !== input && !picker.contains(event.target)) closePicker();
+        };
+        const onKeyDown = function (event) {
+            if (event.key === 'Escape') closePicker();
+            if (event.key === 'ArrowDown' && picker.hidden) {
+                event.preventDefault();
+                openPicker();
+                picker.querySelector('.sharedTimePicker__option[aria-selected="true"], .sharedTimePicker__option')?.focus();
+            }
+        };
+        input.addEventListener('focus', onFocus);
+        input.addEventListener('blur', onBlur);
+        input.addEventListener('keydown', onKeyDown);
+        picker.addEventListener('click', onPickerClick);
+        picker.addEventListener('keydown', onPickerKeyDown);
+        document.addEventListener('pointerdown', onDocumentPointerDown, true);
+        cleanups.push(function () {
+            input.removeEventListener('focus', onFocus);
+            input.removeEventListener('blur', onBlur);
+            input.removeEventListener('keydown', onKeyDown);
+            picker.removeEventListener('click', onPickerClick);
+            picker.removeEventListener('keydown', onPickerKeyDown);
+            document.removeEventListener('pointerdown', onDocumentPointerDown, true);
+            picker.remove();
+        });
+    });
+
+    return function () { cleanups.forEach(function (cleanup) { cleanup(); }); };
+}
+
+/**
  * Enhance a jQuery UI datepicker/timepicker input to show month/year selectors, optional date/time bounds, and apply styling.
  * Safe no-op when required plugins are not present or the input lacks an initialized picker.
  *
