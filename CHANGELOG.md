@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-04
+
+<!-- pr:84 Date-Time-Function - amandajane-mo -->
+- New fnc getSubmitButton
+
 ## 2026-07-29
 
 <!-- pr:83 feature/shared-time-picker - CSWinnall -->
