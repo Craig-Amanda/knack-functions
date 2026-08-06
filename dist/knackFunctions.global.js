@@ -17649,35 +17649,37 @@ function addPlaceholderToInput(fieldID, placeholder) {
 /**
  * Waits for one or more fields in a Knack detail view to be available and retrieves their values.
  * * @param {object} options - The options for the function.
- * @param {string} options.viewId - The ID of the Knack view to wait for.
- * @param {number|number[]} options.fieldIds - The field ID(s) to retrieve values from.
+ * @param {string|number} options.viewId - The Knack view ID, with or without the `view_` prefix.
+ * @param {string|number|(string|number)[]} options.fieldIds - The field ID(s), with or without the `field_` prefix.
  * @param {number} [options.delay=20000] - Maximum time to wait for the field(s) in milliseconds.
  * @param {boolean} [options.returnHtml=false] - If true, returns the HTML content; otherwise, returns text.
  * @returns {Promise<string|object|null>} - Field value(s) or null if not found.
  */
 async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHtml = false}) {
-    // Normalize fieldIds to always be an array for uniform handling
+    // Normalise fieldIds to always be an array for uniform handling
     const fieldIdArray = Array.isArray(fieldIds) ? fieldIds : [fieldIds];
+    const normalisedViewId = viewId ? knackNavigator.normalizeViewId(viewId) : '';
     const fieldValues = {};
 
     try {
         // Attempt to wait for all fields and track missing fields
         const fieldStatuses = await Promise.all(
             fieldIdArray.map(async fieldId => {
+                const normalisedFieldId = knackNavigator.normalizeFieldId(fieldId);
                 // Use viewId if provided; otherwise search globally
-                const selector = viewId
-                    ? `#${viewId} .field_${fieldId} .kn-detail-body span`
-                    : `.field_${fieldId} .kn-detail-body span`;
+                const selector = normalisedViewId
+                    ? `#${normalisedViewId} .${normalisedFieldId} .kn-detail-body span`
+                    : `.${normalisedFieldId} .kn-detail-body span`;
 
                 try {
                     const element = await waitSelector({
                         selector,
                         delay
                     });
-                    return { fieldId, found: true, element };
+                    return { fieldId: normalisedFieldId, found: true, element };
                 } catch (error) {
-                    console.warn(`Field ${fieldId} not found ${viewId ? `in view ${viewId}` : 'globally'} within ${delay}ms.`);
-                    return { fieldId, found: false, element: null };
+                    console.warn(`Field ${normalisedFieldId} not found ${normalisedViewId ? `in view ${normalisedViewId}` : 'globally'} within ${delay}ms.`);
+                    return { fieldId: normalisedFieldId, found: false, element: null };
                 }
             })
         );
@@ -17696,7 +17698,7 @@ async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHt
 
         // If only one field ID was provided, return its value directly
         if (!Array.isArray(fieldIds)) {
-            return fieldValues[fieldIds];
+            return fieldValues[knackNavigator.normalizeFieldId(fieldIds)];
         }
 
         return fieldValues;

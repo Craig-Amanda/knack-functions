@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-06
+
+<!-- pr:85 Update-waitGetValue - amandajane-mo -->
+- `waitGetValueFromDetail` now accepts raw and prefixed Knack view and field IDs.
+
 ## 2026-08-04
 
 <!-- pr:84 Date-Time-Function - amandajane-mo -->
