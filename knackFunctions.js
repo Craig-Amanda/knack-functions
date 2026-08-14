@@ -19146,6 +19146,101 @@ function insertStaffName(target) {
 //KTL Functions
 
 /**
+ * Adds KTL-style copy-to-clipboard behaviour for a view while excluding grid headers.
+ * Use the `_copybody` view keyword to enable it. The keyword honours the same
+ * role options as KTL's `_copy` keyword.
+ *
+ * @param {{key?: string}} view - Knack view metadata.
+ * @param {Object} keywords - Parsed KTL keywords for the view.
+ * @returns {void}
+ */
+function copyViewBodyToClipboard(view, keywords) {
+    const keywordName = '_copybody';
+    const viewId = knackNavigator.normalizeViewId(view?.key);
+    if (!viewId || !keywords?.[keywordName]) return;
+
+    const viewType = ktl.views.getViewType(viewId);
+    const selectors = {
+        table: `#${viewId} .kn-table-wrapper tbody`,
+        search: `#${viewId} .kn-table-wrapper tbody`,
+        details: `#${viewId}.kn-details section`,
+        list: `#${viewId}.kn-list .columns`
+    };
+    const contentSelector = selectors[viewType];
+    if (!contentSelector) {
+        console.log('copyViewBodyToClipboard error. Unsupported view type:', viewId);
+        return;
+    }
+
+    const buttonSelector = `#${viewId} .knackCopyBodyButton`;
+    let button = document.querySelector(buttonSelector);
+
+    if (!button) {
+        const keywordOptions = keywords[keywordName][0]?.options;
+        if (keywordOptions && !ktl.core.hasRoleAccess(keywordOptions)) return;
+
+        button = document.createElement('button');
+        button.className = 'kn-button knackCopyBodyButton';
+        button.type = 'button';
+        button.textContent = 'Copy to Clipboard';
+        Object.assign(button.style, {
+            marginBottom: '10px',
+            width: 'fit-content'
+        });
+
+        let buttonContainer = null;
+        if (viewType === 'table' || viewType === 'search') {
+            buttonContainer = document.querySelector(`#${viewId} .table-keyword-search`);
+            if (buttonContainer) {
+                buttonContainer.style.display = 'inline-flex';
+                button.style.marginLeft = '10%';
+                buttonContainer.appendChild(button);
+            }
+        }
+
+        if (!buttonContainer) {
+            buttonContainer = document.querySelector(
+                `#${viewId}.kn-table .kn-records-nav, #${viewId} .kn-list-content, #${viewId} .kn-details section`
+            );
+            if (!buttonContainer) return;
+
+            buttonContainer.style.flexDirection = 'column';
+            button.style.marginLeft = '8px';
+            buttonContainer.prepend(button);
+        }
+
+        button.addEventListener('click', function () {
+            const content = document.querySelector(contentSelector);
+            if (!content) {
+                ktl.core.timedPopup('Unable to copy', 'error', 2000);
+                return;
+            }
+
+            ktl.core.selectElementContents(content);
+            try {
+                const successful = document.execCommand('copy');
+                const message = successful
+                    ? `${viewType.charAt(0).toUpperCase()}${viewType.slice(1)} copied to clipboard`
+                    : 'Error copying to clipboard';
+                ktl.core.timedPopup(message, successful ? 'success' : 'error', 1000);
+            } catch (error) {
+                ktl.core.timedPopup('Unable to copy', 'error', 2000);
+            } finally {
+                ktl.core.selectElementContents();
+            }
+        });
+    }
+
+    const content = document.querySelector(contentSelector);
+    const hasData = Boolean(content) && !content.querySelector('.kn-tr-nodata');
+    button.disabled = !hasData;
+}
+
+if (typeof globalThis !== 'undefined') {
+    globalThis.copyViewBodyToClipboard = copyViewBodyToClipboard;
+}
+
+/**
  * Updates the label text for a field in a Knack view.
  * Works with regular views and connection-form-views.
  * Supports HTML replacements using placeholder syntax: {br}, {strong}, {/strong}, {em}, {/em}, {hr}.
