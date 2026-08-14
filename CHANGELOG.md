@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-14
+
+<!-- pr:86 feature/copy-view-body - CSWinnall -->
+- Views can now offer a headerless copy-to-clipboard action through the `_copybody` keyword.
+
 ## 2026-08-06
 
 <!-- pr:85 Update-waitGetValue - amandajane-mo -->
