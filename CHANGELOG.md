@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-18
+
+<!-- pr:87 File-Carosel - amandajane-mo -->
+- Add a reusable file carousel for Knack table file and image fields.
+- Add shared source-object and scene-aware rendered-view lookup helpers.
+
 ## 2026-08-14
 
 <!-- pr:86 feature/copy-view-body - CSWinnall -->
