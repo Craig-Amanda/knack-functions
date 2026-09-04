@@ -12486,8 +12486,8 @@ class MultiFormSubmissionCoordinator {
                 attributeFilter: ['class', 'style', 'aria-invalid']
             });
 
-            // Initial check and delayed check
-            checkOutcome();
+            // Wait until the new submission has started so a previous attempt's
+            // rendered validation message is not mistaken for the new outcome.
             setTimeout(checkOutcome, this.timeouts.OUTCOME_POLL_INTERVAL);
 
             // Periodic polling as backup
