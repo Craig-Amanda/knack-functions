@@ -12486,8 +12486,8 @@ class MultiFormSubmissionCoordinator {
                 attributeFilter: ['class', 'style', 'aria-invalid']
             });
 
-            // Initial check and delayed check
-            checkOutcome();
+            // Wait until the new submission has started so a previous attempt's
+            // rendered validation message is not mistaken for the new outcome.
             setTimeout(checkOutcome, this.timeouts.OUTCOME_POLL_INTERVAL);
 
             // Periodic polling as backup
@@ -18689,86 +18689,80 @@ function createButton(options) {
     return button;
 }
 
-/**  Add Buttons to Scroll to Top and Close Modal */
+/**
+ * Adds floating scroll-to-top and close controls to the active Knack modal.
+ * Repeated modal render events reuse the existing controls rather than adding duplicates.
+ * @return {void}
+ */
 function addModalNavigationButtons() {
-    // Create the button container to hold both buttons
+    const modalBg = Array.from(document.querySelectorAll('[id^="kn-modal-bg-"]')).pop();
+    if (!modalBg || modalBg.querySelector(':scope > .modal-control-buttons')) return;
+
     const buttonContainer = document.createElement('div');
     buttonContainer.className = 'modal-control-buttons';
+    buttonContainer.setAttribute('role', 'group');
+    buttonContainer.setAttribute('aria-label', 'Modal controls');
 
-    // Create the scroll to top button
     const scrollToTopBtn = createButton({
-        id: 'scrollToTopBtn',
         html: '<i class="fa fa-arrow-up"></i>',
         className: 'modalButton success-bkgd scroll-to-top-btn',
+        attributes: {
+            'aria-label': 'Scroll to top of modal',
+            title: 'Scroll to top'
+        },
         onClick: function() {
-            document.querySelector('.modal-card-head').scrollIntoView({
-                behavior: 'auto',
-                block: 'start'
-            });
+            modalBg.scrollTo({ top: 0, behavior: 'smooth' });
         }
     });
 
-    // Create the close modal button
     const closeModalBtn = createButton({
-        id: 'closeModalBtn',
         html: '<i class="fa fa-times"></i>',
         className: 'modalButton warning-bkgd close-modal-btn',
+        attributes: {
+            'aria-label': 'Close modal',
+            title: 'Close'
+        },
         onClick: function() {
-            // Find and click the existing close modal button
-            const knackCloseBtn = document.querySelector('button.close-modal');
-            if (knackCloseBtn) {
-                knackCloseBtn.click();
-            } else {
-                // Fallback approach if the standard close button isn't found
-                const modalBg = document.getElementById('kn-modal-bg-0');
-                if (modalBg) {
-                    modalBg.style.display = 'none';
-                }
-            }
+            modalBg.querySelector('button.close-modal, .close-modal')?.click();
         }
     });
 
-    // Add buttons to the container
     buttonContainer.appendChild(scrollToTopBtn);
     buttonContainer.appendChild(closeModalBtn);
+    modalBg.appendChild(buttonContainer);
 
-    // Find the modal background and append the button container
-    const modalBg = document.getElementById('kn-modal-bg-0');
-    if (modalBg) {
-        modalBg.appendChild(buttonContainer);
+    /** Positions the controls beside the modal without allowing viewport overflow. */
+    const updatePosition = () => {
+        if (!modalBg.isConnected) {
+            window.removeEventListener('resize', updatePosition);
+            window.visualViewport?.removeEventListener('resize', updatePosition);
+            return;
+        }
 
-        // Initially hide the button container
-        buttonContainer.style.display = 'none';
+        const modalCard = modalBg.querySelector('.modal-card, .modal-card-body');
+        if (!modalCard) return;
 
-        // Add scroll event listener to the modal background
-        modalBg.addEventListener('scroll', function() {
-            const modalCard = document.querySelector(".modal-card-body");
-            if (!modalCard) return;
+        const viewport = window.visualViewport;
+        const viewportLeft = viewport?.offsetLeft ?? 0;
+        const viewportWidth = viewport?.width ?? window.innerWidth;
+        const viewportEdge = 12;
+        const modalGap = 8;
+        const preferredLeft = modalCard.getBoundingClientRect().right + modalGap;
+        const minimumLeft = viewportLeft + viewportEdge;
+        const maximumLeft = viewportLeft + viewportWidth - buttonContainer.offsetWidth - viewportEdge;
+        buttonContainer.style.left = `${Math.max(minimumLeft, Math.min(preferredLeft, maximumLeft))}px`;
+    };
 
-            const rect = modalCard.getBoundingClientRect();
+    /** Updates the controls when the modal crosses the scroll threshold. */
+    const updateVisibility = () => {
+        buttonContainer.classList.toggle('is-visible', modalBg.scrollTop > 100);
+        updatePosition();
+    };
 
-            buttonContainer.style.left = `${rect.right}px`;
-
-            // Show/hide the button based on scroll position
-            if (modalBg.scrollTop > 100) {
-                buttonContainer.style.display = 'flex';
-                // Fade-in effect
-                buttonContainer.style.opacity = '1';
-                buttonContainer.style.transition = 'opacity 0.3s';
-            } else {
-                // Fade-out effect
-                buttonContainer.style.opacity = '0';
-                buttonContainer.style.transition = 'opacity 0.3s';
-
-                // Set a timeout to actually hide the element after the transition
-                setTimeout(function() {
-                    if (modalBg.scrollTop <= 100) {
-                        buttonContainer.style.display = 'none';
-                    }
-                }, 300);
-            }
-        });
-    }
+    modalBg.addEventListener('scroll', updateVisibility, { passive: true });
+    window.addEventListener('resize', updatePosition, { passive: true });
+    window.visualViewport?.addEventListener('resize', updatePosition, { passive: true });
+    updateVisibility();
 }
 
 /**

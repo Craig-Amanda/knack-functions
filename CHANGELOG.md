@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-04
+
+<!-- pr:88 fix/modal-navigation-controls - amandajane-mo -->
+- Keep modal scroll-to-top and close controls within the visible viewport on narrow screens.
+- Reuse existing modal controls across repeated renders to prevent duplicates.
+- Position controls against the active modal and update their position when the window or visual viewport changes.
+- Add accessible labels and titles to the modal controls.
+- Allow a corrected multi-form submission to complete successfully after an earlier validation failure.
+- Preserve the existing submit-event and MutationObserver outcome handling.
+
 ## 2026-08-18
 
 <!-- pr:87 File-Carosel - amandajane-mo -->
