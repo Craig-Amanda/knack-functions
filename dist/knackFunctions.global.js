@@ -5356,6 +5356,110 @@ function ensureBulkActionCheckboxes(viewId, selectionConfig, handlers = {}) {
     });
 }
 
+const KTL_BULK_EDIT_SELECTION_STYLE_ID = 'ktlBulkEditSelectionStyles';
+const KTL_BULK_EDIT_ROW_MARKER_CLASS = 'ktlBulkEditRowSelected';
+// Keyed by viewId, one observer per `_ebo` grid (never more than a handful per app), replaced on
+// every render - see preserveBulkEditSelectedRowColors. Left connected to an inert/detached tbody
+// if a view is never rendered again, which is an acceptable, bounded cost for this view count.
+const ktlBulkEditRowColorObservers = new Map();
+
+/**
+ * Returns the CSS for the KTL `_ebo` bulk-edit row selection outline.
+ * @returns {string} CSS text.
+ */
+function ktlBulkEditSelectionCssText() {
+    return `
+tr.${KTL_BULK_EDIT_ROW_MARKER_CLASS} {
+    outline: 2px solid var(--ktl-bulk-edit-outline-color, #2a3f50);
+    outline-offset: -2px;
+}
+`;
+}
+
+/**
+ * Injects the shared bulk-edit row selection stylesheet once per page.
+ * @returns {void}
+ */
+function ensureBulkEditSelectionStyles() {
+    if (typeof document === 'undefined') return;
+    if (document.getElementById(KTL_BULK_EDIT_SELECTION_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = KTL_BULK_EDIT_SELECTION_STYLE_ID;
+    style.textContent = ktlBulkEditSelectionCssText();
+    document.head.appendChild(style);
+}
+
+/**
+ * KTL's native `_ebo` row selection strips the inline background/text colour it finds on a
+ * `td.bulkEditSelectedRow` cell (saving it to `data-bulk-edit-saved-*`) so its own selection
+ * background can show through. That only works for inline-editable (`cell-edit`) cells - on
+ * plain cells it leaves the colour cleared with nothing to replace it, which can make custom
+ * per-row colour formatting (e.g. white text on a coloured background) invisible while selected.
+ * This re-applies the saved colours immediately, and marks the whole row (rather than individual
+ * cells) with an outline class so selection has one consistent visual cue.
+ * @param {string} viewId - Grid view id with the KTL `_ebo` keyword enabled.
+ * @returns {void}
+ */
+function preserveBulkEditSelectedRowColors(viewId) {
+    const normalizedViewId = knackNavigator.normalizeViewId(viewId);
+    if (!normalizedViewId) return;
+
+    const viewElement = document.getElementById(normalizedViewId);
+    if (!viewElement) return;
+
+    ensureBulkEditSelectionStyles();
+
+    // The table body is replaced on every render, so drop any observer left over from before.
+    ktlBulkEditRowColorObservers.get(normalizedViewId)?.disconnect();
+
+    const syncRowOutline = (row) => {
+        if (!(row instanceof HTMLElement)) return;
+        const hasSelectedCell = !!row.querySelector('td.bulkEditSelectedRow');
+        const hasMarker = row.classList.contains(KTL_BULK_EDIT_ROW_MARKER_CLASS);
+        // Only touch the class when the state actually changes, to avoid retriggering the observer.
+        if (hasSelectedCell && !hasMarker) {
+            row.classList.add(KTL_BULK_EDIT_ROW_MARKER_CLASS);
+        } else if (!hasSelectedCell && hasMarker) {
+            row.classList.remove(KTL_BULK_EDIT_ROW_MARKER_CLASS);
+        }
+    };
+
+    const restoreCell = (target) => {
+        if (!(target instanceof HTMLElement)) return;
+        const cell = target.matches('td') ? target : target.closest('td');
+
+        if (cell?.classList.contains('bulkEditSelectedRow')) {
+            const savedBg = cell.dataset.bulkEditSavedBg;
+            const savedColor = cell.dataset.bulkEditSavedColor || '';
+            if (savedBg && (cell.style.backgroundColor !== savedBg || cell.style.color !== savedColor)) {
+                cell.style.backgroundColor = savedBg;
+                cell.style.color = savedColor;
+            }
+        }
+
+        syncRowOutline(target.closest('tr'));
+    };
+
+    const tableBody = viewElement.querySelector('tbody') || viewElement;
+    tableBody.querySelectorAll('td').forEach(restoreCell);
+
+    // KTL adds `bulkEditSelectedRow` (a "class" mutation) and clears the saved colour (a "style"
+    // mutation) synchronously, one after the other, so both records land in the same observer
+    // callback - filtering to just these two keeps this from re-running on every unrelated
+    // attribute Knack touches while rendering (aria-*, data-column-index, etc.).
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => restoreCell(mutation.target));
+    });
+    observer.observe(tableBody, {
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+        subtree: true,
+    });
+
+    ktlBulkEditRowColorObservers.set(normalizedViewId, observer);
+}
+
 /**
  * Mounts the bulk-action toolbar group into the shared KTL add-ons div.
  * @param {Element} container - KTL add-ons container.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-22
+
+<!-- pr:90 Fix-ktlBulkEdit-overiding-row-styles - amandajane-mo -->
+- Fix KTL bulk-edit selection overwriting custom row colours
+
 ## 2026-09-04
 
 <!-- pr:88 fix/modal-navigation-controls - amandajane-mo -->
