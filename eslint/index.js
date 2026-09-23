@@ -78,9 +78,12 @@ export const recommendedRules = {
  * shared Knack Functions bundle).
  * @param {string[]} files Glob patterns for the files this applies to.
  * @param {object} [extraGlobals] Extra app-specific globals to add on top of the shared set.
+ * @param {object} [options]
+ * @param {Record<string, string>} [options.knackFunctionsGlobals] Globals for the knack-functions version the
+ *   app actually runs (see collectKnackFunctionsGlobals in ./generate-globals.mjs). Defaults to this tag's own.
  * @returns {object} An ESLint flat-config block.
  */
-export function knackBrowserAppPreset(files, extraGlobals = {}) {
+export function knackBrowserAppPreset(files, extraGlobals = {}, { knackFunctionsGlobals: runtimeGlobals = knackFunctionsGlobals } = {}) {
     return {
         files,
         languageOptions: {
@@ -90,7 +93,8 @@ export function knackBrowserAppPreset(files, extraGlobals = {}) {
                 Ktl: "readonly",
                 $: "readonly",
                 jQuery: "readonly",
-                ...sharedKnackGlobals,
+                ...runtimeGlobals,
+                ...appRuntimeGlobals,
                 ...extraGlobals
             }
         }
