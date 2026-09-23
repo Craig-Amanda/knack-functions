@@ -2,6 +2,9 @@
 
 ## 2026-09-23
 
+<!-- pr:94 notify-spot - CSWinnall -->
+- Notify Spot, as well as GAP-Track, when a new knack-functions tag is released.
+
 <!-- pr:93 repo-hygiene - CSWinnall -->
 - Stop committing `node_modules/`; install dependencies with `npm ci` / `npm install`.
 - `npm run build` now works on Windows as well as Linux/CI.
