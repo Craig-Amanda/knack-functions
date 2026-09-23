@@ -345,6 +345,7 @@ jobs:
           TAG: ${{ steps.nexttag.outputs.new_tag }}
           CONSUMER_REPOS: |
             Craig-Amanda/GAP-Track
+            Craig-Amanda/Spot
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::warning::CONSUMER_DISPATCH_TOKEN is not set - consumers were not notified of $TAG."
