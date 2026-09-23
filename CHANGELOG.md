@@ -2,6 +2,10 @@
 
 ## 2026-09-23
 
+<!-- pr:93 repo-hygiene - CSWinnall -->
+- Stop committing `node_modules/`; install dependencies with `npm ci` / `npm install`.
+- `npm run build` now works on Windows as well as Linux/CI.
+
 <!-- pr:92 eslint-config - CSWinnall -->
 - Ship the shared Knack ESLint preset as `knack-functions/eslint`, with the knack-functions globals auto-generated from source on every build.
 - Release a new tag when the ESLint preset changes, and notify consuming app repos of each new tag.
