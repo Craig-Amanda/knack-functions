@@ -32,6 +32,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Build from the latest main, not the commit that triggered this run: runs queue behind each other
+          # (see concurrency), so a queued run's trigger commit is already behind the previous run's bot commit.
+          ref: main
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -279,12 +282,13 @@ jobs:
 
       # Release whenever anything a consumer receives differs from the last tag: the runtime bundle
       # (dist/) or the ESLint preset (eslint/, incl. its generated globals) and its dependencies.
+      # The manifest is excluded - it records the build time and commit, so it differs on every run.
       - name: Decide whether to release
         id: release
         shell: bash
         run: |
           LAST_TAG=$(git tag -l "v[0-9]*" --sort=-v:refname | head -n 1)
-          if [ -z "$LAST_TAG" ] || ! git diff --quiet "$LAST_TAG" HEAD -- dist eslint package.json; then
+          if [ -z "$LAST_TAG" ] || ! git diff --quiet "$LAST_TAG" HEAD -- dist eslint package.json ':(exclude)dist/knackFunctions.manifest.json'; then
             echo "needed=true" >> $GITHUB_OUTPUT
           else
             echo "No consumer-facing changes since $LAST_TAG."

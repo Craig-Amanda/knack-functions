@@ -2,6 +2,9 @@
 
 ## 2026-09-23
 
+<!-- pr:95 eslint-runtime-globals - CSWinnall -->
+- Apps can now lint against the knack-functions globals of the version their live Knack app loads, via `collectKnackFunctionsGlobals` and a new `knackFunctionsGlobals` option on `knackBrowserAppPreset`.
+
 <!-- pr:94 notify-spot - CSWinnall -->
 - Notify Spot, as well as GAP-Track, when a new knack-functions tag is released.
 
