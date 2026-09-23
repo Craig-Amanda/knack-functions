@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-23
+
+<!-- pr:91 All-Validation-for-Bulk-Actions - amandajane-mo -->
+- Added optional per-action validation callbacks for _bulk_actions. Added silent disabled states for pending asynchronous validation. Preserved custom row styles when _ebo bulk editing is enabled. Documented validation callback parameter order and behaviour
+
 ## 2026-09-22
 
 <!-- pr:90 Fix-ktlBulkEdit-overiding-row-styles - amandajane-mo -->
