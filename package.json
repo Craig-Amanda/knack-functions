@@ -10,7 +10,7 @@
     ],
     "scripts": {
         "build": "npm run build:eslint-globals && npm run build:global",
-        "build:global": "mkdir -p dist && cp knackFunctions.js dist/knackFunctions.global.js && terser dist/knackFunctions.global.js -o dist/knackFunctions.global.min.js --compress --mangle",
+        "build:global": "node builds/copy-global.mjs && terser dist/knackFunctions.global.js -o dist/knackFunctions.global.min.js --compress --mangle",
         "dev": "node server.js",
         "start": "npm run dev",
         "simple": "node simple-server.js",
