@@ -2,6 +2,10 @@
 
 ## 2026-09-23
 
+<!-- pr:92 eslint-config - CSWinnall -->
+- Ship the shared Knack ESLint preset as `knack-functions/eslint`, with the knack-functions globals auto-generated from source on every build.
+- Release a new tag when the ESLint preset changes, and notify consuming app repos of each new tag.
+
 <!-- pr:91 All-Validation-for-Bulk-Actions - amandajane-mo -->
 - Added optional per-action validation callbacks for _bulk_actions. Added silent disabled states for pending asynchronous validation. Preserved custom row styles when _ebo bulk editing is enabled. Documented validation callback parameter order and behaviour
 
