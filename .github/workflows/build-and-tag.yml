@@ -8,6 +8,7 @@ on:
       - 'knackFunctions.js'
       - 'src/**'
       - 'builds/**'
+      - 'eslint/**'
       - 'rollup.config.*'
       - 'vite.config.*'
       - 'package.json'
@@ -232,7 +233,7 @@ jobs:
           DIST_CHANGED=false
           CHANGELOG_CHANGED=false
 
-          if [ -n "$(git status --porcelain dist)" ]; then
+          if [ -n "$(git status --porcelain dist eslint)" ]; then
             DIST_CHANGED=true
           fi
 
@@ -245,7 +246,7 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
 
             if [ "$DIST_CHANGED" = "true" ]; then
-              git add dist
+              git add dist eslint
             fi
 
             if [ "$CHANGELOG_CHANGED" = "true" ]; then
@@ -276,9 +277,23 @@ jobs:
           echo "dist_changed=$DIST_CHANGED" >> $GITHUB_OUTPUT
           echo "changelog_changed=$CHANGELOG_CHANGED" >> $GITHUB_OUTPUT
 
+      # Release whenever anything a consumer receives differs from the last tag: the runtime bundle
+      # (dist/) or the ESLint preset (eslint/, incl. its generated globals) and its dependencies.
+      - name: Decide whether to release
+        id: release
+        shell: bash
+        run: |
+          LAST_TAG=$(git tag -l "v[0-9]*" --sort=-v:refname | head -n 1)
+          if [ -z "$LAST_TAG" ] || ! git diff --quiet "$LAST_TAG" HEAD -- dist eslint package.json; then
+            echo "needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "No consumer-facing changes since $LAST_TAG."
+            echo "needed=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Compute next SemVer tag (major/minor/patch)
         id: nexttag
-        if: steps.commitgenerated.outputs.dist_changed == 'true'
+        if: steps.release.outputs.needed == 'true'
         shell: bash
         run: |
           # Find last semver tag (vX.Y.Z); if none, start from v0.0.0
@@ -313,9 +328,29 @@ jobs:
           echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
       - name: Create and push tag
-        if: steps.commitgenerated.outputs.dist_changed == 'true'
+        if: steps.release.outputs.needed == 'true'
         run: |
           TAG="${{ steps.nexttag.outputs.new_tag }}"
           echo "Tagging $TAG"
           git tag -a "$TAG" -m "Release $TAG (SRI ${{ steps.sri.outputs.sri }})"
           git push origin "$TAG"
+
+      # Tags pushed with GITHUB_TOKEN don't trigger workflows in other repos, so tell each consuming app
+      # directly. Each one's "knack-functions-released" workflow bumps its runtime pin + lint devDependency
+      # to this tag and opens a PR. CONSUMER_DISPATCH_TOKEN: fine-grained PAT, Contents read/write on each repo.
+      - name: Notify consuming repos
+        if: steps.release.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CONSUMER_DISPATCH_TOKEN }}
+          TAG: ${{ steps.nexttag.outputs.new_tag }}
+          CONSUMER_REPOS: |
+            Craig-Amanda/GAP-Track
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::CONSUMER_DISPATCH_TOKEN is not set - consumers were not notified of $TAG."
+            exit 0
+          fi
+          for REPO in $CONSUMER_REPOS; do
+            echo "Notifying $REPO of $TAG"
+            gh api "repos/$REPO/dispatches" -f event_type=knack-functions-released -f "client_payload[tag]=$TAG"               || echo "::warning::Failed to notify $REPO"
+          done
