@@ -67,9 +67,22 @@ function collectAssignedGlobals(ast) {
     return names;
 }
 
-const ast = parse(readFileSync(SOURCE_PATH, 'utf8'), { ecmaVersion: 'latest', sourceType: 'script' });
-const names = [...new Set([...collectTopLevelDeclarations(ast), ...collectAssignedGlobals(ast)])].sort();
-const globals = Object.fromEntries(names.map((name) => [name, 'readonly']));
+/**
+ * Every global a given knackFunctions.js source defines, as an ESLint `globals` map. Exported so consuming
+ * apps can generate globals for the exact knack-functions version their live Knack app loads (which may be
+ * older than the tag supplying this tooling).
+ * @param {string} sourceText Contents of a knackFunctions.js (any version).
+ * @returns {Record<string, 'readonly'>}
+ */
+export function collectKnackFunctionsGlobals(sourceText) {
+    const ast = parse(sourceText, { ecmaVersion: 'latest', sourceType: 'script' });
+    const names = [...new Set([...collectTopLevelDeclarations(ast), ...collectAssignedGlobals(ast)])].sort();
+    return Object.fromEntries(names.map((name) => [name, 'readonly']));
+}
 
-writeFileSync(OUTPUT_PATH, `${JSON.stringify(globals, null, 4)}\n`);
-console.log(`Wrote ${names.length} globals to ${OUTPUT_PATH}`);
+// Run as a script (npm run build:eslint-globals): regenerate this repo's own globals file.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+    const globals = collectKnackFunctionsGlobals(readFileSync(SOURCE_PATH, 'utf8'));
+    writeFileSync(OUTPUT_PATH, `${JSON.stringify(globals, null, 4)}\n`);
+    console.log(`Wrote ${Object.keys(globals).length} globals to ${OUTPUT_PATH}`);
+}
