@@ -1151,9 +1151,11 @@ class KnackValueResolver {
      * @param {*} input.rawValue - `_raw` field value from a Knack record.
      * @param {*} input.displayValue - Non-raw/display field value from a Knack record.
      * @param {string} input.fieldType - Knack field type.
+     * @param {string|number} [input.targetKey] - Field the value will be written to. When given, date/time
+     *   values are formatted in that field's `date_format` / `time_format` instead of the source's display format.
      * @returns {*} A type-aware request value, or undefined when the field should not be written.
      */
-    toRequestValue({ rawValue, displayValue, fieldType }) {
+    toRequestValue({ rawValue, displayValue, fieldType, targetKey }) {
         const sourceValue = rawValue !== undefined ? rawValue : displayValue;
         if (sourceValue === undefined || sourceValue === null || sourceValue === '') {
             return undefined;
@@ -1188,6 +1190,11 @@ class KnackValueResolver {
         }
 
         if (fieldType === 'date_time') {
+            if (targetKey !== undefined && targetKey !== null && targetKey !== '') {
+                const targetFormat = this.getFieldMeta(targetKey)?.format;
+                const formatted = this.toDateTimeRequestValueForFormat(rawValue, targetFormat);
+                if (formatted !== undefined) return formatted;
+            }
             return this.toDateTimeRequestValue(rawValue, displayValue);
         }
 
@@ -1214,6 +1221,57 @@ class KnackValueResolver {
     toDateTimeRequestValue(rawValue, displayValue) {
         return this._normalizeDateTimeRequestValue(rawValue)
             ?? this._normalizeDateTimeRequestValue(displayValue);
+    }
+
+    /**
+     * Formats a Knack date/time `_raw` value in a target field's date/time format.
+     * `_raw.date` is always mm/dd/yyyy whatever the source field displays, but Knack parses a write
+     * in the target field's format, so copying `date_formatted` between fields with different
+     * formats is rejected (day > 12) or silently swaps day and month (day <= 12).
+     * @param {Object} rawValue - Knack date `_raw` object ({date, hours, minutes, am_pm, ...}).
+     * @param {Object} [targetFormat] - Target field's `format` metadata ({date_format, time_format}).
+     * @returns {string|undefined} Formatted request string, or undefined when `rawValue` is not a
+     *   single Knack date object (callers should fall back to toDateTimeRequestValue).
+     * @example
+     * knackValueResolver.toDateTimeRequestValueForFormat(
+     *     { date: '09/23/2026', hours: '2', minutes: '05', am_pm: 'PM' },
+     *     { date_format: 'dd/mm/yyyy', time_format: 'HH:MM military' }
+     * ); // '23/09/2026 14:05'
+     */
+    toDateTimeRequestValueForFormat(rawValue, targetFormat) {
+        if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) return undefined;
+        // Date ranges carry a `to` part that this single-value format can't express.
+        if (rawValue.to) return undefined;
+
+        const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(this.toStringSafe(rawValue.date));
+        if (!match) return undefined;
+        const mm = match[1].padStart(2, '0');
+        const dd = match[2].padStart(2, '0');
+        const yyyy = match[3];
+
+        const dateFormat = this.toStringSafe(targetFormat?.date_format || 'mm/dd/yyyy').toLowerCase();
+        const timeFormat = this.toStringSafe(targetFormat?.time_format).toLowerCase();
+
+        let date = `${mm}/${dd}/${yyyy}`;
+        if (dateFormat.startsWith('dd/')) date = `${dd}/${mm}/${yyyy}`;
+        else if (dateFormat === 'yyyy-mm-dd') date = `${yyyy}-${mm}-${dd}`;
+        else if (dateFormat.includes('ignore')) date = '';
+
+        const hasTime = rawValue.hours !== undefined && rawValue.hours !== null && rawValue.hours !== '';
+        if (timeFormat.includes('ignore') || !hasTime) return date || undefined;
+
+        const rawHours = parseInt(rawValue.hours, 10);
+        if (!Number.isFinite(rawHours)) return date || undefined;
+        const minutes = String(parseInt(rawValue.minutes, 10) || 0).padStart(2, '0');
+        const amPm = this.toStringSafe(rawValue.am_pm).toLowerCase();
+
+        // Knack `_raw.hours` is 12-hour when `am_pm` is present; treat it as 24-hour otherwise.
+        const hours24 = amPm ? (rawHours % 12) + (amPm === 'pm' ? 12 : 0) : rawHours;
+        const time = timeFormat.includes('military')
+            ? `${String(hours24).padStart(2, '0')}:${minutes}`
+            : `${(hours24 % 12) || 12}:${minutes}${hours24 >= 12 ? 'pm' : 'am'}`;
+
+        return date ? `${date} ${time}` : time;
     }
 
     /**
@@ -15550,7 +15608,7 @@ class KnackAPI {
     async _handleResponse(response) {
         if (!response.ok) {
             const errorBody = await response.json().catch(() => ({ message: "Unknown error" }));
-            throw new Error(`API error ${response.status}: ${errorBody.message || response.statusText}`);
+            throw new Error(`API error ${response.status}: ${this._extractErrorMessage(errorBody) || response.statusText}`);
         }
 
         return await response.json();
@@ -16580,7 +16638,7 @@ class KnackAPI {
 
         try {
             const json = responseText ? JSON.parse(responseText) : null;
-            message = json?.message || json?.error || message;
+            message = this._extractErrorMessage(json) || message;
         } catch (error) {
             // ignore parse errors
         }
@@ -16589,6 +16647,33 @@ class KnackAPI {
         requestError.status = status;
         requestError.body = responseText || null;
         return requestError;
+    }
+
+    /**
+     * Pull a readable message out of a Knack error response body.
+     * Knack validation failures (HTTP 400) are shaped `{ errors: [{ field, message }] }` or
+     * `{ errors: ['message'] }` rather than `{ message }`.
+     * @param {Object|null} json - Parsed response body.
+     * @returns {string} Message, or an empty string when none is found.
+     * @private
+     */
+    _extractErrorMessage(json) {
+        if (!json || typeof json !== 'object') return '';
+
+        const errors = Array.isArray(json.errors) ? json.errors : (json.errors ? [json.errors] : []);
+        const errorMessages = errors
+            .map((entry) => {
+                if (typeof entry === 'string') return entry.trim();
+                if (!entry || typeof entry !== 'object') return '';
+                const text = String(entry.message || entry.error || '').trim();
+                const field = String(entry.field || '').trim();
+                if (!text) return field;
+                return field ? `${text} (${field})` : text;
+            })
+            .filter(Boolean);
+
+        if (errorMessages.length) return errorMessages.join('; ');
+        return String(json.message || json.error || '').trim();
     }
 
     /**

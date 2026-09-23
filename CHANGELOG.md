@@ -2,6 +2,13 @@
 
 ## 2026-09-23
 
+<!-- pr:97 fix/knack-api-errors-and-date-target-format - CSWinnall -->
+- `KnackAPI` errors now include messages from Knack's `{ "errors": [...] }` response bodies, joined with `; ` and suffixed with the field key when present, e.g. `API error 400: Date Student Created: invalid date (field_12)`. `requestError.body` is unchanged.
+- `_handleResponse` uses the same message extraction.
+- `KnackValueResolver.toRequestValue` accepts an optional `targetKey`. For `date_time` fields it reads the target field's `format.date_format` / `format.time_format` and builds the value from `_raw.date` (always mm/dd/yyyy) plus hours/minutes/am_pm: `HH:MM` for military time, `h:mmam/pm` otherwise, date only for "Ignore Time", time only for "Ignore Date".
+- New `KnackValueResolver.toDateTimeRequestValueForFormat(rawValue, targetFormat)` helper for the same formatting without a field lookup.
+- Callers that pass no `targetKey` keep the existing behaviour. Date ranges (`_raw.to`) and non-object values fall back to the existing path.
+
 <!-- pr:96 fix-release-race - CSWinnall -->
 - Releases are no longer cut when only the build manifest changed.
 - Fix release runs failing when two PRs are merged close together.
