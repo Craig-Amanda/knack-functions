@@ -2,6 +2,10 @@
 
 ## 2026-09-23
 
+<!-- pr:96 fix-release-race - CSWinnall -->
+- Releases are no longer cut when only the build manifest changed.
+- Fix release runs failing when two PRs are merged close together.
+
 <!-- pr:95 eslint-runtime-globals - CSWinnall -->
 - Apps can now lint against the knack-functions globals of the version their live Knack app loads, via `collectKnackFunctionsGlobals` and a new `knackFunctionsGlobals` option on `knackBrowserAppPreset`.
 
