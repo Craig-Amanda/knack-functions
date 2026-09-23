@@ -2805,7 +2805,7 @@ function resolveBulkActionFieldId(value, viewId = '') {
  * @param {Array<*>} params - Raw keyword parameters.
  * @param {string} operation - Target form operation, create or update.
  * @param {Object} [options={}] - Optional parsing hooks.
- * @returns {{recordFieldId: string, dataCallbackName: string, successCallbackName: string, validationCallbackName: string}} Parsed definition.
+ * @returns {{recordFieldId: string, dataCallbackName: string, successCallbackName: string}} Parsed definition.
  */
 function parseBulkActionDefinition(params, operation, options = {}) {
     const { resolveFieldId = (value) => knackNavigator.normalizeFieldId(value) } = options;
@@ -2813,14 +2813,12 @@ function parseBulkActionDefinition(params, operation, options = {}) {
     const third = params?.[2];
     const fourth = params?.[3];
     const fifth = params?.[4];
-    const sixth = params?.[5];
 
     if (op === 'create') {
         return {
             recordFieldId: resolveFieldId(third),
             dataCallbackName: knackValueResolver.toStringSafe(fourth),
-            successCallbackName: knackValueResolver.toStringSafe(fifth),
-            validationCallbackName: knackValueResolver.toStringSafe(sixth)
+            successCallbackName: knackValueResolver.toStringSafe(fifth)
         };
     }
 
@@ -2829,16 +2827,14 @@ function parseBulkActionDefinition(params, operation, options = {}) {
         return {
             recordFieldId: '',
             dataCallbackName: knackValueResolver.toStringSafe(third),
-            successCallbackName: knackValueResolver.toStringSafe(fourth),
-            validationCallbackName: knackValueResolver.toStringSafe(fifth)
+            successCallbackName: knackValueResolver.toStringSafe(fourth)
         };
     }
 
     return {
         recordFieldId: thirdAsField,
         dataCallbackName: knackValueResolver.toStringSafe(fourth),
-        successCallbackName: knackValueResolver.toStringSafe(fifth),
-        validationCallbackName: knackValueResolver.toStringSafe(sixth)
+        successCallbackName: knackValueResolver.toStringSafe(fifth)
     };
 }
 
@@ -2890,7 +2886,6 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
         gridActionRegistry = null,
         dataCallbackRegistry = null,
         successCallbackRegistry = null,
-        validationCallbackRegistry = null,
         globalScope = typeof globalThis !== 'undefined' ? globalThis : null,
         keywordName = '_bulk_actions',
         sourceViewId = ''
@@ -3012,14 +3007,6 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             }
         }
 
-        const resolvedValidationCallback = parsed.validationCallbackName
-            ? bulkActionResolveRegistryCallback(parsed.validationCallbackName, validationCallbackRegistry, globalScope)
-            : null;
-        if (parsed.validationCallbackName && !resolvedValidationCallback) {
-            warnings.push({ type: 'action', message: `Missing validation callback: ${parsed.validationCallbackName}`, params });
-            return;
-        }
-
         actions.push({
             key: `${operation}:${formViewId}`,
             label,
@@ -3028,8 +3015,7 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             operation,
             recordFieldId: parsed.recordFieldId || defaultRecordFieldId,
             dataCallback: resolvedDataCallback,
-            successCallback: resolvedSuccessCallback,
-            validationCallback: resolvedValidationCallback
+            successCallback: resolvedSuccessCallback
         });
     });
 
