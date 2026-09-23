@@ -2805,7 +2805,7 @@ function resolveBulkActionFieldId(value, viewId = '') {
  * @param {Array<*>} params - Raw keyword parameters.
  * @param {string} operation - Target form operation, create or update.
  * @param {Object} [options={}] - Optional parsing hooks.
- * @returns {{recordFieldId: string, dataCallbackName: string, successCallbackName: string}} Parsed definition.
+ * @returns {{recordFieldId: string, dataCallbackName: string, successCallbackName: string, validationCallbackName: string}} Parsed definition.
  */
 function parseBulkActionDefinition(params, operation, options = {}) {
     const { resolveFieldId = (value) => knackNavigator.normalizeFieldId(value) } = options;
@@ -2813,12 +2813,14 @@ function parseBulkActionDefinition(params, operation, options = {}) {
     const third = params?.[2];
     const fourth = params?.[3];
     const fifth = params?.[4];
+    const sixth = params?.[5];
 
     if (op === 'create') {
         return {
             recordFieldId: resolveFieldId(third),
             dataCallbackName: knackValueResolver.toStringSafe(fourth),
-            successCallbackName: knackValueResolver.toStringSafe(fifth)
+            successCallbackName: knackValueResolver.toStringSafe(fifth),
+            validationCallbackName: knackValueResolver.toStringSafe(sixth)
         };
     }
 
@@ -2827,14 +2829,16 @@ function parseBulkActionDefinition(params, operation, options = {}) {
         return {
             recordFieldId: '',
             dataCallbackName: knackValueResolver.toStringSafe(third),
-            successCallbackName: knackValueResolver.toStringSafe(fourth)
+            successCallbackName: knackValueResolver.toStringSafe(fourth),
+            validationCallbackName: knackValueResolver.toStringSafe(fifth)
         };
     }
 
     return {
         recordFieldId: thirdAsField,
         dataCallbackName: knackValueResolver.toStringSafe(fourth),
-        successCallbackName: knackValueResolver.toStringSafe(fifth)
+        successCallbackName: knackValueResolver.toStringSafe(fifth),
+        validationCallbackName: knackValueResolver.toStringSafe(sixth)
     };
 }
 
@@ -2886,6 +2890,7 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
         gridActionRegistry = null,
         dataCallbackRegistry = null,
         successCallbackRegistry = null,
+        validationCallbackRegistry = null,
         globalScope = typeof globalThis !== 'undefined' ? globalThis : null,
         keywordName = '_bulk_actions',
         sourceViewId = ''
@@ -3007,6 +3012,14 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             }
         }
 
+        const resolvedValidationCallback = parsed.validationCallbackName
+            ? bulkActionResolveRegistryCallback(parsed.validationCallbackName, validationCallbackRegistry, globalScope)
+            : null;
+        if (parsed.validationCallbackName && !resolvedValidationCallback) {
+            warnings.push({ type: 'action', message: `Missing validation callback: ${parsed.validationCallbackName}`, params });
+            return;
+        }
+
         actions.push({
             key: `${operation}:${formViewId}`,
             label,
@@ -3015,7 +3028,8 @@ function parseBulkActionKeywordGroups(keywordGroups, options = {}) {
             operation,
             recordFieldId: parsed.recordFieldId || defaultRecordFieldId,
             dataCallback: resolvedDataCallback,
-            successCallback: resolvedSuccessCallback
+            successCallback: resolvedSuccessCallback,
+            validationCallback: resolvedValidationCallback
         });
     });
 
@@ -4759,6 +4773,16 @@ function bulkActionGetBaseCssText() {
     margin-bottom: 10px;
 }
 
+.knackBulkActionValidation {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid rgba(180, 83, 9, 0.45);
+    background: #fff8e8;
+    color: #8a4808;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
 .knackBulkActionModalList {
     display: grid;
     gap: 8px;
@@ -5086,11 +5110,17 @@ class BulkActionModal {
         meta.dataset.knackBulkBasketMeta = '1';
         meta.className = 'knackBulkActionModalMeta';
 
+        const validation = document.createElement('div');
+        validation.dataset.knackBulkBasketValidation = '1';
+        validation.className = 'knackBulkActionValidation';
+        validation.hidden = true;
+
         const list = document.createElement('div');
         list.dataset.knackBulkBasketList = '1';
         list.className = 'knackBulkActionModalList';
 
         body.appendChild(meta);
+    body.appendChild(validation);
         body.appendChild(list);
 
         const footer = document.createElement('div');
@@ -5163,13 +5193,19 @@ class BulkActionModal {
      * @param {Object} [options={}] - Render options.
      * @returns {void}
      */
-    render({ items = [] } = {}) {
+    render({ items = [], validationMessage = '' } = {}) {
         const modal = document.getElementById(this.modalId);
         if (!modal) return;
 
         const meta = modal.querySelector('[data-knack-bulk-basket-meta="1"]');
         if (meta) {
             meta.textContent = `${items.length} item${items.length === 1 ? '' : 's'} in basket`;
+        }
+
+        const validation = modal.querySelector('[data-knack-bulk-basket-validation="1"]');
+        if (validation) {
+            validation.textContent = knackValueResolver.toStringSafe(validationMessage);
+            validation.hidden = !validation.textContent;
         }
 
         const list = modal.querySelector('[data-knack-bulk-basket-list="1"]');
@@ -5786,18 +5822,64 @@ class BulkActionGridController {
     }
 
     /**
+     * Validates one action against the current basket contents.
+     * @param {Object} action - Bulk action to validate.
+     * @returns {{valid: boolean, message: string}} Validation result.
+     */
+    getActionValidation(action) {
+        if (typeof action?.validationCallback !== 'function') {
+            return { valid: true, message: '' };
+        }
+
+        const items = this.basketItems.slice();
+        const context = {
+            action,
+            controller: this,
+            items,
+            recordIds: items.map((item) => knackValueResolver.toStringSafe(item?.recordId)).filter(Boolean),
+            records: items.map((item) => this.recordById.get(item?.recordId) || item?.sourceRecord || null).filter(Boolean)
+        };
+
+        try {
+            const result = action.validationCallback(context);
+            if (result === false) {
+                return { valid: false, message: 'This bulk action cannot be used with the selected records.' };
+            }
+            if (typeof result === 'string') {
+                return { valid: false, message: result };
+            }
+            if (result && typeof result === 'object' && result.valid === false) {
+                const hasMessage = Object.prototype.hasOwnProperty.call(result, 'message');
+                return {
+                    valid: false,
+                    message: hasMessage
+                        ? knackValueResolver.toStringSafe(result.message)
+                        : 'This bulk action cannot be used with the selected records.'
+                };
+            }
+        } catch (error) {
+            bulkActionReportError(error, { viewId: this.viewId, actionKey: action?.key }, 'Bulk action validation failed', this.bulkActionConfig.action);
+            return { valid: false, message: 'Unable to validate the selected records for this bulk action.' };
+        }
+
+        return { valid: true, message: '' };
+    }
+
+    /**
      * Returns the action configuration shown in the basket modal.
      * @returns {Array<Object>} Modal action configuration.
      */
     getBasketActionConfigs() {
         const activeAction = this.resolveActiveAction();
         if (!activeAction) return [];
+        const validation = this.getActionValidation(activeAction);
 
         return [{
             key: activeAction.key,
             label: activeAction.label,
             active: true,
-            disabled: this.runState.isRunning || !this.basketItems.length
+            disabled: this.runState.isRunning || !this.basketItems.length || !validation.valid,
+            validationMessage: validation.message
         }];
     }
 
@@ -5809,8 +5891,12 @@ class BulkActionGridController {
         this.basketItems = this.basketStore.getItems();
         const modalExists = document.getElementById(this.basketModal.modalId);
         if (modalExists) {
-            this.basketModal.render({ items: this.basketItems });
-            this.basketModal.renderActions(this.getBasketActionConfigs());
+            const actionConfigs = this.getBasketActionConfigs();
+            this.basketModal.render({
+                items: this.basketItems,
+                validationMessage: actionConfigs[0]?.validationMessage || ''
+            });
+            this.basketModal.renderActions(actionConfigs);
             this.basketModal.setProgressState(this.runState);
         }
     }
@@ -6041,12 +6127,10 @@ class BulkActionGridController {
             completionMessage: 'Waiting for form submission...'
         });
 
-        if (String(action.operation || '').toLowerCase() === 'update') {
-            bulkActionNavigateToSceneSlug(sceneSlug, { recordId: firstRecordId, params: { coBulkToken: navToken } });
-            return;
-        }
-
-        bulkActionNavigateToSceneSlug(sceneSlug, { params: { coBulkToken: navToken } });
+        bulkActionNavigateToSceneSlug(sceneSlug, {
+            recordId: firstRecordId,
+            params: { coBulkToken: navToken }
+        });
     }
 
     /**
@@ -6057,6 +6141,15 @@ class BulkActionGridController {
     async runAction(actionKey) {
         const action = this.actions.find((candidate) => knackValueResolver.toStringSafe(candidate?.key) === knackValueResolver.toStringSafe(actionKey));
         if (!action || this.runState.isRunning) return;
+
+        const validation = this.getActionValidation(action);
+        if (!validation.valid) {
+            if (validation.message) {
+                bulkActionNotify(validation.message, 'warning', this.bulkActionConfig.action);
+            }
+            this.syncBasketUi();
+            return;
+        }
 
         if (action.targetType === 'form') {
             await this.startFormAction(action);

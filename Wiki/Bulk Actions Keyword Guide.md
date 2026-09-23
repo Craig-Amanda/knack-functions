@@ -222,7 +222,7 @@ _bulk_actions=[label, field_1808], [Create Task, view_1232, field_1234]
 _bulk_actions=[label, field_1808], [record, field_1234], [Create Task, view_1232]
 ```
 
-### Create action with callback
+### Create action with callbacks
 
 ```text
 _bulk_actions=[label, field_1808], [Create Task, view_1232, field_1234, addAvailabilityToTask]
@@ -231,6 +231,16 @@ _bulk_actions=[label, field_1808], [Create Task, view_1232, field_1234, addAvail
 Important:
 - In create-mode, param 3 must be `field_####`.
 - The callback (if any) is param 4.
+
+### Optional action validator
+
+An optional final callback can validate the selected basket records before the action opens its form. Return `{ valid: false, message: '...' }` to disable that action and show the message in the basket. Return `{ valid: false, message: '' }` to keep it disabled without showing a message while a check is pending.
+
+```text
+_bulk_actions=[label, field_1808], [Create Task, view_1232, field_1234, addTaskData, taskSucceeded, validateTaskSelection]
+```
+
+For create actions, the parameter order is: record-picker field, data callback, success callback, validation callback.
 
 ---
 
