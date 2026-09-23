@@ -15779,36 +15779,37 @@ class KnackAPI {
         return formattedFilters;
     }
     /**
-     * Builds sort parameters for API requests
-     * @param {Array<Object>|Object} sorters - Sort specifications
-     * @returns {Object} - Formatted sort parameters
+     * Builds sort parameters for API requests.
+     *
+     * Knack's records API takes a single sort, as `sort_field` + `sort_order`
+     * (https://docs.knack.com/reference/sorting). The previous `sort[0][field]` /
+     * `sort[0][direction]` form was silently ignored, so the view's own sort applied instead.
+     * Only the first sorter with a field is sent; any others are ignored with a warning.
+     *
+     * @param {Array<{field: string, direction?: 'asc'|'desc', order?: 'asc'|'desc'}>|Object} sorters
+     *   Sort specification(s). `order` is accepted as an alias for `direction`.
+     * @returns {{sort_field?: string, sort_order?: 'asc'|'desc'}} - Formatted sort parameters
      * @public
      */
     buildSorters(sorters) {
         if (!sorters) return {};
 
-        // Handle single sorter object case
-        if (!Array.isArray(sorters)) {
-            sorters = [sorters];
+        const list = (Array.isArray(sorters) ? sorters : [sorters]).filter(s => s && s.field);
+        if (!list.length) return {};
+        if (list.length > 1) {
+            console.warn('[KnackAPI] Knack sorts by one field only; using the first sorter and ignoring the rest.', list);
         }
 
-        const formattedSorters = {};
+        const [sorter] = list;
+        const requested = String(sorter.direction ?? sorter.order ?? 'asc').toLowerCase();
+        if (requested !== 'asc' && requested !== 'desc') {
+            console.warn(`[KnackAPI] Unknown sort direction "${requested}" for ${sorter.field}; using "asc".`);
+        }
 
-        sorters.forEach((sorter, index) => {
-            const sorterKey = `sort[${index}]`;
-
-            if (sorter.field) {
-                formattedSorters[`${sorterKey}[field]`] = sorter.field;
-            }
-
-            if (sorter.direction) {
-                formattedSorters[`${sorterKey}[direction]`] = sorter.direction;
-            } else {
-                formattedSorters[`${sorterKey}[direction]`] = 'asc';
-            }
-        });
-
-        return formattedSorters;
+        return {
+            sort_field: sorter.field,
+            sort_order: requested === 'desc' ? 'desc' : 'asc'
+        };
     }
 
     /**
