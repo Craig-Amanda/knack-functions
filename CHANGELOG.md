@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-24
+
+<!-- pr:98 fix/knack-api-sort-params - CSWinnall -->
+- `KnackAPI.buildSorters` sent sorts as `sort[0][field]=…&sort[0][direction]=…`. Knack's records API doesn't recognise that form and **silently ignores it**, so the view's own sort applies instead.
+- **How it was found (Powderpigs Brain):** a request with `sorters: [{ field: 'field_1660', direction: 'desc' }]` and `rows: 1` against an oldest-first log view. Every save got back the class's *oldest* log row (#257 of 18) instead of the newest. The logged request URL showed `sort%5B0%5D%5Bfield%5D=field_1660&sort%5B0%5D%5Bdirection%5D=desc`.
+- Knack documents a single sort as `sort_field` + `sort_order` ([Knack sorting reference](https://docs.knack.com/reference/sorting)).
+
 ## 2026-09-23
 
 <!-- pr:97 fix/knack-api-errors-and-date-target-format - CSWinnall -->
