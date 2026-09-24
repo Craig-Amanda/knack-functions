@@ -9563,6 +9563,7 @@ function escapeHTML(text) {
  * @param {Function|null} [config.onClear=null] - Called after the clear button is clicked or controller.clear() is invoked.
  * @param {false|{header?: string, key?: string, buttonText?: string, buttonHtml?: string, buttonClassName?: string, ariaLabel?: string, title?: string, align?: string, maxWidth?: string|number|null}} [config.rowRemove=false] - Optional row-remove action column. The app remains responsible for persistence through `onRemoveRow`.
  * @param {Function|null} [config.onRemoveRow=null] - Called after a row is removed through the row-remove action or `controller.removeRow()`.
+ * @param {null|string|number|{key: string|number, order?: Array<string>|Function, label?: Function, emptyLabel?: string, className?: string}} [config.groupBy=null] - Optional row grouping. Populated rows are shown under a heading row for each distinct value of `key` (a column key/row property); the trailing empty row always stays last with no heading. Row data order and every `rowIndex` passed to callbacks are unchanged — only the display order is grouped. `order` is an array of group values (unlisted values follow alphabetically) or a `(a, b) => number` comparator; rows with a blank value are grouped last under `emptyLabel` (default 'Ungrouped'). `label(value, rows)` returns the heading text. Editing the grouped column regroups the table immediately. A string or number is shorthand for `{ key }`.
  * @param {Array<{header?: string, key?: string|number, type?: string, editable?: boolean|Function, options?: Array|Function, className?: string, inputClassName?: string, align?: string, maxWidth?: string|number|null, allowHtml?: boolean, display?: Function, parse?: Function, openDateHintKey?: string, minDate?: string|Date|null, maxDate?: string|Date|null, dateFormat?: string}>} [config.columns=[]] - Column schema. Select options may be a static array, a function returning an array, or an async function/Promise resolving to an array. `type: 'search-select'` renders a searchable input backed by a datalist while still storing the selected option value. Select options are fetched once per column and cached for the current table instance.
  * @param {Array<string>} [config.headers=[]] - Optional headers when columns are omitted.
  * @param {Array<Object|Array>} [config.rows=[]] - Prefilled row data.
@@ -9596,6 +9597,7 @@ function renderInteractiveTable(config = {}) {
         onClear: null,
         rowRemove: false,
         onRemoveRow: null,
+        groupBy: null,
         onRenderComplete: null,
         ...config,
     };
@@ -9848,6 +9850,86 @@ function renderInteractiveTable(config = {}) {
     };
 
     ensureTrailingEmptyRow();
+
+    const groupByConfig = (() => {
+        const rawGroupBy = typeof settings.groupBy === 'string' || typeof settings.groupBy === 'number'
+            ? { key: settings.groupBy }
+            : settings.groupBy;
+        if (!rawGroupBy || typeof rawGroupBy !== 'object') return null;
+        if (rawGroupBy.key === undefined || rawGroupBy.key === null || String(rawGroupBy.key) === '') return null;
+
+        return {
+            key: rawGroupBy.key,
+            order: Array.isArray(rawGroupBy.order) ? rawGroupBy.order.map((value) => String(value ?? '').trim()) : rawGroupBy.order,
+            label: typeof rawGroupBy.label === 'function' ? rawGroupBy.label : null,
+            emptyLabel: String(rawGroupBy.emptyLabel ?? 'Ungrouped'),
+            className: String(rawGroupBy.className || '').trim(),
+        };
+    })();
+
+    const isGroupByColumn = (column) => !!groupByConfig && String(column?.key) === String(groupByConfig.key);
+
+    const getGroupValue = (row) => {
+        if (!groupByConfig) return '';
+        return String(row?.[groupByConfig.key] ?? '').trim();
+    };
+
+    const compareGroupValues = (left, right) => {
+        if (left === right) return 0;
+        if (!left) return 1;
+        if (!right) return -1;
+
+        if (typeof groupByConfig.order === 'function') {
+            try {
+                return Number(groupByConfig.order(left, right)) || 0;
+            } catch (err) {
+                console.error('renderInteractiveTable groupBy.order error:', err);
+            }
+        } else if (Array.isArray(groupByConfig.order)) {
+            const rank = (value) => {
+                const index = groupByConfig.order.indexOf(value);
+                return index === -1 ? groupByConfig.order.length : index;
+            };
+            const rankDifference = rank(left) - rank(right);
+            if (rankDifference !== 0) return rankDifference;
+        }
+
+        return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+    };
+
+    /**
+     * Returns rowsData indexes in the order rows are displayed. Grouping only reorders the
+     * display; rowsData (and every rowIndex exposed to callbacks) keeps its own order.
+     */
+    const getDisplayRowIndexes = () => {
+        const indexes = rowsData.map((_, rowIndex) => rowIndex);
+        if (!groupByConfig) return indexes;
+
+        const populatedIndexes = indexes.filter((rowIndex) => isRowPopulated(rowsData[rowIndex], rowIndex));
+        const emptyIndexes = indexes.filter((rowIndex) => !isRowPopulated(rowsData[rowIndex], rowIndex));
+        populatedIndexes.sort((left, right) => {
+            return compareGroupValues(getGroupValue(rowsData[left]), getGroupValue(rowsData[right])) || left - right;
+        });
+
+        return [...populatedIndexes, ...emptyIndexes];
+    };
+
+    const renderGroupHeaderRow = (groupValue) => {
+        let label = groupValue || groupByConfig.emptyLabel;
+        if (groupByConfig.label) {
+            const groupRows = rowsData
+                .filter((row, rowIndex) => isRowPopulated(row, rowIndex) && getGroupValue(row) === groupValue)
+                .map(cloneRow);
+            try {
+                label = String(groupByConfig.label(groupValue, groupRows) ?? label);
+            } catch (err) {
+                console.error('renderInteractiveTable groupBy.label error:', err);
+            }
+        }
+
+        const classes = ['kfInteractiveTable__groupRow', groupByConfig.className].filter(Boolean).join(' ');
+        return `<tr class="${escapeHTML(classes)}" data-kf-group="${escapeHTML(groupValue)}"><td colspan="${columns.length}" style="padding:6px 8px;font-weight:600;">${escapeHTML(label)}</td></tr>`;
+    };
 
     const isEditableCell = (column, row, rowIndex) => {
         if (typeof column.editable === 'function') {
@@ -10161,7 +10243,8 @@ function renderInteractiveTable(config = {}) {
 
     const getEditableCellCoordinates = () => {
         const coordinates = [];
-        rowsData.forEach((row, rowIndex) => {
+        getDisplayRowIndexes().forEach((rowIndex) => {
+            const row = rowsData[rowIndex];
             columns.forEach((column, colIndex) => {
                 if (isEditableCell(column, row, rowIndex)) {
                     coordinates.push({ rowIndex, colIndex });
@@ -10243,7 +10326,18 @@ function renderInteractiveTable(config = {}) {
             return `<th style="${styleParts.join('; ')};">${headerHtml}</th>`;
         }).join('');
 
-        const rowsHtml = rowsData.map((row, rowIndex) => {
+        let previousGroupValue = null;
+        const rowsHtml = getDisplayRowIndexes().map((rowIndex) => {
+            const row = rowsData[rowIndex];
+            let groupHeaderHtml = '';
+            if (groupByConfig && isRowPopulated(row, rowIndex)) {
+                const groupValue = getGroupValue(row);
+                if (groupValue !== previousGroupValue) {
+                    previousGroupValue = groupValue;
+                    groupHeaderHtml = renderGroupHeaderRow(groupValue);
+                }
+            }
+
             const cellsHtml = columns.map((column, colIndex) => {
                 const editable = isEditableCell(column, row, rowIndex);
                 const value = getCellValue(row, column, colIndex);
@@ -10262,7 +10356,7 @@ function renderInteractiveTable(config = {}) {
                 return `<td class="${escapeHTML(classes)}" data-row-index="${rowIndex}" data-col-index="${colIndex}" data-col-key="${escapeHTML(String(column.key))}" style="${styleParts.join('; ')};"${tabIndexAttr}>${column.allowHtml ? formatted : escapeHTML(formatted)}</td>`;
             }).join('');
 
-            return `<tr data-row-index="${rowIndex}">${cellsHtml}</tr>`;
+            return `${groupHeaderHtml}<tr data-row-index="${rowIndex}">${cellsHtml}</tr>`;
         }).join('');
 
         const clearButtonHtml = showClearButton
@@ -10444,7 +10538,7 @@ function renderInteractiveTable(config = {}) {
             const nextValue = parseCellValue(rawValue, column, row, rowIndex);
             setCellValue(row, column, colIndex, nextValue);
             const appendedRow = ensureTrailingEmptyRow();
-            if (appendedRow) {
+            if (appendedRow || isGroupByColumn(column)) {
                 renderTable();
             } else {
                 renderCell(cell, rowIndex, colIndex);
@@ -10483,8 +10577,10 @@ function renderInteractiveTable(config = {}) {
 
         if (!restoreFocus) return;
 
-        if (cell.matches(':focus')) return;
-        focusEditableCell(cell);
+        // A regroup or appended row re-renders the table, detaching `cell`.
+        const liveCell = cell.isConnected ? cell : getCellElement(rowIndex, colIndex);
+        if (!liveCell || liveCell.matches(':focus')) return;
+        focusEditableCell(liveCell);
     };
 
     const isDatepickerOpen = (jq) => {
@@ -10907,7 +11003,7 @@ function renderInteractiveTable(config = {}) {
             const appendedRow = ensureTrailingEmptyRow();
 
             const cell = getCellElement(idx, colIndex);
-            if (cell && !appendedRow) {
+            if (cell && !appendedRow && !isGroupByColumn(column)) {
                 renderCell(cell, idx, colIndex);
             } else {
                 renderTable();
