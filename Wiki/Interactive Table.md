@@ -82,6 +82,7 @@ The main options are:
 - `onClear`: callback used when the clear button is triggered
 - `rowRemove`: optional configuration for a generic row-remove action column
 - `onRemoveRow`: callback after a row is removed; use this to queue any app-specific API delete
+- `groupBy`: optional row grouping under a heading row per distinct value of a column (see [Row grouping](#row-grouping))
 - `onRenderComplete`: callback after the first render
 
 ## Column configuration
@@ -123,6 +124,39 @@ const tableController = renderInteractiveTable({
     onRemoveRow: ({ row }) => {
         if (row.recordId) removedRecordIds.add(row.recordId);
     },
+});
+```
+
+## Row grouping
+
+Set `groupBy` to show populated rows under a heading row for each distinct value of one column. Only the display is grouped: `getData()` keeps the rows in their own order, and every `rowIndex` passed to `onChange`, `onRemoveRow` and `updateCell` still refers to that order.
+
+- `key`: the column key (row property) to group by. `groupBy: 'room'` is shorthand for `{ key: 'room' }`.
+- `order`: optional group order, either an array of values (values not listed follow alphabetically) or a `(a, b) => number` comparator. Without it, groups sort alphabetically.
+- `label(value, rows)`: optional heading text. It receives the group value and that group's rows. Defaults to the value.
+- `emptyLabel`: heading for rows with a blank group value, which are always shown last. Defaults to `'Ungrouped'`.
+- `className`: extra classes on each heading row, which always has `kfInteractiveTable__groupRow`.
+
+Changing the grouped column's value, through the editor or `updateCell`, regroups the table straight away. With `autoAppendRow`, the trailing empty row always stays at the bottom with no heading.
+
+```javascript
+const rooms = ['Lounge', 'Kitchen', 'Bathroom'];
+
+renderInteractiveTable({
+    viewId: 'view_3253',
+    autoAppendRow: true,
+    rows,
+    groupBy: {
+        key: 'room',
+        order: rooms,
+        emptyLabel: 'No room selected',
+        label: (room, groupRows) => `${room} (${groupRows.length})`,
+    },
+    columns: [
+        { header: 'Room', key: 'room', type: 'select', editable: true, options: rooms.map((room) => ({ value: room, label: room })) },
+        { header: 'SOR Code', key: 'sorCode', type: 'text', editable: true },
+        { header: 'Qty', key: 'quantity', type: 'number', editable: true },
+    ],
 });
 ```
 
