@@ -83,6 +83,7 @@ The main options are:
 - `rowRemove`: optional configuration for a generic row-remove action column
 - `onRemoveRow`: callback after a row is removed; use this to queue any app-specific API delete
 - `groupBy`: optional row grouping under a heading row per distinct value of a column (see [Row grouping](#row-grouping))
+- `rowClassName`: optional `(row, rowIndex) => string` adding CSS classes to a data row (see [Row classes](#row-classes))
 - `onRenderComplete`: callback after the first render
 
 ## Column configuration
@@ -160,7 +161,25 @@ renderInteractiveTable({
 });
 ```
 
-## Editable rules
+## Row classes
+
+Set `rowClassName` to style whole rows from their data, for example rows marked as removed. It is called with a copy of the row and its `rowIndex`, and returns a space-separated string of classes for that row's `<tr>` (return `''` for none).
+
+The classes are worked out whenever the table re-renders: `setData`, an appended row or a regroup. Editing one cell only re-renders that cell, so when a change should restyle the row, apply it with `setData`.
+
+```javascript
+const tableController = renderInteractiveTable({
+    viewId: 'view_3311',
+    rows,
+    rowClassName: (row) => (row.isRemoved ? 'my-row--removed' : ''),
+    columns,
+});
+
+// Toggle a row's removed state and restyle it
+const data = tableController.getData({ includeEmptyRows: true });
+data[rowIndex].isRemoved = !data[rowIndex].isRemoved;
+tableController.setData(data);
+```
 
 ## Header HTML
 
