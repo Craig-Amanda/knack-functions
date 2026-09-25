@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-25
+
+<!-- pr:99 feat/interactive-table-row-class - CSWinnall -->
+- **When it runs:** on every full re-render (`setData`, an appended row, a regroup). A single cell edit only redraws that cell, so an app that wants a change to restyle the row should apply it with `setData`.
+- **What it's given:** a copy of the row. Errors are logged and treated as no class.
+- **Compatibility:** fully backwards compatible. The default is `null`, which adds no class.
+- **Wiki:** new "Row classes" section in `Interactive Table.md`. I also removed an empty duplicate "Editable rules" heading.
+
 ## 2026-09-24
 
 <!-- pr:98 fix/knack-api-sort-params - CSWinnall -->

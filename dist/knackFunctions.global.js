@@ -9564,6 +9564,7 @@ function escapeHTML(text) {
  * @param {false|{header?: string, key?: string, buttonText?: string, buttonHtml?: string, buttonClassName?: string, ariaLabel?: string, title?: string, align?: string, maxWidth?: string|number|null}} [config.rowRemove=false] - Optional row-remove action column. The app remains responsible for persistence through `onRemoveRow`.
  * @param {Function|null} [config.onRemoveRow=null] - Called after a row is removed through the row-remove action or `controller.removeRow()`.
  * @param {null|string|number|{key: string|number, order?: Array<string>|Function, label?: Function, emptyLabel?: string, className?: string}} [config.groupBy=null] - Optional row grouping. Populated rows are shown under a heading row for each distinct value of `key` (a column key/row property); the trailing empty row always stays last with no heading. Row data order and every `rowIndex` passed to callbacks are unchanged — only the display order is grouped. `order` is an array of group values (unlisted values follow alphabetically) or a `(a, b) => number` comparator; rows with a blank value are grouped last under `emptyLabel` (default 'Ungrouped'). `label(value, rows)` returns the heading text. Editing the grouped column regroups the table immediately. A string or number is shorthand for `{ key }`.
+ * @param {Function|null} [config.rowClassName=null] - Optional `(row, rowIndex) => string` returning extra CSS classes for a data row's `<tr>` (e.g. to style removed or flagged rows). Re-evaluated whenever the table re-renders (`setData`, an appended row, a regroup); a single cell edit only re-renders that cell.
  * @param {Array<{header?: string, key?: string|number, type?: string, editable?: boolean|Function, options?: Array|Function, className?: string, inputClassName?: string, align?: string, maxWidth?: string|number|null, allowHtml?: boolean, display?: Function, parse?: Function, openDateHintKey?: string, minDate?: string|Date|null, maxDate?: string|Date|null, dateFormat?: string}>} [config.columns=[]] - Column schema. Select options may be a static array, a function returning an array, or an async function/Promise resolving to an array. `type: 'search-select'` renders a searchable input backed by a datalist while still storing the selected option value. Select options are fetched once per column and cached for the current table instance.
  * @param {Array<string>} [config.headers=[]] - Optional headers when columns are omitted.
  * @param {Array<Object|Array>} [config.rows=[]] - Prefilled row data.
@@ -9598,6 +9599,7 @@ function renderInteractiveTable(config = {}) {
         rowRemove: false,
         onRemoveRow: null,
         groupBy: null,
+        rowClassName: null,
         onRenderComplete: null,
         ...config,
     };
@@ -9912,6 +9914,16 @@ function renderInteractiveTable(config = {}) {
         });
 
         return [...populatedIndexes, ...emptyIndexes];
+    };
+
+    const getRowClassName = (row, rowIndex) => {
+        if (typeof settings.rowClassName !== 'function') return '';
+        try {
+            return String(settings.rowClassName(cloneRow(row), rowIndex) || '').trim();
+        } catch (err) {
+            console.error('renderInteractiveTable rowClassName error:', err);
+            return '';
+        }
     };
 
     const renderGroupHeaderRow = (groupValue) => {
@@ -10356,7 +10368,9 @@ function renderInteractiveTable(config = {}) {
                 return `<td class="${escapeHTML(classes)}" data-row-index="${rowIndex}" data-col-index="${colIndex}" data-col-key="${escapeHTML(String(column.key))}" style="${styleParts.join('; ')};"${tabIndexAttr}>${column.allowHtml ? formatted : escapeHTML(formatted)}</td>`;
             }).join('');
 
-            return `${groupHeaderHtml}<tr data-row-index="${rowIndex}">${cellsHtml}</tr>`;
+            const rowClassName = getRowClassName(row, rowIndex);
+            const rowClassAttr = rowClassName ? ` class="${escapeHTML(rowClassName)}"` : '';
+            return `${groupHeaderHtml}<tr data-row-index="${rowIndex}"${rowClassAttr}>${cellsHtml}</tr>`;
         }).join('');
 
         const clearButtonHtml = showClearButton
