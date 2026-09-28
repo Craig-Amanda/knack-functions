@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-28
+
+<!-- pr:100 update-truncateColumnsInGrid-to-keyword - amandajane-mo -->
+- Add configurable, expandable column previews through the `_trunk` keyword.
+- Preserve basic formatting and clickable links in collapsed previews, including partially displayed link labels.
+- Retain original content nodes and attached handlers when expanding.
+- Handle asynchronous content changes without duplicate controls or duplicated Knack connection metadata.
+- Add keyboard-accessible toggles, Unicode-aware character limits and observer cleanup when views are removed.
+- Document keyword setup, direct calls and JavaScript content-update behaviour.
+
 ## 2026-09-25
 
 <!-- pr:99 feat/interactive-table-row-class - CSWinnall -->
