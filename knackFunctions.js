@@ -7668,71 +7668,208 @@ function preventKtlLongPressRefresh(element) {
     });
 }
 
+const gridTruncationControllers = new WeakMap();
+const gridTruncationCells = new WeakMap();
+
 /**
- * Adds a "View More / View Less" toggle to table cells in a given view and field(s) if their text exceeds a threshold.
- * @param {string} viewId - The ID of the view containing the table.
- * @param {Object} fieldThresholds - Object where keys are character thresholds and values are arrays of field IDs.
- *   Example: { 75: [4907, 4915], 120: [4920] }
+ * Adds expandable previews to grid columns, retaining the original content nodes.
+ * Also available through the _trunk view keyword when the app's keyword handler calls
+ * truncateColumnsInGrid.fromKeywords(view, keywords). Each group accepts a field ID
+ * and an optional character limit: _trunk=[field_1234] defaults to 75 characters;
+ * _trunk=[field_1234,150],[field_5678] configures multiple columns independently.
+ * Keyword usage observes subsequent content updates; direct calls remain one-shot
+ * unless options.observe is true. Previews retain basic formatting and clickable links.
+ * @param {string} viewId - Rendered view ID.
+ * @param {Object} fieldThresholds - Character limits mapped to field IDs, e.g. {75: [1234]}.
+ * @param {Object} [options={}] - Set observe to true to follow subsequent DOM updates.
+ * @returns {Object|undefined} Controller with refresh and disconnect methods.
  */
-function truncateColumnsInGrid(viewId, fieldThresholds) {
-    const viewElement = document.getElementById(viewId);
-    if (!viewElement) return;
-
-    // Iterate over each threshold and its associated field IDs
-    Object.entries(fieldThresholds).forEach(([thresholdStr, fieldIds]) => {
-        const threshold = parseInt(thresholdStr, 10);
-        const ids = Array.isArray(fieldIds) ? fieldIds : [fieldIds];
-        ids.forEach(fieldId => {
-        const selector = `td.field_${fieldId}`;
-        const tempDiv = document.createElement('div');
-        viewElement.querySelectorAll(selector).forEach(container => {
-            const fullHTML = container.innerHTML;
-
-            // Replace <br> and block tags with a space before extracting text
-            let htmlWithSpaces = fullHTML
-                .replace(/<\/(p|div|li|h[1-6]|tr|td|th)>/gi, ' ')
-                .replace(/<(p|div|li|h[1-6]|tr|td|th)[^>]*>/gi, ' ')
-                .replace(/<\/(p|div|li|h[1-6]|tr|td|th)>/gi, ' ')
-                .replace(/<(ul|ol|table|thead|tbody|tfoot|section|article)[^>]*>/gi, ' ');
-
-            // Create a temporary element to get textContent with spaces
-            tempDiv.innerHTML = htmlWithSpaces;
-            const textContent = tempDiv.textContent;
-
-            if (textContent.length > threshold) {
-                const truncatedText = textContent.substring(0, threshold) + '...';
-             const truncatedSpan = document.createElement('span');
-                    truncatedSpan.textContent = truncatedText;
-
-                    const fullSpan = document.createElement('span');
-                    fullSpan.innerHTML = fullHTML;
-                    fullSpan.style.display = 'none';
-
-                    const toggleLink = document.createElement('a');
-                    toggleLink.href = '#';
-                    toggleLink.className = 'text-expand';
-                    toggleLink.textContent = 'View More';
-
-                    toggleLink.addEventListener('click', function (e) {
-                        e.preventDefault();
-                        e.stopPropagation(); // Prevent cell click event
-                        const isHidden = fullSpan.style.display === 'none';
-                        fullSpan.style.display = isHidden ? '' : 'none';
-                        truncatedSpan.style.display = isHidden ? 'none' : '';
-                        toggleLink.textContent = isHidden ? 'View Less' : 'View More';
-                    });
-
-                    // Clear and append
-                    container.innerHTML = '';
-                    container.appendChild(truncatedSpan);
-                    container.appendChild(fullSpan);
-                    container.appendChild(document.createTextNode(' '));
-                    container.appendChild(toggleLink);
-                }
+function truncateColumnsInGrid(viewId, fieldThresholds, options = {}) {
+    const root = document.getElementById(viewId);
+    if (!root) return;
+    let controller = gridTruncationControllers.get(root);
+    if (!controller) {
+        const limits = new Map();
+        let observing = false;
+        let selector = '';
+        const observer = new MutationObserver((mutations) => {
+            if (!root.isConnected) return disconnect();
+            const relevant = mutations.some(({ target, addedNodes }) => {
+                const element = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+                if (element?.closest('.trunk-preview, .trunk-toggle')) return false;
+                return element?.closest(selector) || Array.from(addedNodes).some(node =>
+                    node.nodeType === Node.ELEMENT_NODE && (node.matches(selector) || node.querySelector(selector)));
             });
+            if (relevant) refresh();
+        });
+        // Observe only ancestor child lists, so removing a view/scene releases its observer.
+        const removalObserver = new MutationObserver(() => {
+            if (!root.isConnected) disconnect();
+        });
+
+        /** Stops observation without changing the displayed content. @returns {void} */
+        function disconnect() {
+            observing = false;
+            observer.disconnect();
+            removalObserver.disconnect();
+        }
+
+        /** Rebuilds changed previews while excluding our own mutations. @returns {void} */
+        function refresh() {
+            observer.disconnect();
+            try {
+                for (const [fieldId, limit] of limits) {
+                    root.querySelectorAll(`td.${fieldId}, td[data-field-key="${fieldId}"]`).forEach(cell => {
+                        const columnIndex = cell.dataset.columnIndex;
+                        const content = Array.from(cell.children).find(child => child.classList.contains(`col-${columnIndex}`)) || cell;
+                        renderGridTruncation(content, limit);
+                    });
+                }
+            } finally {
+                if (observing) observer.observe(root, { childList: true, characterData: true, subtree: true });
+            }
+        }
+
+        /**
+         * Merges column limits and optionally enables observation.
+         * @param {Map<string, number>} fields - Validated column limits.
+         * @param {boolean} observe - Whether to observe updates.
+         * @returns {void}
+         */
+        function configure(fields, observe) {
+            fields.forEach((limit, field) => limits.set(field, limit));
+            selector = Array.from(limits.keys()).map(field => `td.${field}, td[data-field-key="${field}"]`).join(',');
+            if (observe && !observing && selector) {
+                observing = true;
+                for (let parent = root.parentNode; parent; parent = parent.parentNode) {
+                    removalObserver.observe(parent, { childList: true });
+                }
+            }
+            refresh();
+        }
+        controller = { configure, refresh, disconnect };
+        gridTruncationControllers.set(root, controller);
+    }
+    const fields = new Map();
+    Object.entries(fieldThresholds || {}).forEach(([value, ids]) => {
+        const limit = Number(value);
+        if (!Number.isSafeInteger(limit) || limit <= 0) return;
+        (Array.isArray(ids) ? ids : [ids]).forEach(id => {
+            const field = knackNavigator.normalizeFieldId(id);
+            if (field) fields.set(field, limit);
         });
     });
+    controller.configure(fields, options.observe === true);
+    return controller;
 }
+
+/**
+ * Renders a preview without duplicating Knack connection attributes or live controls.
+ * @param {HTMLElement} content - Column content wrapper (or the cell itself).
+ * @param {number} limit - Maximum preview character count, excluding the ellipsis.
+ * @returns {void}
+ */
+function renderGridTruncation(content, limit) {
+    const previous = gridTruncationCells.get(content);
+    const intact = previous && previous.full.parentNode === content;
+    if (intact && previous.limit === limit && previous.html === previous.full.innerHTML
+        && previous.preview.parentNode === content && previous.button.parentNode === content
+        && content.childNodes.length === 3) return;
+
+    const expanded = intact && previous.button.getAttribute('aria-expanded') === 'true';
+    if (intact) previous.full.replaceWith(...previous.full.childNodes);
+    previous?.preview.remove();
+    previous?.button.remove();
+    gridTruncationCells.delete(content);
+    // Editing widgets and media do not have a useful character-based preview.
+    if (content.querySelector('input, textarea, select, button, iframe, img, video, audio, script, style')) return;
+
+    const preview = document.createElement('div');
+    preview.className = 'trunk-preview';
+    let length = 0;
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    /**
+     * Copies text, basic formatting and link destinations, excluding IDs and Knack metadata.
+     * @param {Node} source - Original node.
+     * @param {Node} target - Preview parent.
+     * @returns {void}
+     */
+    function copyPreview(source, target) {
+        if (source.nodeType === Node.TEXT_NODE) {
+            const characters = Array.from(segmenter.segment(source.textContent), item => item.segment);
+            if (length < limit) target.append(document.createTextNode(characters.slice(0, limit - length).join('')));
+            length += characters.length;
+        } else if (source.nodeType === Node.ELEMENT_NODE) {
+            if (source.hidden || source.getAttribute('aria-hidden') === 'true' || source.style.display === 'none') return;
+            const tag = source.tagName.toLowerCase();
+            const block = /^(br|p|div|li|h[1-6])$/.test(tag);
+            if (block && length) length += 1;
+            const copy = document.createElement(/^(a|br|p|div|ul|ol|li|strong|b|em|i|u|s|span)$/.test(tag) ? tag : 'span');
+            if (tag === 'a') {
+                // Keep native navigation (including keyboard and open-in-new-tab actions)
+                // without duplicating connection IDs or application selector metadata.
+                ['href', 'target', 'rel', 'title', 'download', 'hreflang', 'referrerpolicy'].forEach(attribute => {
+                    if (source.hasAttribute(attribute)) copy.setAttribute(attribute, source.getAttribute(attribute));
+                });
+            }
+            if (length < limit) target.append(copy);
+            source.childNodes.forEach(child => copyPreview(child, copy));
+        }
+    }
+    content.childNodes.forEach(node => copyPreview(node, preview));
+    if (length <= limit) return;
+    preview.append(document.createTextNode('…'));
+
+    const full = document.createElement('div');
+    full.className = 'trunk-full';
+    full.append(...content.childNodes);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'text-expand trunk-toggle';
+    button.style.cssText = 'background:none;border:0;padding:0;font:inherit;color:#0645ad;text-decoration:underline;cursor:pointer';
+    /** Applies the expansion state to both content and button. @param {boolean} open - Expanded state. @returns {void} */
+    function setExpanded(open) {
+        full.hidden = !open;
+        full.style.display = open ? '' : 'none';
+        preview.hidden = open;
+        preview.style.display = open ? 'none' : '';
+        button.setAttribute('aria-expanded', String(open));
+        button.textContent = open ? 'View less' : 'View more';
+    }
+    button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        setExpanded(button.getAttribute('aria-expanded') !== 'true');
+    });
+    button.addEventListener('mousedown', event => event.stopPropagation());
+    setExpanded(Boolean(expanded));
+    content.append(preview, full, button);
+    gridTruncationCells.set(content, { preview, full, button, limit, html: full.innerHTML });
+}
+
+/**
+ * Applies _trunk=[field_1234],[field_5678,150] using parsed KTL keyword groups.
+ * @param {Object} view - Knack view metadata.
+ * @param {Object} keywords - Parsed view keywords.
+ * @returns {Object|undefined} Grid truncation controller.
+ */
+truncateColumnsInGrid.fromKeywords = function (view, keywords) {
+    if (view?.type !== 'table' || !keywords?._trunk) return;
+    const fields = new Map();
+    keywords._trunk.forEach(entry => {
+        if (entry.options && !ktl.core.hasRoleAccess(entry.options)) return;
+        (entry.params || []).forEach(params => {
+            if (!Array.isArray(params) || params.length < 1 || params.length > 2) return;
+            const field = knackNavigator.normalizeFieldId(params[0]);
+            const limit = params.length === 1 ? 75 : Number(params[1]);
+            if (field && Number.isSafeInteger(limit) && limit > 0) fields.set(field, limit);
+        });
+    });
+    if (!fields.size) return;
+    const thresholds = {};
+    fields.forEach((limit, field) => (thresholds[limit] ||= []).push(field));
+    return truncateColumnsInGrid(view.key, thresholds, { observe: true });
+};
 
 /**
  * Selects all text in input elements when they receive focus
