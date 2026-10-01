@@ -133,6 +133,7 @@
     "csvToArray": "readonly",
     "debounce": "readonly",
     "disableCellsByColHead": "readonly",
+    "hideEmptyGridColumns": "readonly",
     "elementHasMeaningfulValue": "readonly",
     "enhanceDateTimePicker": "readonly",
     "ensureBulkActionBaseStyles": "readonly",

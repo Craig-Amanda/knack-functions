@@ -13218,6 +13218,37 @@ function disableCellsByColHead(viewId, colHeadID) {
 }
 
 /**
+ * Hide whole table columns (header, cells and colgroup entry) when no row has a value in them.
+ * Use this instead of Knack's "hide if empty" when the column must stay visible for other cases
+ * (e.g. inline-editable columns). Call it from the view's knack-view-render handler.
+ * Columns are left alone when the grid has no rows, so headers still show on an empty table.
+ * @param {string|number} viewId - View id (e.g. 'view_123').
+ * @param {Array<string|number>} fieldIds - Field ids of the columns to hide when empty (e.g. ['field_12']).
+ * @returns {void}
+ */
+function hideEmptyGridColumns(viewId, fieldIds) {
+    const normalizedViewId = knackNavigator.normalizeViewId(viewId);
+    const viewElement = document.getElementById(normalizedViewId);
+    if (!viewElement || !Array.isArray(fieldIds)) return;
+    if (!viewElement.querySelector('tbody tr:not(.kn-table-group)')) return;
+
+    fieldIds.forEach((fieldId) => {
+        const normalizedFieldId = knackNavigator.normalizeFieldId(fieldId);
+        if (!normalizedFieldId) return;
+
+        const cells = Array.from(viewElement.querySelectorAll(`tbody td.${normalizedFieldId}`));
+        if (!cells.length || cells.some((cell) => cell.textContent.trim() !== '')) return;
+
+        const columnIndex = knackNavigator.getRenderedViewColumnIndex(normalizedViewId, normalizedFieldId);
+        const columnElements = [
+            ...viewElement.querySelectorAll(`th.${normalizedFieldId}, td.${normalizedFieldId}`),
+            ...(columnIndex > 0 ? viewElement.querySelectorAll(`colgroup col:nth-child(${columnIndex})`) : []),
+        ];
+        columnElements.forEach((element) => { element.style.display = 'none'; });
+    });
+}
+
+/**
  * Checks whether the current time is within office hours (Mon - Fri).
  * By default, office hours are Monday to Friday, 08:30 to 16:30.
  * You can optionally provide custom start and end times in 24-hour 'HH:mm' format.
