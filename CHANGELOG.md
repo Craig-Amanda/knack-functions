@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-01
+
+<!-- pr:101 Hide-Empty-Cols-by-Field - amandajane-mo -->
+- Added `hideEmptyGridColumns(viewId, fieldIds)` to hide table columns that have no data in any row.
+
 ## 2026-09-28
 
 <!-- pr:100 update-truncateColumnsInGrid-to-keyword - amandajane-mo -->
