@@ -2,7 +2,12 @@
 
 This document is the per-function plan for moving `knackFunctions.js` to a simplified, modern `knackFunctionsV2.js`. It was produced by analysing every top-level item in the bundle (310 functions, 9 classes and the constants/statements around them) against the Knack JavaScript model and current JavaScript practice, with each verdict independently checked for calling-signature compatibility and for quality.
 
-> **Status:** 14 of 27 code sections are analysed and appear below (C01-C05, C07, C20-C27). The other 13 (C06, C08-C19) are not analysed yet and are listed as pending in `knackFunctionsV2.js`. The adversarial review passes did not complete, so verdicts are single-pass and are checked by the V1/V2 differential tests instead. Source analysis files are in `docs/v2-analysis/`.
+> **Status (V2 file complete, not yet released):** `knackFunctionsV2.js` now declares every global that `knackFunctions.js` does (365 names, none pending) and loads cleanly as a classic script. Parts are rewritten and parts are copied unchanged:
+>
+> - **Rewritten without jQuery, with V1/V2 comparison tests (about 190 functions):** the foundation helpers, the form, grid, date, text, detail, clipboard, user, scene and keyword helpers, `KnackNavigator` and `KnackValueResolver` (simplified), `addConnectionIdToRecord`, `buttonToUrl` and the jQuery parts of `CAQuickToggle`. Functions whose signature or return type changed keep their old name as a `@deprecated` shim.
+> - **Copied unchanged because V1 was already modern:** the bulk actions family, `KnackAPI`, the multi-form coordinator, the Quill editor, grid truncation, the pickers, the interactive table, the file carousel, the version refresh controller, `KnackError`, the idle watchdog and the confirmation dialog. Their analyses suggest cleanups (dead code, duplicated helpers, a few bugs) that are **not applied yet**.
+> - **jQuery that remains, because Knack forces it:** Knack lifecycle events, the Chosen select plugin, and the jQuery UI date and time pickers.
+> - **Analysis coverage:** 14 of 27 sections have the full per-function analysis below (C01-C05, C07, C20-C27). The other 13 were ported from a mechanical first pass plus reading the source; the review passes did not complete.
 
 ## How to read this plan
 
@@ -10,9 +15,8 @@ This document is the per-function plan for moving `knackFunctions.js` to a simpl
 - **Signature** means more than the parameter list. It covers the global name, parameter order and defaults, accepted input types (selector string, Element, NodeList, jQuery object), return type, sync versus async behaviour, thrown errors, and DOM side effects other code or CSS depend on (class names, ids, data attributes, custom events). A change to any of these counts as a signature change and requires a shim.
 - **Shim** means the old name, with the old signature, mapping its arguments to the new implementation and returning the old type. Shims carry `@deprecated Use X` JSDoc and live together in the "Compatibility shims" section at the end of `knackFunctionsV2.js`, so a later V3 can delete them in one place.
 - **Waves** stage the work so V1 stays untouched until V2 is complete:
-  - **Wave 1 (done in this branch):** the oldest layer and the foundation helpers. Rewritten now in `knackFunctionsV2.js` with differential tests against V1.
-  - **Wave 2:** medium modules that are already modern or are coupled to a widget. Port with targeted improvements once wave 1 is stable.
-  - **Wave 3:** the large recent classes (KnackAPI, KnackNavigator, KnackValueResolver, KnackError, bulk actions, MultiFormSubmissionCoordinator, version refresh controller). Port largely as-is with dead-code removal and consistency fixes. No signature changes.
+  - **Wave 1 (done):** the oldest layer and the foundation helpers, rewritten with differential tests against V1.
+  - **Wave 2 / 3 (ported as-is, cleanups pending):** modules that were already modern or are coupled to a widget, and the large recent classes. They are copied unchanged so behaviour is identical; the cleanups in the per-function notes below are the next step.
 
 ## Principles applied
 
@@ -30,7 +34,7 @@ This document is the per-function plan for moving `knackFunctions.js` to a simpl
 2. Foundation primitives shared by everything else (see "Shared V2 primitives" below).
 3. Domain sections in the same order as V1, so a reviewer can diff section by section.
 4. Compatibility shims, grouped at the end, each tagged `@deprecated` and emitting a one-time console warning only when `window.isDeveloper` is true.
-5. Items not yet ported are listed in a `// TODO(v2-wave-N)` index at the end of the file so the ESLint globals generator can see what is still missing when it is pointed at V2.
+5. Nothing is pending any more. If a global is ever added to V1 before release, the structure test fails until V2 declares it or lists it in a `// TODO(v2-wave-N): name` line.
 
 ## Release and rollout
 

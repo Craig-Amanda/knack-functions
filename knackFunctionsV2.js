@@ -15192,6 +15192,6451 @@ function buttonToUrl({ key: viewId }, keywords) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: quill-truncation
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Quill rich-text editor (React) and grid truncation ported as-is: V1 lines 7143-7655 and 7670-7872 (analyses C09, C10; Quill needs the React/ReactDOM page globals).
+
+/**
+ * Enhanced Quill Rich Text Editor for Knack Replaces Knack's Redactor editor with Quill.js
+ */
+
+/**
+ * QuillEditor React component with optimized rendering
+ */
+function QuillEditor({ value, onChange, modules, theme = "snow", readOnly = false }) {
+    const editorRef = React.useRef(null);
+    const quillRef = React.useRef(null);
+
+    // Initialize Quill instance
+    React.useEffect(() => {
+        if (!editorRef.current || !window.Quill || quillRef.current) return;
+
+        // Create new Quill instance
+        quillRef.current = new window.Quill(editorRef.current, {
+            theme,
+            modules,
+            readOnly,
+        });
+
+        // Find the toolbar element through various fallback methods
+        const toolbar = [
+            editorRef.current.previousSibling,
+            editorRef.current.parentNode?.querySelector('.ql-toolbar'),
+            document.querySelector('.ql-toolbar')
+        ].find(el => el?.classList?.contains('ql-toolbar'));
+
+        // Detect Mac or Windows for shortcut display
+        function getModifierKey() {
+            return /Mac|iPod|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+        }
+
+        if (toolbar) {
+            const modifierKey = getModifierKey();
+            const tooltips = [
+                { selector: 'button.ql-bold', tip: `Bold (${modifierKey}+B)` },
+                { selector: 'button.ql-italic', tip: `Italic (${modifierKey}+I)` },
+                { selector: 'button.ql-underline', tip: `Underline (${modifierKey}+U)` },
+                { selector: 'button.ql-link', tip: `Insert Link (${modifierKey}+K)` },
+                { selector: 'button.ql-image', tip: 'Insert Image' },
+                { selector: 'button.ql-code-block', tip: 'Code Block' },
+                { selector: 'button.ql-blockquote', tip: 'Blockquote' },
+                { selector: 'button.ql-clean', tip: 'Remove Formatting' },
+                { selector: 'button.ql-list[value="ordered"]', tip: `Numbered List (${modifierKey}+Shift+7)` },
+                { selector: 'button.ql-list[value="bullet"]', tip: `Bullet List (${modifierKey}+Shift+8)` },
+                { selector: '.ql-color', tip: 'Text Color' },
+                { selector: '.ql-background', tip: 'Background Color' },
+                { selector: 'button.ql-script[value="sub"]', tip: `Subscript (${modifierKey}+,)` },
+                { selector: 'button.ql-script[value="super"]', tip: `Superscript (${modifierKey }+.)` },
+                { selector: '.ql-align', tip: 'Align' }
+            ];
+
+            tooltips.forEach(({ selector, tip }) => {
+                toolbar.querySelectorAll(selector).forEach(btn => {
+                    btn.title = tip;
+                });
+            });
+
+            // Add tooltips for each align option in the dropdown
+            const alignPicker = toolbar.querySelector('.ql-align.ql-picker');
+            if (alignPicker) {
+                const alignOptions = alignPicker.querySelectorAll('.ql-picker-item');
+                alignOptions.forEach(option => {
+                    switch (option.getAttribute('data-value')) {
+                        case null:
+                            option.title = 'Align Left';
+                            break;
+                        case 'center':
+                            option.title = 'Align Center';
+                            break;
+                        case 'right':
+                            option.title = 'Align Right';
+                            break;
+                        case 'justify':
+                            option.title = 'Justify';
+                            break;
+                    }
+                });
+            }
+        }
+
+        // Listen for text changes
+        quillRef.current.on('text-change', () => {
+            const html = editorRef.current.querySelector('.ql-editor').innerHTML;
+            onChange && onChange(html);
+        });
+
+        // Cleanup
+        return () => {
+            if (quillRef.current) {
+                quillRef.current.off('text-change');
+                quillRef.current = null;
+            }
+        };
+    }, [modules, theme, readOnly]);
+
+    // Handle external value changes
+    React.useEffect(() => {
+        if (
+            !quillRef.current ||
+            value === quillRef.current.root.innerHTML ||
+            quillRef.current.hasFocus()
+        ) return;
+
+        quillRef.current.clipboard.dangerouslyPasteHTML(value || '');
+    }, [value]);
+
+    // Handle readOnly changes
+    React.useEffect(() => {
+        if (quillRef.current) {
+            quillRef.current.enable(!readOnly);
+        }
+    }, [readOnly]);
+
+    return React.createElement('div', { ref: editorRef });
+}
+
+/**
+ * Custom Quill icon definitions for lists
+ */
+function initializeQuillIcons() {
+    if (!(window.Quill?.imports?.['ui/icons'])) return;
+
+    const icons = window.Quill.imports['ui/icons'];
+
+    // Improved ordered list icon
+    icons['list']['ordered'] = `
+        <svg viewBox="0 0 18 18">
+            <text x="2" y="5.5" font-size="6" font-family="Arial" fill="#444">1</text>
+            <rect class="ql-stroke" height="0.1" width="8" x="10" y="3.8" rx="0.3"></rect>
+            <text x="2" y="11.5" font-size="6" font-family="Arial" fill="#444">2</text>
+            <rect class="ql-stroke" height="0.1" width="8" x="10" y="9.6" rx="0.3"></rect>
+            <text x="2" y="17" font-size="6" font-family="Arial" fill="#444">3</text>
+            <rect class="ql-stroke" height="0.1" width="8" x="10" y="15" rx="0.3"></rect>
+        </svg>
+    `;
+
+    // Improved bullet list icon
+    icons['list']['bullet'] = `
+        <svg viewBox="0 0 18 18">
+            <circle class="ql-fill" cx="5" cy="4" r="1.5"></circle>
+            <rect class="ql-stroke" height="0.1" width="8" x="10" y="3.8" rx="0.3"></rect>
+            <circle class="ql-fill" cx="5" cy="10" r="1.5"></circle>
+            <rect class="ql-stroke" height="0.1" width="8" x="10" y="9.6" rx="0.3"></rect>
+            <circle class="ql-fill" cx="5" cy="15" r="1.5"></circle>
+            <rect class="ql-stroke" height="0.1" width="8" x="10" y="15" rx="0.3"></rect>
+        </svg>
+    `;
+}
+
+/**
+ * Modal management for link and image insertion
+ */
+const QuillModal = {
+    /**
+     * Initialize the modal just once
+     */
+    init() {
+        if (document.getElementById('quill-universal-modal')) return;
+
+        // Create modal element
+        const modal = document.createElement('div');
+        modal.id = 'quill-universal-modal';
+        modal.innerHTML = `
+            <div class="ql-modal-content">
+                <h3 id="ql-modal-title"></h3>
+                <div id="ql-modal-fields"></div>
+                <div class="ql-modal-actions">
+                    <button id="ql-modal-save" type="button">Save</button>
+                    <button id="ql-modal-unlink" type="button" style="display:none;">Unlink</button>
+                    <button id="ql-modal-cancel" type="button">Cancel</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+
+        // Add styles
+        const style = document.createElement('style');
+        style.textContent = `
+            #quill-universal-modal {
+                position: fixed; z-index: 99999; left: 0; top: 0; width: 100vw; height: 100vh; display: none;
+                background: rgba(0,0,0,0.3); align-items: center; justify-content: center;
+            }
+            .ql-modal-content {
+                background: #fff; border-radius: 8px; padding: 1.5em 2em; min-width: 320px; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+                display: flex; flex-direction: column; gap: 1.25em;
+            }
+            .ql-modal-content h3 {
+                margin: 0; padding: 0; font-size: 1.3em;
+            }
+            .ql-modal-content label {
+                display: flex; flex-direction: column; gap: 0.5em; font-weight: 500;
+                margin-bottom: 0.5em;
+            }
+            .ql-modal-content input {
+                padding: 0.5em; border: 1px solid #ccc; border-radius: 4px;
+                margin-bottom: 0;
+            }
+            .ql-modal-content small {
+                color: #666; font-size: 0.65em; margin-top: -0.7em; margin-bottom: 0.85em;
+                display: block;
+            }
+            .ql-modal-fields {
+                margin-bottom: 0.5em;
+            }
+            .ql-modal-actions {
+                display: flex; gap: 1em; justify-content: flex-end;
+                margin-top: 0.5em; padding-top: 0.5em;
+            }
+            .ql-modal-actions button {
+                padding: 0.6em 1.2em; border: none; border-radius: 4px;
+                background: #0078d4; color: #fff; font-weight: 600; cursor: pointer;
+                min-width: 80px;
+            }
+            .ql-modal-actions button#ql-modal-unlink { background: #e81123; }
+            .ql-modal-actions button#ql-modal-cancel { background: #888; }
+            .ql-modal-actions button:disabled { opacity: 0.6; cursor: not-allowed; }
+            .ql-modal-actions button:hover { filter: brightness(1.1); }
+        `;
+        document.head.appendChild(style);
+    },
+
+    /**
+     * Show the modal with the appropriate content
+     */
+    show({ type, url = '', label = '', onSave, onUnlink, onCancel }) {
+        this.init();
+
+        const modal = document.getElementById('quill-universal-modal');
+        const fields = document.getElementById('ql-modal-fields');
+        const title = document.getElementById('ql-modal-title');
+        const saveBtn = document.getElementById('ql-modal-save');
+        const unlinkBtn = document.getElementById('ql-modal-unlink');
+        const cancelBtn = document.getElementById('ql-modal-cancel');
+
+        // Set content based on type
+        if (type === 'link') {
+            title.textContent = 'Insert/Edit Link';
+            fields.innerHTML = `
+                <label>
+                    Link URL:
+                    <input type="url" id="ql-link-url" placeholder="https://example.com" value="${url}" required>
+                    <small>
+                        If you omit https:// it will be added automatically.
+                    </small>
+                </label>
+                <label>
+                    Link Text:
+                    <input type="text" id="ql-link-label" placeholder="Link text" value="${label}" required>
+                </label>
+            `;
+            unlinkBtn.style.display = '';
+        } else if (type === 'image') {
+            title.textContent = 'Insert Image';
+            fields.innerHTML = `
+                <label>
+                    Image URL:
+                    <input type="url" id="ql-image-url" placeholder="https://example.com/image.jpg" value="${url}" required>
+                </label>
+            `;
+            unlinkBtn.style.display = 'none';
+        }
+
+        modal.style.display = 'flex';
+
+        // Set up event handlers
+        saveBtn.onclick = () => {
+            if (type === 'link') {
+                let urlVal = document.getElementById('ql-link-url').value.trim();
+                let labelVal = document.getElementById('ql-link-label').value.trim();
+                if (urlVal && labelVal) {
+                    if (!/^https?:\/\//i.test(urlVal)) urlVal = 'https://' + urlVal;
+                    onSave(urlVal, labelVal);
+                    modal.style.display = 'none';
+                }
+            } else if (type === 'image') {
+                let urlVal = document.getElementById('ql-image-url').value.trim();
+                if (urlVal) {
+                    onSave(urlVal);
+                    modal.style.display = 'none';
+                }
+            }
+        };
+
+        unlinkBtn.onclick = () => {
+            onUnlink && onUnlink();
+            modal.style.display = 'none';
+        };
+
+        cancelBtn.onclick = () => {
+            onCancel && onCancel();
+            modal.style.display = 'none';
+        };
+    }
+};
+
+/**
+ * Configuration for Quill editor features
+ */
+function createQuillModules() {
+    return {
+        toolbar: {
+            container: [
+                [{ 'header': [1, 2, 3, 4, false] }, { 'font': [] }],
+                ['bold', 'italic', 'underline', { 'color': [] }, { 'background': [] }],
+                [{ 'align': [] }, { 'list': 'ordered' }, { 'list': 'bullet' }],
+                ['code-block', 'blockquote', { 'script': 'sub' }, { 'script': 'super' }],
+                ['link', 'image'],
+                ['clean']
+            ],
+            handlers: {
+                image: function () {
+                    const quill = this.quill;
+                    let savedRange = quill.getSelection();
+
+                    QuillModal.show({
+                        type: 'image',
+                        url: '',
+                        onSave: (url) => {
+                            quill.setSelection(savedRange.index, savedRange.length);
+                            quill.insertEmbed(savedRange.index, 'image', url, 'user');
+                        }
+                    });
+                },
+                link: function () {
+                    const quill = this.quill;
+                    let savedRange = quill.getSelection();
+                    if (!savedRange) return;
+
+                    // Get current link and text at selection
+                    let currentLink = '';
+                    let currentText = '';
+
+                    const [leaf] = quill.getLeaf(savedRange.index);
+                    if (leaf?.parent?.formats && typeof leaf.parent.formats === 'function') {
+                        const formats = leaf.parent.formats();
+                        if (formats.link) {
+                            currentLink = formats.link;
+                            currentText = leaf.parent.domNode.innerText || quill.getText(savedRange.index, savedRange.length);
+                        } else {
+                            currentText = quill.getText(savedRange.index, savedRange.length);
+                        }
+                    } else {
+                        currentText = quill.getText(savedRange.index, savedRange.length);
+                    }
+
+                    QuillModal.show({
+                        type: 'link',
+                        url: currentLink,
+                        label: currentText,
+                        onSave: (url, label) => {
+                            quill.setSelection(savedRange.index, savedRange.length);
+                            quill.deleteText(savedRange.index, savedRange.length);
+                            quill.insertText(savedRange.index, label, 'link', url);
+                        },
+                        onUnlink: () => {
+                            quill.setSelection(savedRange.index, savedRange.length);
+                            quill.format('link', false);
+                        }
+                    });
+                }
+            }
+        },
+        keyboard: {
+            bindings: {
+                orderedList: {
+                    key: 55, // '7'
+                    shortKey: true,
+                    shiftKey: true,
+                    handler: function () {
+                        this.quill.format('list', 'ordered');
+                    }
+                },
+                bulletList: {
+                    key: 56, // '8'
+                    shortKey: true,
+                    shiftKey: true,
+                    handler: function () {
+                        this.quill.format('list', 'bullet');
+                    }
+                }
+            }
+        }
+    };
+}
+
+/**
+ * Main function to replace Knack's rich text editor with Quill
+ */
+function replaceKnackRichTextWithQuillEditor(viewId, options = {}) {
+    // Check for required dependencies
+    if (!window.React || !window.ReactDOM || !window.Quill) {
+        console.warn("React or Quill not loaded, using Knack Redactor editor.");
+        return;
+    }
+
+    // Initialize Quill icons
+    initializeQuillIcons();
+
+    // Configure Quill
+    const quillModules = createQuillModules();
+
+    // Get container element
+    const container = viewId ? document.getElementById(viewId) : document;
+    if (!container) return;
+
+    // Get all rich text inputs in container
+    const richInputs = container.querySelectorAll?.('.kn-input-rich_text') ||
+        document.querySelectorAll('.kn-input-rich_text');
+
+    if (!richInputs.length) return;
+
+    // Process each rich text input
+    richInputs.forEach((knInput, idx) => {
+        // Idempotency guard: skip if we've already mounted a Quill editor for this input
+        if (knInput.dataset.quillMounted === 'true') return;
+        const knackEditor = knInput.querySelector('.redactor-editor');
+        const textarea = knInput.querySelector('textarea.rich_text');
+        if (!knackEditor || !textarea) return;
+
+        // Move label above the new editor
+        const label = knInput.querySelector('label.kn-label');
+        let detachedLabel = null;
+        if (label) {
+            detachedLabel = label.cloneNode(true);
+            label.remove();
+        }
+
+        // Create or get React container
+        const containerId = `${viewId || 'global'}-${idx}`;
+        let reactDiv = knInput.parentNode.querySelector(`.my-react-editor[data-for="${knInput.id}"]`);
+
+        if (!reactDiv) {
+            reactDiv = document.createElement('div');
+            reactDiv.className = 'my-react-editor';
+            reactDiv.id = `my-react-editor-${containerId}`;
+            reactDiv.setAttribute('data-for', knInput.id);
+
+            knInput.parentNode.insertBefore(reactDiv, knInput);
+            if (detachedLabel) {
+                reactDiv.parentNode.insertBefore(detachedLabel, reactDiv);
+            }
+        }
+
+        // Replace editor
+        try {
+            // Hide original editor
+            knackEditor.classList.add(CLASS_HIDDEN);
+
+            // Render Quill editor
+            if (!reactDiv._reactRootContainer) {
+                reactDiv._reactRootContainer = ReactDOM.createRoot(reactDiv);
+            }
+
+            reactDiv._reactRootContainer.render(
+                React.createElement(QuillEditor, {
+                    theme: options.theme || "snow",
+                    value: textarea.value,
+                    modules: options.modules || quillModules,
+                    readOnly: options.readOnly || false,
+                    onChange: (content) => {
+                        const isEmpty = !content || content.replace(/<[^>]+>/g, '').trim() === '';                        textarea.value = isEmpty ? '' : content;
+                        if (knackEditor) {
+                            knackEditor.innerHTML = isEmpty ? '' : content;
+                        }
+                        // Trigger events to notify Knack
+                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                        textarea.blur();
+                    }
+                })
+            );
+
+            // Mark this input as processed to avoid duplicate toolbars on subsequent calls
+            knInput.dataset.quillMounted = 'true';
+
+            // Clean up old editor elements
+            document.querySelectorAll('.redactor-toolbar, .redactor-toolbar-tooltip, .redactor-air, .redactor-dropdown')
+                .forEach(el => el.remove());
+            document.querySelectorAll('[id^="redactor-toolbar-"]')
+                .forEach(el => el.remove());
+
+        } catch (err) {
+            console.error("Failed to load QuillEditor, reverting to Knack Redactor editor:", err);
+
+            // Revert to original editor
+            const revertContainer = container.querySelectorAll ? container : document;
+            revertContainer.querySelectorAll('.redactor-editor')
+                .forEach(editor => editor.classList.remove(CLASS_HIDDEN));
+            revertContainer.querySelectorAll('.my-react-editor')
+                .forEach(div => div.remove());
+        }
+    });
+
+    return richInputs.length; // Return count of replaced editors
+}
+
+// Prevent KTL long click when Quill editor is focused or clicked
+document.addEventListener('mousedown', function(e) {
+    const isQuillFocused = document.activeElement && document.activeElement.closest('.ql-editor');
+    const isQuillClick = e.target.closest('.ql-editor, .ql-toolbar, .ql-container');
+
+    // Don't block clicks on toolbar pickers - they need to work!
+    const isPickerClick = e.target.closest('.ql-picker, .ql-picker-label, .ql-picker-options, .ql-picker-item');
+
+    if ((isQuillFocused || isQuillClick) && !isPickerClick) {
+        e.stopImmediatePropagation();
+    }
+}, true); // Use capture phase
+
+
+const gridTruncationControllers = new WeakMap();
+const gridTruncationCells = new WeakMap();
+
+/**
+ * Adds expandable previews to grid columns, retaining the original content nodes.
+ * Also available through the _trunk view keyword when the app's keyword handler calls
+ * truncateColumnsInGrid.fromKeywords(view, keywords). Each group accepts a field ID
+ * and an optional character limit: _trunk=[field_1234] defaults to 75 characters;
+ * _trunk=[field_1234,150],[field_5678] configures multiple columns independently.
+ * Keyword usage observes subsequent content updates; direct calls remain one-shot
+ * unless options.observe is true. Previews retain basic formatting and clickable links.
+ * @param {string} viewId - Rendered view ID.
+ * @param {Object} fieldThresholds - Character limits mapped to field IDs, e.g. {75: [1234]}.
+ * @param {Object} [options={}] - Set observe to true to follow subsequent DOM updates.
+ * @returns {Object|undefined} Controller with refresh and disconnect methods.
+ */
+function truncateColumnsInGrid(viewId, fieldThresholds, options = {}) {
+    const root = document.getElementById(viewId);
+    if (!root) return;
+    let controller = gridTruncationControllers.get(root);
+    if (!controller) {
+        const limits = new Map();
+        let observing = false;
+        let selector = '';
+        const observer = new MutationObserver((mutations) => {
+            if (!root.isConnected) return disconnect();
+            const relevant = mutations.some(({ target, addedNodes }) => {
+                const element = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+                if (element?.closest('.trunk-preview, .trunk-toggle')) return false;
+                return element?.closest(selector) || Array.from(addedNodes).some(node =>
+                    node.nodeType === Node.ELEMENT_NODE && (node.matches(selector) || node.querySelector(selector)));
+            });
+            if (relevant) refresh();
+        });
+        // Observe only ancestor child lists, so removing a view/scene releases its observer.
+        const removalObserver = new MutationObserver(() => {
+            if (!root.isConnected) disconnect();
+        });
+
+        /** Stops observation without changing the displayed content. @returns {void} */
+        function disconnect() {
+            observing = false;
+            observer.disconnect();
+            removalObserver.disconnect();
+        }
+
+        /** Rebuilds changed previews while excluding our own mutations. @returns {void} */
+        function refresh() {
+            observer.disconnect();
+            try {
+                for (const [fieldId, limit] of limits) {
+                    root.querySelectorAll(`td.${fieldId}, td[data-field-key="${fieldId}"]`).forEach(cell => {
+                        const columnIndex = cell.dataset.columnIndex;
+                        const content = Array.from(cell.children).find(child => child.classList.contains(`col-${columnIndex}`)) || cell;
+                        renderGridTruncation(content, limit);
+                    });
+                }
+            } finally {
+                if (observing) observer.observe(root, { childList: true, characterData: true, subtree: true });
+            }
+        }
+
+        /**
+         * Merges column limits and optionally enables observation.
+         * @param {Map<string, number>} fields - Validated column limits.
+         * @param {boolean} observe - Whether to observe updates.
+         * @returns {void}
+         */
+        function configure(fields, observe) {
+            fields.forEach((limit, field) => limits.set(field, limit));
+            selector = Array.from(limits.keys()).map(field => `td.${field}, td[data-field-key="${field}"]`).join(',');
+            if (observe && !observing && selector) {
+                observing = true;
+                for (let parent = root.parentNode; parent; parent = parent.parentNode) {
+                    removalObserver.observe(parent, { childList: true });
+                }
+            }
+            refresh();
+        }
+        controller = { configure, refresh, disconnect };
+        gridTruncationControllers.set(root, controller);
+    }
+    const fields = new Map();
+    Object.entries(fieldThresholds || {}).forEach(([value, ids]) => {
+        const limit = Number(value);
+        if (!Number.isSafeInteger(limit) || limit <= 0) return;
+        (Array.isArray(ids) ? ids : [ids]).forEach(id => {
+            const field = knackNavigator.normalizeFieldId(id);
+            if (field) fields.set(field, limit);
+        });
+    });
+    controller.configure(fields, options.observe === true);
+    return controller;
+}
+
+/**
+ * Renders a preview without duplicating Knack connection attributes or live controls.
+ * @param {HTMLElement} content - Column content wrapper (or the cell itself).
+ * @param {number} limit - Maximum preview character count, excluding the ellipsis.
+ * @returns {void}
+ */
+function renderGridTruncation(content, limit) {
+    const previous = gridTruncationCells.get(content);
+    const intact = previous && previous.full.parentNode === content;
+    if (intact && previous.limit === limit && previous.html === previous.full.innerHTML
+        && previous.preview.parentNode === content && previous.button.parentNode === content
+        && content.childNodes.length === 3) return;
+
+    const expanded = intact && previous.button.getAttribute('aria-expanded') === 'true';
+    if (intact) previous.full.replaceWith(...previous.full.childNodes);
+    previous?.preview.remove();
+    previous?.button.remove();
+    gridTruncationCells.delete(content);
+    // Editing widgets and media do not have a useful character-based preview.
+    if (content.querySelector('input, textarea, select, button, iframe, img, video, audio, script, style')) return;
+
+    const preview = document.createElement('div');
+    preview.className = 'trunk-preview';
+    let length = 0;
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    /**
+     * Copies text, basic formatting and link destinations, excluding IDs and Knack metadata.
+     * @param {Node} source - Original node.
+     * @param {Node} target - Preview parent.
+     * @returns {void}
+     */
+    function copyPreview(source, target) {
+        if (source.nodeType === Node.TEXT_NODE) {
+            const characters = Array.from(segmenter.segment(source.textContent), item => item.segment);
+            if (length < limit) target.append(document.createTextNode(characters.slice(0, limit - length).join('')));
+            length += characters.length;
+        } else if (source.nodeType === Node.ELEMENT_NODE) {
+            if (source.hidden || source.getAttribute('aria-hidden') === 'true' || source.style.display === 'none') return;
+            const tag = source.tagName.toLowerCase();
+            const block = /^(br|p|div|li|h[1-6])$/.test(tag);
+            if (block && length) length += 1;
+            const copy = document.createElement(/^(a|br|p|div|ul|ol|li|strong|b|em|i|u|s|span)$/.test(tag) ? tag : 'span');
+            if (tag === 'a') {
+                // Keep native navigation (including keyboard and open-in-new-tab actions)
+                // without duplicating connection IDs or application selector metadata.
+                ['href', 'target', 'rel', 'title', 'download', 'hreflang', 'referrerpolicy'].forEach(attribute => {
+                    if (source.hasAttribute(attribute)) copy.setAttribute(attribute, source.getAttribute(attribute));
+                });
+            }
+            if (length < limit) target.append(copy);
+            source.childNodes.forEach(child => copyPreview(child, copy));
+        }
+    }
+    content.childNodes.forEach(node => copyPreview(node, preview));
+    if (length <= limit) return;
+    preview.append(document.createTextNode('…'));
+
+    const full = document.createElement('div');
+    full.className = 'trunk-full';
+    full.append(...content.childNodes);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'text-expand trunk-toggle';
+    button.style.cssText = 'background:none;border:0;padding:0;font:inherit;color:#0645ad;text-decoration:underline;cursor:pointer';
+    /** Applies the expansion state to both content and button. @param {boolean} open - Expanded state. @returns {void} */
+    function setExpanded(open) {
+        full.hidden = !open;
+        full.style.display = open ? '' : 'none';
+        preview.hidden = open;
+        preview.style.display = open ? 'none' : '';
+        button.setAttribute('aria-expanded', String(open));
+        button.textContent = open ? 'View less' : 'View more';
+    }
+    button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        setExpanded(button.getAttribute('aria-expanded') !== 'true');
+    });
+    button.addEventListener('mousedown', event => event.stopPropagation());
+    setExpanded(Boolean(expanded));
+    content.append(preview, full, button);
+    gridTruncationCells.set(content, { preview, full, button, limit, html: full.innerHTML });
+}
+
+/**
+ * Applies _trunk=[field_1234],[field_5678,150] using parsed KTL keyword groups.
+ * @param {Object} view - Knack view metadata.
+ * @param {Object} keywords - Parsed view keywords.
+ * @returns {Object|undefined} Grid truncation controller.
+ */
+truncateColumnsInGrid.fromKeywords = function (view, keywords) {
+    if (view?.type !== 'table' || !keywords?._trunk) return;
+    const fields = new Map();
+    keywords._trunk.forEach(entry => {
+        if (entry.options && !ktl.core.hasRoleAccess(entry.options)) return;
+        (entry.params || []).forEach(params => {
+            if (!Array.isArray(params) || params.length < 1 || params.length > 2) return;
+            const field = knackNavigator.normalizeFieldId(params[0]);
+            const limit = params.length === 1 ? 75 : Number(params[1]);
+            if (field && Number.isSafeInteger(limit) && limit > 0) fields.set(field, limit);
+        });
+    });
+    if (!fields.size) return;
+    const thresholds = {};
+    fields.forEach((limit, field) => (thresholds[limit] ||= []).push(field));
+    return truncateColumnsInGrid(view.key, thresholds, { observe: true });
+};
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: pickers-options-menu
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Date/time pickers, select options and menu link filters ported as-is (jQuery only for the Knack datepicker/timepicker plugins and Chosen). Analyses C11, C12, C13.
+
+/**
+ * Attaches an accessible, dependency-free time picker to one or more text inputs.
+ * The selected value is written as `HH:mm` and dispatched through normal input/change
+ * events, so it can be used with native fields as well as custom application forms.
+ *
+ * @param {HTMLElement|string|Array|NodeList} inputOrSelector - Input(s) or selector.
+ * @param {Object} [opts={}] - Picker options.
+ * @param {number} [opts.step=15] - Minutes between displayed choices; must divide 60.
+ * @param {string} [opts.placeholder='HH:MM'] - Input placeholder when none is set.
+ * @param {string|Function|null} [opts.minTime=null] - Earliest time, or a function returning one when the picker opens.
+ * @param {boolean} [opts.allowNextDay=false] - Keep earlier clock times as `+1 day` choices for overnight ranges.
+ * @param {Function|null} [opts.onChange=null] - Called with `(value, input)` after selection.
+ * @returns {Function} Removes the pickers and listeners.
+ */
+function attachTimePicker(inputOrSelector, opts = {}) {
+    const options = Object.assign({ step: 15, placeholder: 'HH:MM', minTime: null, allowNextDay: false, onChange: null }, opts || {});
+    const step = Number.isFinite(Number(options.step)) && Number(options.step) > 0 && 60 % Number(options.step) === 0
+        ? Number(options.step)
+        : 15;
+    const inputs = typeof inputOrSelector === 'string'
+        ? Array.from(document.querySelectorAll(inputOrSelector))
+        : (NodeList.prototype.isPrototypeOf(inputOrSelector) || Array.isArray(inputOrSelector))
+            ? Array.from(inputOrSelector)
+            : inputOrSelector instanceof HTMLElement ? [inputOrSelector] : [];
+    const cleanups = [];
+
+    if (!document.getElementById('shared-time-picker-styles')) {
+        const style = document.createElement('style');
+        style.id = 'shared-time-picker-styles';
+        style.textContent = `
+            .sharedTimePicker { position: fixed; z-index: 10050; width: min(380px, calc(100vw - 24px)); max-height: 280px; overflow: auto; padding: 8px; border: 1px solid #78919a; border-radius: 4px; background: #fff; box-shadow: 0 10px 28px rgba(0, 0, 0, .22); }
+            .sharedTimePicker[hidden] { display: none; }
+            .sharedTimePicker__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+            .sharedTimePicker__option { min-height: 32px; border: 1px solid #c9d8dc; border-radius: 3px; background: #fff; color: #18323c; font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
+            .sharedTimePicker__option:hover, .sharedTimePicker__option:focus { border-color: #007f86; background: #e8f7f8; outline: 0; }
+            .sharedTimePicker__option[aria-selected="true"] { border-color: #005f66; background: #007f86; color: #fff; font-weight: 700; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    const normaliseTime = function (value) {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        const match = raw.match(/^(?:([01]?\d|2[0-3])(?::?([0-5]\d)?)?)$/);
+        if (!match) return '';
+        const hour = Number(match[1]);
+        const minute = Number(match[2] || 0);
+        return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    };
+    const getMinutes = function (value) {
+        const normalized = normaliseTime(value);
+        if (!normalized) return null;
+        const [hours, minutes] = normalized.split(':').map(Number);
+        return (hours * 60) + minutes;
+    };
+
+    inputs.forEach(function (input, index) {
+        if (!(input instanceof HTMLInputElement)) return;
+        const pickerId = `shared-time-picker-${Date.now()}-${index}`;
+        const picker = document.createElement('div');
+        picker.className = 'sharedTimePicker';
+        picker.id = pickerId;
+        picker.hidden = true;
+        picker.setAttribute('role', 'listbox');
+        picker.setAttribute('aria-label', 'Choose a time');
+        const times = Array.from({ length: (24 * 60) / step }, function (_, timeIndex) {
+            const totalMinutes = timeIndex * step;
+            return { value: `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`, totalMinutes };
+        });
+        document.body.appendChild(picker);
+
+        input.type = 'text';
+        input.autocomplete = 'off';
+        input.placeholder = input.placeholder || options.placeholder;
+        input.setAttribute('aria-haspopup', 'listbox');
+        input.setAttribute('aria-controls', pickerId);
+        input.setAttribute('aria-expanded', 'false');
+        let suppressNextFocusOpen = false;
+
+        const positionPicker = function () {
+            const rect = input.getBoundingClientRect();
+            picker.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - Math.min(380, window.innerWidth - 24) - 12))}px`;
+            picker.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 292)}px`;
+        };
+        const closePicker = function () {
+            picker.hidden = true;
+            input.setAttribute('aria-expanded', 'false');
+        };
+        const renderOptions = function () {
+            const configuredMinTime = typeof options.minTime === 'function' ? options.minTime(input) : options.minTime;
+            const minimumMinutes = getMinutes(configuredMinTime);
+            const orderedTimes = minimumMinutes === null
+                ? times.map(function (time) { return { ...time, nextDay: false }; })
+                : options.allowNextDay
+                    ? times.map(function (time) {
+                        return { ...time, nextDay: time.totalMinutes < minimumMinutes };
+                    }).sort(function (left, right) {
+                        return (left.totalMinutes + (left.nextDay ? 1440 : 0)) - (right.totalMinutes + (right.nextDay ? 1440 : 0));
+                    })
+                    : times.filter(function (time) { return time.totalMinutes >= minimumMinutes; }).map(function (time) {
+                        return { ...time, nextDay: false };
+                    });
+            picker.innerHTML = `<div class="sharedTimePicker__grid">${orderedTimes.map(function (time) {
+                const label = `${time.value}${time.nextDay ? ' +1' : ''}`;
+                const accessibleLabel = `${time.value}${time.nextDay ? ', next day' : ''}`;
+                return `<button type="button" class="sharedTimePicker__option" role="option" data-time="${time.value}" aria-label="${accessibleLabel}" aria-selected="false">${label}</button>`;
+            }).join('')}</div>`;
+        };
+        const openPicker = function () {
+            renderOptions();
+            positionPicker();
+            picker.hidden = false;
+            input.setAttribute('aria-expanded', 'true');
+            const selected = normaliseTime(input.value);
+            picker.querySelectorAll('[data-time]').forEach(function (button) {
+                button.setAttribute('aria-selected', String(button.dataset.time === selected));
+            });
+        };
+        const writeValue = function (value) {
+            input.value = value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof options.onChange === 'function') options.onChange(value, input);
+        };
+        const focusInputWithoutOpeningPicker = function () {
+            suppressNextFocusOpen = true;
+            input.focus();
+        };
+        const onFocus = function () {
+            if (suppressNextFocusOpen) {
+                suppressNextFocusOpen = false;
+                return;
+            }
+            openPicker();
+        };
+        const onBlur = function () {
+            const normalised = normaliseTime(input.value);
+            if (input.value && normalised) input.value = normalised;
+        };
+        const onPickerClick = function (event) {
+            const button = event.target.closest('.sharedTimePicker__option[data-time]');
+            if (!button) return;
+            writeValue(button.dataset.time || '');
+            closePicker();
+            focusInputWithoutOpeningPicker();
+        };
+        const onPickerKeyDown = function (event) {
+            const options = Array.from(picker.querySelectorAll('.sharedTimePicker__option'));
+            const currentIndex = options.indexOf(event.target);
+            if (currentIndex < 0) return;
+            const moveFocus = function (index) {
+                event.preventDefault();
+                options[Math.max(0, Math.min(options.length - 1, index))]?.focus();
+            };
+            if (event.key === 'ArrowRight') moveFocus(currentIndex + 1);
+            else if (event.key === 'ArrowLeft') moveFocus(currentIndex - 1);
+            else if (event.key === 'ArrowDown') moveFocus(currentIndex + 4);
+            else if (event.key === 'ArrowUp') moveFocus(currentIndex - 4);
+            else if (event.key === 'Home') moveFocus(0);
+            else if (event.key === 'End') moveFocus(options.length - 1);
+            else if (event.key === 'Escape') {
+                event.preventDefault();
+                closePicker();
+                focusInputWithoutOpeningPicker();
+            } else if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                writeValue(event.target.dataset.time || '');
+                closePicker();
+                focusInputWithoutOpeningPicker();
+            }
+        };
+        const onDocumentPointerDown = function (event) {
+            if (event.target !== input && !picker.contains(event.target)) closePicker();
+        };
+        const onKeyDown = function (event) {
+            if (event.key === 'Escape') closePicker();
+            if (event.key === 'ArrowDown' && picker.hidden) {
+                event.preventDefault();
+                openPicker();
+                picker.querySelector('.sharedTimePicker__option[aria-selected="true"], .sharedTimePicker__option')?.focus();
+            }
+        };
+        input.addEventListener('focus', onFocus);
+        input.addEventListener('blur', onBlur);
+        input.addEventListener('keydown', onKeyDown);
+        picker.addEventListener('click', onPickerClick);
+        picker.addEventListener('keydown', onPickerKeyDown);
+        document.addEventListener('pointerdown', onDocumentPointerDown, true);
+        cleanups.push(function () {
+            input.removeEventListener('focus', onFocus);
+            input.removeEventListener('blur', onBlur);
+            input.removeEventListener('keydown', onKeyDown);
+            picker.removeEventListener('click', onPickerClick);
+            picker.removeEventListener('keydown', onPickerKeyDown);
+            document.removeEventListener('pointerdown', onDocumentPointerDown, true);
+            picker.remove();
+        });
+    });
+
+    return function () { cleanups.forEach(function (cleanup) { cleanup(); }); };
+}
+
+/**
+ * Enhance a jQuery UI datepicker/timepicker input to show month/year selectors, optional date/time bounds, and apply styling.
+ * Safe no-op when required plugins are not present or the input lacks an initialized picker.
+ *
+ * Supports targeting via:
+ *  - Knack field reference: { viewId: 'view_1234', fieldId: 'field_5678' } (also supports arrays of these)
+ *  - CSS selector string
+ *  - HTMLElement
+ *  - NodeList / array of elements
+ *
+ * @param {HTMLElement|string|Object|Array|NodeList} inputOrSelector - Target(s) to enhance
+ * @param {Object} [opts] - Options
+ * @param {('date'|'time'|'datetime')} [opts.mode='date'] - Apply to date only, time only, or both
+ *
+ * @param {boolean} [opts.changeMonth=true] - Show month selector (datepicker)
+ * @param {boolean} [opts.changeYear=true] - Show year selector (datepicker)
+ * @param {number} [opts.yearsBack=80] - Years back from current year for yearRange (datepicker)
+ * @param {number} [opts.yearsForward=5] - Years forward from current year for yearRange (datepicker)
+ * @param {boolean} [opts.showButtonPanel=false] - Show Today/Done button panel (datepicker)
+ *
+ * @param {string|null} [opts.dateFormat=null] - Date format string for datepicker
+ * @param {string|Date|number|null} [opts.minDate=null] - Minimum selectable date (datepicker)
+ * @param {string|Date|number|null} [opts.maxDate=null] - Maximum selectable date (datepicker)
+ *
+ * @param {string|null} [opts.timeFormat='H:i'] - Time format string (timepicker)
+ * @param {string|Date|null} [opts.minTime=null] - Earliest selectable time (timepicker)
+ * @param {string|Date|null} [opts.maxTime=null] - Latest selectable time (timepicker)
+ * @param {Array<Array<string|Date>>|null} [opts.disableTimeRanges=null] - Disabled time ranges [[start, end], ...]
+ * @param {number|null} [opts.step=null] - Minute step for timepicker
+ * @param {Object|null} [opts.timepickerOptions=null] - Raw options forwarded to the timepicker plugin
+ *
+ * @param {boolean} [opts.waitForInit=false] - If true, retries until applied or attempts exhausted
+ * @param {number} [opts.maxAttempts=10] - Retry attempts when waitForInit is true
+ * @param {number} [opts.attemptInterval=200] - Delay between retries in ms
+ * @param {Function|null} [opts.onApplied=null] - Callback invoked per element where enhancements were applied
+ *
+ * @returns {boolean|Promise<boolean>} True if enhancement applied, false otherwise (Promise when waitForInit)
+ */
+function enhanceDateTimePicker(inputOrSelector, opts = {}) {
+    const defaults = {
+        mode: 'date',
+        changeMonth: true,
+        changeYear: true,
+        yearsBack: 80,
+        yearsForward: 5,
+        showButtonPanel: false,
+        dateFormat: null,
+        minDate: null,
+        maxDate: null,
+        waitForInit: false,
+        maxAttempts: 10,
+        attemptInterval: 200,
+        onApplied: null,
+        timeFormat: 'H:i',
+        minTime: null,
+        maxTime: null,
+        disableTimeRanges: null,
+        step: null,
+        timepickerOptions: null
+    };
+
+    const options = Object.assign({}, defaults, opts || {});
+    const mode = String(options.mode || 'date').toLowerCase();
+    const wantsDate = mode === 'date' || mode === 'datetime';
+    const wantsTime = mode === 'time' || mode === 'datetime';
+
+    const hasJquery = !!(window.jQuery && window.jQuery.fn);
+    const hasDatepicker = hasJquery && typeof window.jQuery.fn.datepicker === 'function';
+    const hasTimepicker = hasJquery && typeof window.jQuery.fn.timepicker === 'function';
+
+    if (!hasJquery || (wantsDate && !hasDatepicker) || (wantsTime && !hasTimepicker)) {
+        return options.waitForInit ? Promise.resolve(false) : false;
+    }
+
+    /**
+     * Support passing a Knack field reference object:
+     *   { viewId: 'view_8995', fieldId: 'field_4939' }
+     * We will locate #kn-input-field_4939 inside the view and then target any contained date/time inputs:
+     */
+    const resolveFromFieldRef = (ref) => {
+        if (!ref || typeof ref !== 'object') return [];
+        const viewId = ref.viewId;
+        const fieldId = ref.fieldId;
+
+        if (!viewId || !fieldId) return [];
+
+        const viewEl = document.getElementById(viewId);
+        if (!viewEl) return [];
+
+        const containerId = `kn-input-${fieldId}`;
+        const fieldContainer = viewEl.querySelector(`#${containerId}`);
+        if (!fieldContainer) return [];
+
+        const base = `${viewId}-${fieldId}`;
+        const validIds = new Set([
+            base,
+            `${base}-time`,
+            `${base}-to`,
+            `${base}-time-to`
+        ]);
+
+        const inputs = Array.from(fieldContainer.querySelectorAll('input')).filter((input) => {
+            if (!input || !input.id) return false;
+            return validIds.has(input.id);
+        });
+
+        return inputs;
+    };
+
+    const resolveDateTimeElement = () => {
+        // Array of field refs: [{viewId, fieldId}, ...]
+        if (
+            Array.isArray(inputOrSelector) &&
+            inputOrSelector.length &&
+            typeof inputOrSelector[0] === 'object' &&
+            !(inputOrSelector[0] instanceof Element)
+        ) {
+            const all = inputOrSelector.flatMap((ref) => resolveFromFieldRef(ref));
+            return Array.from(new Set(all));
+        }
+
+        // Single field ref: {viewId, fieldId}
+        if (
+            inputOrSelector &&
+            typeof inputOrSelector === 'object' &&
+            !(inputOrSelector instanceof Element) &&
+            !NodeList.prototype.isPrototypeOf(inputOrSelector)
+        ) {
+            const asRef = resolveFromFieldRef(inputOrSelector);
+            if (asRef.length) return asRef;
+        }
+
+        // Original behaviours
+        if (typeof inputOrSelector === 'string') return Array.from(document.querySelectorAll(inputOrSelector));
+        if (NodeList.prototype.isPrototypeOf(inputOrSelector) || Array.isArray(inputOrSelector)) return Array.from(inputOrSelector);
+        if (inputOrSelector instanceof Element) return [inputOrSelector];
+        return [];
+    };
+
+    const els = resolveDateTimeElement();
+    if (!els.length) return options.waitForInit ? Promise.resolve(false) : false;
+
+    // Inject datepicker styles only when date mode is requested and styles are absent
+    if (wantsDate && !document.getElementById('knack-datepicker-styles')) {
+        const style = document.createElement('style');
+        style.id = 'knack-datepicker-styles';
+        style.textContent = `
+        /* Improve month/year select styling in jQuery UI datepicker */
+        .ui-datepicker-title {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 6px;
+        }
+        .ui-datepicker select.ui-datepicker-month, .ui-datepicker select.ui-datepicker-year {
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px solid #cfcfcf;
+            background: #fff;
+            color: #222;
+            font-size: 13px;
+            margin-right: 0;
+            display: inline-block;
+        }
+        .ui-datepicker .ui-datepicker-header {
+            padding: 6px 8px;
+            background: #f5f6f7;
+            border-bottom: 1px solid rgba(0,0,0,0.06);
+        }
+        .ui-datepicker .ui-datepicker-calendar td a {
+            border-radius: 4px;
+            padding: 6px 8px;
+        }
+        .ui-datepicker .ui-datepicker-buttonpane {
+            text-align: right;
+            padding: 6px 8px;
+        }
+        `;
+        document.head.appendChild(style);
+    }
+
+    const applyToElements = () => {
+        let appliedAny = false;
+
+        els.forEach((el) => {
+            try {
+                const datepickerEl = $(el);
+                if (!datepickerEl || !datepickerEl.hasClass) return;
+
+                let appliedOnElement = false;
+
+                // Date enhancements (month/year dropdowns, min/max date, etc.)
+                if (wantsDate && datepickerEl.hasClass('hasDatepicker')) {
+                    const currentYear = new Date().getFullYear();
+                    const startYear = currentYear - Math.max(0, options.yearsBack);
+                    const endYear = currentYear + Math.max(0, options.yearsForward);
+
+                    const optObj = {
+                        changeMonth: !!options.changeMonth,
+                        changeYear: !!options.changeYear,
+                        yearRange: `${startYear}:${endYear}`,
+                        showButtonPanel: !!options.showButtonPanel
+                    };
+
+
+                    if (options.dateFormat) optObj.dateFormat = options.dateFormat;
+                    if (options.minDate !== null) optObj.minDate = options.minDate;
+                    if (options.maxDate !== null) optObj.maxDate = options.maxDate;
+
+                    datepickerEl.datepicker('option', optObj);
+                    // Ensure the "Today" button actually sets today's date (can be unreliable in Knack)
+                    if (optObj.showButtonPanel) {
+
+                        // Attach once per page load
+                        if (!document.documentElement.dataset.knackTodayHandlerAttached) {
+                            document.documentElement.dataset.knackTodayHandlerAttached = '1';
+
+                            document.addEventListener('click', (e) => {
+                                const btn = e.target && e.target.closest
+                                    ? e.target.closest('.ui-datepicker-current[data-handler="today"]')
+                                    : null;
+
+                                if (!btn) return;
+
+                                try {
+                                    const inst = window.jQuery && window.jQuery.datepicker
+                                        ? window.jQuery.datepicker._curInst
+                                        : null;
+
+                                    const input = inst && inst.input ? inst.input : null;
+                                    if (!input || !input.length) return;
+
+                                    input.datepicker('setDate', new Date());
+                                    input.datepicker('hide');
+                                } catch (err) {
+                                    // swallow
+                                }
+                            }, true);
+                        }
+                    }
+                    appliedOnElement = true;
+                }
+
+                // Time enhancements with guard to avoid affecting date inputs
+                if (wantsTime && typeof datepickerEl.timepicker === 'function') {
+                    // Prevent accidentally initialising the timepicker on date inputs
+                    const inputId = datepickerEl.attr('id') || '';
+                    const inputName = datepickerEl.attr('name') || '';
+
+                    const isTimeInput =
+                        /-time(-to)?$/.test(inputId) ||
+                        inputName === 'time' ||
+                        inputName === 'to_time' ||
+                        datepickerEl.hasClass('kn-time');
+
+                    if (!isTimeInput) return;
+
+                    const timeOpts = {};
+                    if (options.timeFormat) timeOpts.timeFormat = options.timeFormat;
+                    if (options.minTime !== null) timeOpts.minTime = options.minTime;
+                    if (options.maxTime !== null) timeOpts.maxTime = options.maxTime;
+                    if (options.disableTimeRanges) timeOpts.disableTimeRanges = options.disableTimeRanges;
+                    if (options.step) timeOpts.step = options.step;
+                    if (options.timepickerOptions && typeof options.timepickerOptions === 'object') {
+                        Object.assign(timeOpts, options.timepickerOptions);
+                    }
+
+                    if (datepickerEl.hasClass('ui-timepicker-input')) {
+                        datepickerEl.timepicker('option', timeOpts);
+                    } else {
+                        datepickerEl.timepicker(timeOpts);
+                    }
+
+                    appliedOnElement = true;
+                }
+
+                if (appliedOnElement) {
+                    appliedAny = true;
+                    if (typeof options.onApplied === 'function') {
+                        try { options.onApplied(el); } catch (e) { /* swallow */ }
+                    }
+                }
+            } catch (err) {
+                // ignore per-element failures
+            }
+        });
+
+        return appliedAny;
+    };
+
+    if (!options.waitForInit) {
+        return applyToElements();
+    }
+
+    // waitForInit: attempt to apply repeatedly until success or attempts exhausted
+    return new Promise((resolve) => {
+        let attempts = 0;
+        const tryApply = () => {
+            attempts += 1;
+            const ok = applyToElements();
+            if (ok) return resolve(true);
+            if (attempts >= Math.max(1, options.maxAttempts)) return resolve(false);
+            setTimeout(tryApply, Math.max(50, options.attemptInterval));
+        };
+        tryApply();
+    });
+}
+
+/**
+ * Updates the "Add Option" button and default/placeholder text for a select field.
+ * This updates the underlying `<select>` `data-placeholder`, any placeholder `<option>`,
+ * and the visible elements rendered by Chosen/Chosen-like containers. When `disableInitially`
+ * is true the add-option button is kept disabled until the user interacts with the select.
+ *
+ * The function includes a short retry loop to update Chosen's visible elements because
+ * Chosen may re-render shortly after initialization and overwrite the display text.
+ *
+ * @param {HTMLElement} fieldEle - The field container element (e.g. `.kn-input`)
+ * @param {string} btnStr - The button label to show for the add-option link
+ * @param {string} defaultVal - The placeholder / default text to display for the select
+ * @param {boolean} disableInitially - Whether to disable the add-option button initially
+ */
+const updateOptions = (fieldEle, btnStr, defaultVal, disableInitially) => {
+    // Find the .kn-add-option button
+    const addOption = fieldEle.querySelector('.kn-add-option');
+    if (!addOption) return;
+
+    // Find the default option and container
+    const defaultOpt = fieldEle.querySelector('.default');
+    const container = fieldEle.querySelector('.chzn-container') || fieldEle.querySelector('.select');
+
+    // Update button label and style
+    addOption.textContent = btnStr;
+    addOption.style.width = 'fit-content';
+
+    // Handle disabling/enabling logic
+    if (disableInitially) {
+        addOption.classList.add(CLASS_DISABLED);
+        if (container) {
+            // Enable when user interacts with the select field. Remove listeners once fired.
+            const searchInput = container.querySelector('.chzn-search input, .chosen-search input, .search-field input');
+            const select = fieldEle.querySelector('select');
+
+            const enableButton = () => {
+                addOption.classList.remove(CLASS_DISABLED);
+                // Remove attached listeners to avoid leaks
+                container.removeEventListener('click', enableButton);
+                if (searchInput) {
+                    searchInput.removeEventListener('focus', enableButton);
+                    searchInput.removeEventListener('input', enableButton);
+                }
+                if (select) {
+                    select.removeEventListener('change', enableButton);
+                    select.removeEventListener('focus', enableButton);
+                }
+            };
+
+            // Attach listeners
+            container.addEventListener('click', enableButton);
+            if (searchInput) {
+                searchInput.addEventListener('focus', enableButton);
+                searchInput.addEventListener('input', enableButton);
+            }
+            if (select) {
+                select.addEventListener('change', enableButton);
+                select.addEventListener('focus', enableButton);
+            }
+        }
+    } else {
+        // Insert before the first .control element if not already present
+        const control = fieldEle.querySelector('.control');
+        if (control && control.parentNode !== addOption.parentNode) {
+            control.parentNode.insertBefore(addOption, control);
+        }
+    }
+
+    const selectEl = fieldEle.querySelector('select');
+    // Preserve the rendered selection on edit forms and any prefilled selects.
+    // The custom prompt should only be pushed into Chosen when the field is blank.
+    const hasSelectedValue = selectEl
+        ? Array.from(selectEl.selectedOptions || []).some((option) => String(option?.value || '').trim())
+            || Boolean(String(selectEl.value || '').trim())
+        : false;
+
+    // Set default/placeholder on select element for Chosen and native selects
+    if (selectEl) {
+        selectEl.setAttribute('data-placeholder', defaultVal);
+
+        // If there's an explicit placeholder option, update its text/value
+        if (defaultOpt) {
+            if (defaultOpt.tagName && defaultOpt.tagName.toLowerCase() === 'option') {
+                defaultOpt.textContent = defaultVal;
+                defaultOpt.value = defaultOpt.value || '';
+            } else {
+                defaultOpt.value = defaultVal;
+            }
+        }
+    } else if (defaultOpt) {
+        defaultOpt.value = defaultVal;
+    }
+
+    // Update visible placeholder text for Chosen/Chosen-like containers
+    if (container) {
+        // Only show the custom default text when Chosen does not already have a real selection.
+        // Otherwise we can overwrite the visible label while the underlying value remains selected.
+        // Single-select chosen: update the display span and mark as default
+        const singleSpan = container.querySelector('.chzn-single span, .chosen-single span');
+        const singleAnchor = container.querySelector('.chzn-single, .chosen-single');
+        if (!hasSelectedValue && singleSpan) {
+            singleSpan.textContent = defaultVal;
+            if (singleAnchor) singleAnchor.classList.add('chzn-default', 'chosen-default');
+        } else if (hasSelectedValue && singleAnchor) {
+            singleAnchor.classList.remove('chzn-default', 'chosen-default');
+        }
+
+        // Multi-select chosen: update the default search-field input value
+        const multiDefaultInput = container.querySelector('.chzn-choices .search-field input.default, .chzn-choices .search-field input, .chosen-choices .search-field input.default, .chosen-choices .search-field input');
+        if (!hasSelectedValue && multiDefaultInput) {
+            try {
+                multiDefaultInput.value = defaultVal;
+                multiDefaultInput.setAttribute('value', defaultVal);
+            } catch (err) {
+                // ignore
+            }
+        }
+
+        // Update placeholder on the search input if present
+        const placeholderInput = container.querySelector('.chzn-search input, .chosen-search input, .search-field input');
+        if (placeholderInput && placeholderInput.placeholder !== undefined) {
+            placeholderInput.placeholder = defaultVal;
+        }
+
+        // Chosen may re-render after this function runs; retry a few times to ensure visible text is updated.
+        // Use named constants for clarity and keep retries bounded.
+        const MAX_TRIES = 6;
+        const TRY_INTERVAL = 100; // ms
+
+        const trySetChosenDisplay = (attempt = 0) => {
+            const singleSpanRetry = container.querySelector('.chzn-single span, .chosen-single span');
+            if (!hasSelectedValue && singleSpanRetry) singleSpanRetry.textContent = defaultVal;
+
+            const multiInputRetry = container.querySelector('.chzn-choices .search-field input.default, .chzn-choices .search-field input, .chosen-choices .search-field input.default, .chosen-choices .search-field input');
+            if (!hasSelectedValue && multiInputRetry) {
+                try { multiInputRetry.value = defaultVal; } catch (e) { /* ignore */ }
+            }
+
+            if (attempt < MAX_TRIES) {
+                setTimeout(() => trySetChosenDisplay(attempt + 1), TRY_INTERVAL);
+            }
+        };
+        trySetChosenDisplay();
+    }
+
+    // Add one-time event listener for registration handler. Use `once` so it auto-removes.
+    addOption.addEventListener('mousedown', (e) => {
+        waitSelector({ selector: 'li.kn-form-col', timeout: 3000 })
+            .then(() => registrationHandler(e))
+            .catch(() => {});
+    }, { once: true });
+};
+
+/**
+ * Applies menu-based filters to any target view with app-configurable behavior.
+ * Designed for generic use across table/list/details/calendar targets.
+ *
+ * @param {object} params
+ * @param {string|number} params.menuViewId - Source menu view id.
+ * @param {string|number} params.targetViewId - Target view id to filter.
+ * @param {Array<object>} [params.rules=[]] - Rule list keyed by button text or explicit ruleKey.
+ * @param {object} [params.app={}] - App-specific behavior configuration.
+ * @param {string} [params.app.namespace='kf'] - Namespace for data attributes / wire marker.
+ * @param {string} [params.app.linkSelector='a'] - Trigger selector within menu view.
+ * @param {string} [params.app.buttonSelector='a.kf-menu-button'] - Selector used for active-state toggling.
+ * @param {string} [params.app.activeClass='is-active'] - Active class name.
+ * @param {boolean} [params.app.captureClick=false] - Bind menu click handler in capture phase.
+ * @param {boolean} [params.app.stopPropagation=false] - Stop propagation for handled menu clicks.
+ * @param {boolean} [params.app.stopImmediatePropagation=false] - Stop immediate propagation for handled menu clicks.
+ * @param {boolean} [params.app.syncHash=true] - Sync URL hash/query when filters are applied.
+ * @param {boolean} [params.app.rerenderCalendar=true] - Repaint calendar views after fetch.
+ * @param {number} [params.app.calendarDeferredRenderMs=60] - Deferred calendar render delay.
+ * @param {number} [params.app.calendarFirstApplyRetryMs=180] - Extra first-apply retry delay for calendars.
+ * @param {number} [params.app.calendarFirstApplyRefetchMs=0] - Optional one-time first-apply refetch delay for calendars.
+ * @param {(ctx: { rule: object, fieldId: string, operator: string, value: any }) => (object|null)} [params.app.buildFilter]
+ *        Optional custom filter builder. Return null for "show all".
+ * @param {(element: HTMLElement) => string} [params.app.getRuleKeyFromElement] - Optional rule-key resolver for non-text triggers.
+ * @param {(ctx: { targetId: string, filter: object|null, page: number, rule: object|null, triggerElement: HTMLElement|null }) => void} [params.app.onBeforeApply]
+ * @param {(ctx: { targetId: string, filter: object|null, page: number, targetType: string, rule: object|null, triggerElement: HTMLElement|null }) => void} [params.app.onAfterApply]
+ * @param {(ctx: { targetId: string, error: Error }) => void} [params.app.onError]
+ *
+ * @example
+ * applyMenuLinkFilters({
+ *   menuViewId: 2056,
+ *   targetViewId: 1320,
+ *   rules: [
+ *     { buttonText: 'All Parks' },
+ *     { buttonText: 'Tattershall Lakes', fieldId: 407, operator: 'is', value: ['65973d...'] }
+ *   ],
+ *   app: {
+ *     namespace: 'spot',
+ *     buttonSelector: 'a.kf-menu-button',
+ *     rerenderCalendar: true,
+ *   }
+ * });
+ */
+function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} } = {}) {
+    const viewId = knackNavigator.normalizeViewId(menuViewId);
+    const targetId = knackNavigator.normalizeViewId(targetViewId);
+    if (!viewId || !targetId) return;
+
+    const config = {
+        namespace: 'kf',
+        linkSelector: 'a',
+        buttonSelector: 'a.kf-menu-button',
+        activeClass: 'is-active',
+        captureClick: false,
+        stopPropagation: false,
+        stopImmediatePropagation: false,
+        syncHash: true,
+        rerenderCalendar: true,
+        calendarDeferredRenderMs: 60,
+        calendarFirstApplyRetryMs: 180,
+        calendarFirstApplyRefetchMs: 0,
+        buildFilter: null,
+        getRuleKeyFromElement: null,
+        onBeforeApply: null,
+        onAfterApply: null,
+        onError: null,
+        ...app
+    };
+
+    const viewElement = getById(viewId);
+    if (!viewElement) return;
+    const linkSelector = config.linkSelector;
+
+    const hasValue = (value) => {
+        if (Array.isArray(value)) return value.length > 0;
+        if (value && typeof value === 'object') return Object.keys(value).length > 0;
+        if (typeof value === 'number') return Number.isFinite(value);
+        return String(value || '').trim().length > 0;
+    };
+
+    const defaultBuildFilter = ({ fieldId, operator, value, rule }) => {
+        if (!fieldId || !operator || !hasValue(value)) return null;
+
+        return {
+            match: 'and',
+            rules: [
+                {
+                    field: fieldId,
+                    operator,
+                    value,
+                    ...(rule?.valLabel ? { val_label: rule.valLabel } : {}),
+                    ...(rule?.fieldName ? { field_name: rule.fieldName } : {})
+                }
+            ]
+        };
+    };
+
+    const buildFilterFn = typeof config.buildFilter === 'function'
+        ? config.buildFilter
+        : defaultBuildFilter;
+
+    const getRuleKeyForRule = (rule) => {
+        if (!rule || typeof rule !== 'object') return null;
+        if (rule.ruleKey !== undefined && rule.ruleKey !== null) return String(rule.ruleKey);
+
+        const buttonText = String(rule.buttonText || '').trim();
+        return buttonText.length ? buttonText : null;
+    };
+
+    const getRuleKeyFromElement = (element) => {
+        if (!(element instanceof HTMLElement)) return null;
+
+        if (typeof config.getRuleKeyFromElement === 'function') {
+            const customRuleKey = config.getRuleKeyFromElement(element);
+            return customRuleKey === undefined || customRuleKey === null ? null : String(customRuleKey);
+        }
+
+        const buttonText = element.textContent?.trim() || '';
+        return buttonText.length ? buttonText : null;
+    };
+
+    const ruleMap = new Map(
+        (Array.isArray(rules) ? rules : [])
+            .map((rule) => [getRuleKeyForRule(rule), rule])
+            .filter(([label]) => label !== null)
+    );
+    if (!ruleMap.size) return;
+
+    const targetViewKey = targetId.replace('view_', '');
+    const wireAttr = `data-${config.namespace}-menu-filter-wired`;
+    let hasAppliedOnce = false;
+
+    const getTargetViewContext = () => {
+        const targetView = Knack?.views?.[targetId];
+        const targetModel = targetView?.model || Knack?.models?.[targetId];
+        const targetType = targetView?.model?.view?.type || targetView?.model?.attributes?.type || '';
+        return { targetView, targetModel, targetType };
+    };
+
+    const buildHref = (query) => {
+        const base = String(window.location.href || '').split('?')[0];
+        if (!base) return '';
+        return query ? `${base}?${query}` : base;
+    };
+
+    const rerenderCalendarIfNeeded = (targetView) => {
+        if (!config.rerenderCalendar) return;
+
+        const targetType = targetView?.model?.view?.type || targetView?.model?.attributes?.type;
+        if (targetType !== 'calendar' || typeof targetView?.renderRecords !== 'function') return;
+
+        if (typeof targetView?.model?.trigger === 'function') {
+            targetView.model.trigger('change');
+        }
+        if (typeof targetView?.renderView === 'function') {
+            targetView.renderView();
+        }
+        targetView.renderRecords();
+
+        const deferredMs = Number(config.calendarDeferredRenderMs) || 0;
+        if (deferredMs > 0) {
+            setTimeout(() => {
+                try {
+                    targetView.renderRecords();
+                } catch (_) {}
+            }, deferredMs);
+        }
+    };
+
+    const applyFilterInPlace = (filter, page = 1, rule = null, triggerElement = null) => {
+        const sceneHash = Knack.getSceneHash();
+        const query = filter && Array.isArray(filter.rules) && filter.rules.length
+            ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
+            : `view_${targetViewKey}_page=${page}`;
+
+        if (typeof config.onBeforeApply === 'function') {
+            try { config.onBeforeApply({ targetId, filter, page, rule, triggerElement }); } catch (_) {}
+        }
+
+        if (config.syncHash) {
+            Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
+            Knack.setHashVars();
+        }
+
+        try {
+            const { targetView, targetModel, targetType } = getTargetViewContext();
+            if (!targetModel) return;
+
+            targetModel.setFilters(filter || {});
+            targetModel.fetch({
+                success: () => {
+                    rerenderCalendarIfNeeded(targetView);
+
+                    const firstRetryMs = Number(config.calendarFirstApplyRetryMs) || 0;
+                    const firstRefetchMs = Number(config.calendarFirstApplyRefetchMs) || 0;
+                    if (!hasAppliedOnce && targetType === 'calendar' && firstRefetchMs > 0) {
+                        hasAppliedOnce = true;
+                        setTimeout(() => {
+                            applyFilterInPlace(filter, page);
+                        }, firstRefetchMs);
+                    } else if (!hasAppliedOnce && targetType === 'calendar' && firstRetryMs > 0) {
+                        hasAppliedOnce = true;
+                        setTimeout(() => {
+                            rerenderCalendarIfNeeded(targetView);
+                        }, firstRetryMs);
+                    }
+
+                    if (typeof config.onAfterApply === 'function') {
+                        try { config.onAfterApply({ targetId, filter, page, targetType, rule, triggerElement }); } catch (_) {}
+                    }
+
+                    if (Knack.hideSpinner) Knack.hideSpinner();
+                },
+                error: () => {
+                    if (Knack.hideSpinner) Knack.hideSpinner();
+                }
+            });
+        } catch (error) {
+            if (typeof config.onError === 'function') {
+                try {
+                    config.onError({ targetId, error });
+                    return;
+                } catch (_) {}
+            }
+            console.warn('[KF] Menu filter apply failed', { targetId, error });
+        }
+    };
+
+    const triggers = Array.from(viewElement.querySelectorAll(linkSelector));
+    triggers.forEach((triggerElement) => {
+        const ruleKey = getRuleKeyFromElement(triggerElement);
+        if (ruleKey === null || !ruleMap.has(ruleKey)) return;
+
+        const rule = ruleMap.get(ruleKey);
+        const fieldId = rule?.fieldId ? knackNavigator.normalizeFieldId(rule.fieldId) : '';
+        const operator = String(rule?.operator || '').trim();
+        const value = rule?.value;
+        const page = Number.isFinite(Number(rule?.page)) ? Number(rule.page) : 1;
+        const filter = buildFilterFn({ rule, fieldId, operator, value });
+
+        if (!filter) {
+            if (triggerElement instanceof HTMLAnchorElement) {
+                triggerElement.setAttribute('href', buildHref(''));
+            }
+            triggerElement.dataset.filterTarget = targetId;
+            triggerElement.dataset.filter = '';
+            triggerElement.dataset.filterPage = String(page);
+            triggerElement.dataset.filterRuleKey = ruleKey;
+            return;
+        }
+
+        const filterParam = encodeURIComponent(JSON.stringify(filter));
+        const query = `view_${targetViewKey}_filters=${filterParam}&view_${targetViewKey}_page=${page}`;
+        if (triggerElement instanceof HTMLAnchorElement) {
+            triggerElement.setAttribute('href', buildHref(query));
+        }
+        triggerElement.dataset.filterTarget = targetId;
+        triggerElement.dataset.filter = JSON.stringify(filter);
+        triggerElement.dataset.filterPage = String(page);
+        triggerElement.dataset.filterRuleKey = ruleKey;
+    });
+
+    if (viewElement.getAttribute(wireAttr) === 'true') return;
+
+    viewElement.addEventListener('click', (event) => {
+        const triggerElement = event.target.closest(linkSelector);
+        if (!(triggerElement instanceof HTMLElement) || triggerElement.dataset.filterTarget !== targetId) return;
+
+        event.preventDefault();
+        if (config.stopPropagation) {
+            event.stopPropagation();
+        }
+        if (config.stopImmediatePropagation) {
+            event.stopImmediatePropagation();
+        }
+
+        const page = Number(triggerElement.dataset.filterPage) || 1;
+        const filterJson = triggerElement.dataset.filter || '';
+        const filter = filterJson ? JSON.parse(filterJson) : null;
+        const ruleKey = triggerElement.dataset.filterRuleKey;
+        const rule = typeof ruleKey === 'string' && ruleMap.has(ruleKey) ? ruleMap.get(ruleKey) : null;
+
+        applyFilterInPlace(filter, page, rule, triggerElement);
+
+        if (config.buttonSelector) {
+            viewElement.querySelectorAll(config.buttonSelector).forEach((btn) => {
+                btn.classList.remove(config.activeClass);
+            });
+            triggerElement.classList.add(config.activeClass);
+        }
+    }, !!config.captureClick);
+
+    viewElement.setAttribute(wireAttr, 'true');
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: interactive-table
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Interactive table ported as-is (analysis C14: modern, no jQuery dependency).
+
+/**
+ * Renders a generic interactive table into a Knack view and provides a small controller API.
+ *
+ * Use cases:
+ * - Render prefilled data in a table
+ * - Configure per-column editability
+ * - Support typed editors (text, date, number, select, checkbox)
+ * - Receive change callbacks whenever a cell is updated
+ *
+ * @param {Object} config - Table configuration.
+ * @param {string} config.viewId - View id where the table should be inserted (e.g. 'view_2214').
+ * @param {string} [config.containerSelector='.view-content'] - Selector inside the view for insertion.
+ * @param {string} [config.tableClassName=''] - One or more space-separated CSS classes appended to the default 'kn-table knTable' classes (e.g. 'is-bordered my-class another-class').
+ * @param {string} [config.dateLocale='uk'] - Date locale for picker format and slash-separated date interpretation.
+ *   'uk' (default): dd/mm/yyyy display; picker format 'dd/mm/yy'.
+ *   'us': mm/dd/yyyy display; picker format 'mm/dd/yy'.
+ *   This sets the default column dateFormat and teaches the internal date converters to read/write
+ *   the correct field order. Individual columns can still override dateFormat directly.
+ * @param {'none'|'manual'|'auto'} [config.saveMode='manual'] - Save behaviour. `manual` renders a submit button, `auto` is reserved for save-as-you-go flows, `none` disables built-in save UI.
+ * @param {string} [config.saveButtonText='Save'] - Text shown on the manual submit button.
+ * @param {string} [config.saveButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-primary` button classes.
+ * @param {string} [config.actionContainerSelector=''] - Optional selector for a dedicated container in the view where table-generated Save and Clear controls render.
+ * @param {boolean} [config.showClearButton=false] - Whether to render a clear button in the top-right table toolbar.
+ * @param {string} [config.clearButtonText='Clear'] - Text shown on the clear button.
+ * @param {string} [config.clearButtonClassName=''] - Extra CSS classes appended to the default `kn-button is-secondary` clear button classes.
+ * @param {boolean} [config.confirmOnClear=true] - Whether clearing rows should ask for confirmation first.
+ * @param {string} [config.clearConfirmMessage='Are you sure you want to clear all rows? This will remove any unsaved table data.'] - Confirmation text shown before rows are cleared.
+ * @param {Function|null} [config.onSubmit=null] - Called when the manual submit button is clicked or controller.submit() is invoked.
+ * @param {Function|null} [config.onClear=null] - Called after the clear button is clicked or controller.clear() is invoked.
+ * @param {false|{header?: string, key?: string, buttonText?: string, buttonHtml?: string, buttonClassName?: string, ariaLabel?: string, title?: string, align?: string, maxWidth?: string|number|null}} [config.rowRemove=false] - Optional row-remove action column. The app remains responsible for persistence through `onRemoveRow`.
+ * @param {Function|null} [config.onRemoveRow=null] - Called after a row is removed through the row-remove action or `controller.removeRow()`.
+ * @param {null|string|number|{key: string|number, order?: Array<string>|Function, label?: Function, emptyLabel?: string, className?: string}} [config.groupBy=null] - Optional row grouping. Populated rows are shown under a heading row for each distinct value of `key` (a column key/row property); the trailing empty row always stays last with no heading. Row data order and every `rowIndex` passed to callbacks are unchanged — only the display order is grouped. `order` is an array of group values (unlisted values follow alphabetically) or a `(a, b) => number` comparator; rows with a blank value are grouped last under `emptyLabel` (default 'Ungrouped'). `label(value, rows)` returns the heading text. Editing the grouped column regroups the table immediately. A string or number is shorthand for `{ key }`.
+ * @param {Function|null} [config.rowClassName=null] - Optional `(row, rowIndex) => string` returning extra CSS classes for a data row's `<tr>` (e.g. to style removed or flagged rows). Re-evaluated whenever the table re-renders (`setData`, an appended row, a regroup); a single cell edit only re-renders that cell.
+ * @param {Array<{header?: string, key?: string|number, type?: string, editable?: boolean|Function, options?: Array|Function, className?: string, inputClassName?: string, align?: string, maxWidth?: string|number|null, allowHtml?: boolean, display?: Function, parse?: Function, openDateHintKey?: string, minDate?: string|Date|null, maxDate?: string|Date|null, dateFormat?: string}>} [config.columns=[]] - Column schema. Select options may be a static array, a function returning an array, or an async function/Promise resolving to an array. `type: 'search-select'` renders a searchable input backed by a datalist while still storing the selected option value. Select options are fetched once per column and cached for the current table instance.
+ * @param {Array<string>} [config.headers=[]] - Optional headers when columns are omitted.
+ * @param {Array<Object|Array>} [config.rows=[]] - Prefilled row data.
+ * @param {Function|null} [config.onChange=null] - Called after a cell value changes.
+ * @param {Function|null} [config.onRenderComplete=null] - Called after initial render.
+ * @returns {{getData: Function, setData: Function, updateCell: Function, destroy: Function}|null}
+ */
+function renderInteractiveTable(config = {}) {
+    const settings = {
+        viewId: '',
+        containerSelector: '.view-content',
+        tableClassName: '',
+        dateLocale: 'uk',
+        saveMode: 'manual',
+        saveButtonText: 'Save',
+        saveButtonClassName: '',
+        actionContainerSelector: '',
+        showClearButton: false,
+        clearButtonText: 'Clear',
+        clearButtonClassName: '',
+        confirmOnClear: true,
+        clearConfirmMessage: 'Are you sure you want to clear all rows? This will remove any unsaved table data.',
+        autoAppendRow: false,
+        createEmptyRow: null,
+        isRowPopulated: null,
+        columns: [],
+        headers: [],
+        rows: [],
+        onChange: null,
+        onSubmit: null,
+        onClear: null,
+        rowRemove: false,
+        onRemoveRow: null,
+        groupBy: null,
+        rowClassName: null,
+        onRenderComplete: null,
+        ...config,
+    };
+
+    const viewId = String(settings.viewId || '').trim();
+    if (!viewId) {
+        console.warn('renderInteractiveTable: missing viewId.');
+        return null;
+    }
+
+    const viewEl = document.getElementById(viewId);
+    if (!viewEl) {
+        console.warn('renderInteractiveTable: view element not found:', viewId);
+        return null;
+    }
+
+    const host = settings.containerSelector
+        ? (viewEl.querySelector(settings.containerSelector) || viewEl)
+        : viewEl;
+    const actionContainerSelector = String(settings.actionContainerSelector || '').trim();
+    const actionContainer = actionContainerSelector
+        ? viewEl.querySelector(actionContainerSelector)
+        : null;
+    const usesExternalActionContainer = actionContainer instanceof HTMLElement && actionContainer !== host;
+
+    const cloneRow = (row) => {
+        if (Array.isArray(row)) return row.slice();
+        if (row && typeof row === 'object') return { ...row };
+        return {};
+    };
+
+    let rowsData = Array.isArray(settings.rows) ? settings.rows.map(cloneRow) : [];
+
+    const rowRemoveConfig = settings.rowRemove && typeof settings.rowRemove === 'object'
+        ? {
+            header: '',
+            key: '__kfRemoveRow',
+            buttonText: 'Remove',
+            buttonHtml: '',
+            buttonClassName: '',
+            ariaLabel: 'Remove row',
+            title: 'Remove row',
+            align: 'center',
+            maxWidth: 90,
+            ...settings.rowRemove,
+        }
+        : null;
+
+    const normaliseColumns = () => {
+        let normalisedColumns;
+        if (Array.isArray(settings.columns) && settings.columns.length) {
+            normalisedColumns = settings.columns.map((column, index) => ({
+                header: '',
+                key: index,
+                type: 'text',
+                editable: false,
+                options: [],
+                className: '',
+                inputClassName: '',
+                align: 'left',
+                maxWidth: null,
+                allowHtml: false,
+                display: null,
+                parse: null,
+                openDateHintKey: '',
+                minDate: null,
+                maxDate: null,
+                dateFormat: settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy',
+                ...column,
+            }));
+        } else {
+            const headers = Array.isArray(settings.headers) ? settings.headers : [];
+            normalisedColumns = headers.map((header, index) => ({
+                header: String(header || ''),
+                key: index,
+                type: 'text',
+                editable: false,
+                options: [],
+                className: '',
+                inputClassName: '',
+                align: 'left',
+                maxWidth: null,
+                allowHtml: false,
+                display: null,
+                parse: null,
+                openDateHintKey: '',
+                minDate: null,
+                maxDate: null,
+                dateFormat: settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy',
+            }));
+        }
+
+        if (!rowRemoveConfig) return normalisedColumns;
+
+        return [...normalisedColumns, {
+            header: rowRemoveConfig.header,
+            key: rowRemoveConfig.key,
+            type: 'text',
+            editable: false,
+            allowHtml: true,
+            align: rowRemoveConfig.align,
+            maxWidth: rowRemoveConfig.maxWidth,
+            display: (_, row, rowIndex) => {
+                if (!isRowPopulated(row, rowIndex)) return '';
+                const buttonContent = rowRemoveConfig.buttonHtml || escapeHTML(rowRemoveConfig.buttonText);
+                const buttonClassName = ['kfInteractiveTable__removeRow', rowRemoveConfig.buttonClassName]
+                    .filter(Boolean)
+                    .join(' ');
+                return `<button type="button" class="${escapeHTML(buttonClassName)}" data-kf-interactive-table-remove-row="true" aria-label="${escapeHTML(rowRemoveConfig.ariaLabel)}" title="${escapeHTML(rowRemoveConfig.title)}">${buttonContent}</button>`;
+            },
+        }];
+    };
+
+    const columns = normaliseColumns();
+    const colIndexByKey = new Map(columns.map((col, index) => [String(col.key), index]));
+    const selectOptionsCache = new Map();
+    let isSubmitting = false;
+    let controller = null;
+    let pendingEditorNavigation = null;
+
+    const useArrayRowShape = (() => {
+        if (Array.isArray(rowsData[0])) return true;
+        if (rowsData[0] && typeof rowsData[0] === 'object') return false;
+        return columns.every((column, index) => String(column.key) === String(index));
+    })();
+
+    const toCssSize = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return `${value}px`;
+        }
+        const text = String(value ?? '').trim();
+        return text || '';
+    };
+
+    const getCellValue = (row, column, colIndex) => {
+        if (typeof column.getValue === 'function') {
+            return column.getValue(row, colIndex);
+        }
+        if (Array.isArray(row)) {
+            const idx = Number(column.key);
+            return Number.isFinite(idx) ? row[idx] : row[colIndex];
+        }
+        return row?.[column.key];
+    };
+
+    const setCellValue = (row, column, colIndex, value) => {
+        if (Array.isArray(row)) {
+            const idx = Number(column.key);
+            if (Number.isFinite(idx)) {
+                row[idx] = value;
+            } else {
+                row[colIndex] = value;
+            }
+            return;
+        }
+        row[column.key] = value;
+    };
+
+    const createDefaultCellValue = (column) => {
+        if (Object.prototype.hasOwnProperty.call(column, 'emptyValue')) {
+            return column.emptyValue;
+        }
+        if (column.type === 'checkbox') return false;
+        return '';
+    };
+
+    const createEmptyRowData = () => {
+        if (typeof settings.createEmptyRow === 'function') {
+            try {
+                const customRow = settings.createEmptyRow({
+                    viewId,
+                    host,
+                    columns: columns.slice(),
+                    data: rowsData.map(cloneRow),
+                });
+                if (Array.isArray(customRow)) return customRow.slice();
+                if (customRow && typeof customRow === 'object') return { ...customRow };
+            } catch (err) {
+                console.error('renderInteractiveTable createEmptyRow error:', err);
+            }
+        }
+
+        if (useArrayRowShape) {
+            return columns.map((column) => createDefaultCellValue(column));
+        }
+
+        return columns.reduce((nextRow, column, colIndex) => {
+            nextRow[column.key] = createDefaultCellValue(column, colIndex);
+            return nextRow;
+        }, {});
+    };
+
+    const isMeaningfulCellValue = (value, column) => {
+        if (column?.type === 'checkbox') return value === true;
+        if (Array.isArray(value)) return value.length > 0;
+        if (typeof value === 'number') return Number.isFinite(value);
+        if (value == null) return false;
+        return String(value).trim() !== '';
+    };
+
+    const defaultIsRowPopulated = (row, rowIndex) => {
+        return columns.some((column, colIndex) => {
+            const value = getCellValue(row, column, colIndex);
+            return isMeaningfulCellValue(value, column, row, rowIndex);
+        });
+    };
+
+    const isRowPopulated = (row, rowIndex) => {
+        if (typeof settings.isRowPopulated === 'function') {
+            try {
+                return !!settings.isRowPopulated(row, rowIndex, rowsData.map(cloneRow));
+            } catch (err) {
+                console.error('renderInteractiveTable isRowPopulated error:', err);
+            }
+        }
+        return defaultIsRowPopulated(row, rowIndex);
+    };
+
+    const getRawData = () => rowsData.map(cloneRow);
+
+    const getData = (options = {}) => {
+        if (options && options.includeEmptyRows === true) {
+            return getRawData();
+        }
+
+        if (!settings.autoAppendRow) {
+            return getRawData();
+        }
+
+        return rowsData
+            .filter((row, rowIndex) => isRowPopulated(row, rowIndex))
+            .map(cloneRow);
+    };
+
+    const ensureTrailingEmptyRow = () => {
+        if (!settings.autoAppendRow) return false;
+
+        if (!rowsData.length) {
+            rowsData.push(createEmptyRowData());
+            return true;
+        }
+
+        const lastRowIndex = rowsData.length - 1;
+        if (isRowPopulated(rowsData[lastRowIndex], lastRowIndex)) {
+            rowsData.push(createEmptyRowData());
+            return true;
+        }
+
+        return false;
+    };
+
+    ensureTrailingEmptyRow();
+
+    const groupByConfig = (() => {
+        const rawGroupBy = typeof settings.groupBy === 'string' || typeof settings.groupBy === 'number'
+            ? { key: settings.groupBy }
+            : settings.groupBy;
+        if (!rawGroupBy || typeof rawGroupBy !== 'object') return null;
+        if (rawGroupBy.key === undefined || rawGroupBy.key === null || String(rawGroupBy.key) === '') return null;
+
+        return {
+            key: rawGroupBy.key,
+            order: Array.isArray(rawGroupBy.order) ? rawGroupBy.order.map((value) => String(value ?? '').trim()) : rawGroupBy.order,
+            label: typeof rawGroupBy.label === 'function' ? rawGroupBy.label : null,
+            emptyLabel: String(rawGroupBy.emptyLabel ?? 'Ungrouped'),
+            className: String(rawGroupBy.className || '').trim(),
+        };
+    })();
+
+    const isGroupByColumn = (column) => !!groupByConfig && String(column?.key) === String(groupByConfig.key);
+
+    const getGroupValue = (row) => {
+        if (!groupByConfig) return '';
+        return String(row?.[groupByConfig.key] ?? '').trim();
+    };
+
+    const compareGroupValues = (left, right) => {
+        if (left === right) return 0;
+        if (!left) return 1;
+        if (!right) return -1;
+
+        if (typeof groupByConfig.order === 'function') {
+            try {
+                return Number(groupByConfig.order(left, right)) || 0;
+            } catch (err) {
+                console.error('renderInteractiveTable groupBy.order error:', err);
+            }
+        } else if (Array.isArray(groupByConfig.order)) {
+            const rank = (value) => {
+                const index = groupByConfig.order.indexOf(value);
+                return index === -1 ? groupByConfig.order.length : index;
+            };
+            const rankDifference = rank(left) - rank(right);
+            if (rankDifference !== 0) return rankDifference;
+        }
+
+        return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+    };
+
+    /**
+     * Returns rowsData indexes in the order rows are displayed. Grouping only reorders the
+     * display; rowsData (and every rowIndex exposed to callbacks) keeps its own order.
+     */
+    const getDisplayRowIndexes = () => {
+        const indexes = rowsData.map((_, rowIndex) => rowIndex);
+        if (!groupByConfig) return indexes;
+
+        const populatedIndexes = indexes.filter((rowIndex) => isRowPopulated(rowsData[rowIndex], rowIndex));
+        const emptyIndexes = indexes.filter((rowIndex) => !isRowPopulated(rowsData[rowIndex], rowIndex));
+        populatedIndexes.sort((left, right) => {
+            return compareGroupValues(getGroupValue(rowsData[left]), getGroupValue(rowsData[right])) || left - right;
+        });
+
+        return [...populatedIndexes, ...emptyIndexes];
+    };
+
+    const getRowClassName = (row, rowIndex) => {
+        if (typeof settings.rowClassName !== 'function') return '';
+        try {
+            return String(settings.rowClassName(cloneRow(row), rowIndex) || '').trim();
+        } catch (err) {
+            console.error('renderInteractiveTable rowClassName error:', err);
+            return '';
+        }
+    };
+
+    const renderGroupHeaderRow = (groupValue) => {
+        let label = groupValue || groupByConfig.emptyLabel;
+        if (groupByConfig.label) {
+            const groupRows = rowsData
+                .filter((row, rowIndex) => isRowPopulated(row, rowIndex) && getGroupValue(row) === groupValue)
+                .map(cloneRow);
+            try {
+                label = String(groupByConfig.label(groupValue, groupRows) ?? label);
+            } catch (err) {
+                console.error('renderInteractiveTable groupBy.label error:', err);
+            }
+        }
+
+        const classes = ['kfInteractiveTable__groupRow', groupByConfig.className].filter(Boolean).join(' ');
+        return `<tr class="${escapeHTML(classes)}" data-kf-group="${escapeHTML(groupValue)}"><td colspan="${columns.length}" style="padding:6px 8px;font-weight:600;">${escapeHTML(label)}</td></tr>`;
+    };
+
+    const isEditableCell = (column, row, rowIndex) => {
+        if (typeof column.editable === 'function') {
+            try {
+                return !!column.editable(row, rowIndex, rowsData);
+            } catch (_) {
+                return false;
+            }
+        }
+        return !!column.editable;
+    };
+
+    /**
+     * Converts a date value to the ISO yyyy-mm-dd string required by <input type="date">.
+     * Interprets slash-separated dates according to the table's dateLocale setting.
+     */
+    const toIsoDate = (value) => {
+        const text = String(value || '').trim();
+        if (!text) return '';
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(text)) {
+            const parts = text.split('/');
+            // US: mm/dd/yyyy → yyyy-mm-dd; UK: dd/mm/yyyy → yyyy-mm-dd
+            return settings.dateLocale === 'us'
+                ? `${parts[2]}-${parts[0]}-${parts[1]}`
+                : `${parts[2]}-${parts[1]}-${parts[0]}`;
+        }
+        const parsed = parseDateObject(text);
+        if (!parsed) return '';
+        const day = String(parsed.getDate()).padStart(2, '0');
+        const month = String(parsed.getMonth() + 1).padStart(2, '0');
+        const year = parsed.getFullYear();
+        return `${year}-${month}-${day}`;
+    };
+
+    /**
+     * Converts a date value to the locale display format.
+     * UK (default): dd/mm/yyyy. US: mm/dd/yyyy.
+     * Accepts ISO strings (yyyy-mm-dd), already-formatted slash dates, or anything
+     * parseable by getDateUKFormat as a last resort.
+     */
+    const toDisplayDate = (value) => {
+        const text = String(value || '').trim();
+        if (!text) return '';
+        // Already a slash-separated date in the expected locale format — pass through.
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(text)) return text;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+            const parts = text.split('-');
+            // US: yyyy-mm-dd → mm/dd/yyyy; UK: yyyy-mm-dd → dd/mm/yyyy
+            return settings.dateLocale === 'us'
+                ? `${parts[1]}/${parts[2]}/${parts[0]}`
+                : `${parts[2]}/${parts[1]}/${parts[0]}`;
+        }
+        return getDateUKFormat(text) || text;
+    };
+
+    const parseCellValue = (rawValue, column, row, rowIndex) => {
+        const baseValue = (() => {
+            if (column.type === 'date') return toDisplayDate(rawValue);
+            if (column.type === 'number') {
+                const normalised = String(rawValue || '').trim();
+                if (!normalised) return '';
+                const parsed = Number(normalised);
+                return Number.isFinite(parsed) ? parsed : normalised;
+            }
+            if (column.type === 'checkbox') return !!rawValue;
+            return String(rawValue ?? '');
+        })();
+
+        if (typeof column.parse === 'function') {
+            try {
+                return column.parse(baseValue, row, rowIndex, rowsData);
+            } catch (_) {
+                return baseValue;
+            }
+        }
+        return baseValue;
+    };
+
+    const formatCellValue = (value, column, row, rowIndex) => {
+        if (typeof column.display === 'function') {
+            try {
+                return String(column.display(value, row, rowIndex, rowsData) ?? '');
+            } catch (_) {
+                return '';
+            }
+        }
+
+        if (column.type === 'checkbox') {
+            return value ? 'Yes' : 'No';
+        }
+
+        if (column.type === 'date') {
+            return toDisplayDate(value);
+        }
+
+        return String(value ?? '');
+    };
+
+    const normaliseSelectOptions = (rawOptions) => {
+        const optionsArray = Array.isArray(rawOptions) ? rawOptions : [];
+        return optionsArray.map((item) => {
+            if (item && typeof item === 'object' && 'value' in item) {
+                return {
+                    value: String(item.value ?? ''),
+                    label: String(item.label ?? item.value ?? ''),
+                };
+            }
+            return {
+                value: String(item ?? ''),
+                label: String(item ?? ''),
+            };
+        });
+    };
+
+    const resolveSelectOptions = async (column, row, rowIndex, colIndex) => {
+        if (typeof column.options === 'function') {
+            try {
+                const resolvedOptions = await Promise.resolve(column.options(row, rowIndex, rowsData));
+                return normaliseSelectOptions(resolvedOptions);
+            } catch (err) {
+                console.error('renderInteractiveTable select options error:', err);
+                return [];
+            }
+        }
+
+        const cacheKey = String(colIndex);
+        if (selectOptionsCache.has(cacheKey)) {
+            return selectOptionsCache.get(cacheKey);
+        }
+
+        try {
+            const rawOptions = column.options;
+            const resolvedOptions = await Promise.resolve(rawOptions);
+            const normalisedOptions = normaliseSelectOptions(resolvedOptions);
+            selectOptionsCache.set(cacheKey, normalisedOptions);
+            return normalisedOptions;
+        } catch (err) {
+            console.error('renderInteractiveTable select options error:', err);
+            return [];
+        }
+    };
+
+    const tryOpenSelectMenu = (selectEl) => {
+        if (!selectEl || selectEl.disabled) return;
+
+        const open = () => {
+            try {
+                if (typeof selectEl.showPicker === 'function') {
+                    selectEl.showPicker();
+                    return;
+                }
+            } catch (_) {}
+
+            try {
+                selectEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+            } catch (_) {}
+
+            try {
+                selectEl.click();
+            } catch (_) {}
+        };
+
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(open);
+            return;
+        }
+
+        setTimeout(open, 0);
+    };
+
+    const resolveSearchSelectValue = (rawValue, options) => {
+        const normalisedRawValue = String(rawValue ?? '').trim();
+        if (!normalisedRawValue) return '';
+
+        const matchedOption = (Array.isArray(options) ? options : []).find((option) => {
+            const optionValue = String(option?.value ?? '').trim().toLowerCase();
+            const optionLabel = String(option?.label ?? '').trim().toLowerCase();
+            const targetValue = normalisedRawValue.toLowerCase();
+            return optionValue === targetValue || optionLabel === targetValue;
+        });
+
+        return matchedOption ? matchedOption.value : '';
+    };
+
+    const ensureSearchSelectDropdown = (inputEl) => {
+        if (!inputEl) return null;
+        if (inputEl._kfSearchDropdown instanceof HTMLElement) {
+            return inputEl._kfSearchDropdown;
+        }
+
+        const dropdownEl = document.createElement('div');
+        dropdownEl.className = 'kfInteractiveTable__searchSelectDropdown';
+        dropdownEl.style.position = 'absolute';
+        dropdownEl.style.top = 'calc(100% + 4px)';
+        dropdownEl.style.left = '0';
+        dropdownEl.style.right = '0';
+        dropdownEl.style.zIndex = '50';
+        dropdownEl.style.maxHeight = '220px';
+        dropdownEl.style.overflowY = 'auto';
+        dropdownEl.style.background = '#fff';
+        dropdownEl.style.border = '1px solid #d3d9e3';
+        dropdownEl.style.borderRadius = '0 0 8px 8px';
+        dropdownEl.style.boxShadow = '0 10px 26px rgba(15, 23, 42, 0.12)';
+        dropdownEl.style.padding = '6px';
+        dropdownEl.style.display = 'none';
+
+        inputEl._kfSearchWrapper?.appendChild(dropdownEl);
+        inputEl._kfSearchDropdown = dropdownEl;
+        return dropdownEl;
+    };
+
+    const closeSearchSelectDropdown = (inputEl) => {
+        const dropdownEl = inputEl?._kfSearchDropdown;
+        if (!(dropdownEl instanceof HTMLElement)) return;
+        dropdownEl.style.display = 'none';
+        dropdownEl.innerHTML = '';
+        inputEl._kfSearchFilteredOptions = [];
+        inputEl._kfSearchHighlightedIndex = -1;
+        inputEl.setAttribute('aria-expanded', 'false');
+    };
+
+    const renderSearchSelectDropdown = (inputEl, options, filterText = '') => {
+        const dropdownEl = ensureSearchSelectDropdown(inputEl);
+        if (!(dropdownEl instanceof HTMLElement)) return;
+
+        const targetText = String(filterText ?? '').trim().toLowerCase();
+        const filteredOptions = (Array.isArray(options) ? options : []).filter((option) => {
+            if (!targetText) return true;
+            const optionLabel = String(option?.label ?? '').trim().toLowerCase();
+            const optionValue = String(option?.value ?? '').trim().toLowerCase();
+            return optionLabel.includes(targetText) || optionValue.includes(targetText);
+        }).slice(0, 75);
+
+        inputEl._kfSearchFilteredOptions = filteredOptions;
+        const hasOptions = filteredOptions.length > 0;
+        const nextHighlightedIndex = hasOptions
+            ? Math.min(Math.max(Number(inputEl._kfSearchHighlightedIndex) || 0, 0), filteredOptions.length - 1)
+            : -1;
+        inputEl._kfSearchHighlightedIndex = nextHighlightedIndex;
+
+        dropdownEl.innerHTML = '';
+
+        if (!hasOptions) {
+            const emptyStateEl = document.createElement('div');
+            emptyStateEl.textContent = 'No matches found';
+            emptyStateEl.style.padding = '8px 10px';
+            emptyStateEl.style.color = '#6b7280';
+            emptyStateEl.style.fontSize = '12px';
+            dropdownEl.appendChild(emptyStateEl);
+            dropdownEl.style.display = 'block';
+            inputEl.setAttribute('aria-expanded', 'true');
+            return;
+        }
+
+        filteredOptions.forEach((option, optionIndex) => {
+            const optionButton = document.createElement('button');
+            optionButton.type = 'button';
+            optionButton.className = 'kfInteractiveTable__searchSelectOption';
+            optionButton.textContent = String(option?.label ?? '');
+            optionButton.dataset.value = String(option?.value ?? '');
+            optionButton.dataset.label = String(option?.label ?? '');
+            optionButton.style.display = 'block';
+            optionButton.style.width = '100%';
+            optionButton.style.border = '0';
+            optionButton.style.borderRadius = '6px';
+            optionButton.style.background = optionIndex === nextHighlightedIndex ? '#eef4ff' : 'transparent';
+            optionButton.style.color = '#1f2937';
+            optionButton.style.cursor = 'pointer';
+            optionButton.style.font = 'inherit';
+            optionButton.style.padding = '8px 10px';
+            optionButton.style.textAlign = 'left';
+
+            optionButton.addEventListener('mouseenter', () => {
+                inputEl._kfSearchHighlightedIndex = optionIndex;
+                renderSearchSelectDropdown(inputEl, options, inputEl.value);
+            });
+
+            let optionSelectionHandled = false;
+            const selectSearchOption = (event) => {
+                if (optionSelectionHandled) return;
+                optionSelectionHandled = true;
+                event.preventDefault();
+                event.stopPropagation();
+                inputEl._kfIgnoreBlurUntil = Date.now() + EDITOR_POINTER_BLUR_GUARD_MS;
+                inputEl.value = optionButton.dataset.label || '';
+                inputEl._kfSearchSelectedValue = optionButton.dataset.value || '';
+                closeEditor(inputEl, true);
+            };
+
+            // Pointer events fire before blur on modern browsers. Keep the mouse fallback
+            // for older environments so the selected option value is never lost to blur.
+            optionButton.addEventListener('pointerdown', selectSearchOption);
+            optionButton.addEventListener('mousedown', selectSearchOption);
+
+            optionButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            });
+
+            dropdownEl.appendChild(optionButton);
+        });
+
+        dropdownEl.style.display = 'block';
+        inputEl.setAttribute('aria-expanded', 'true');
+    };
+
+    const getCellElement = (rowIndex, colIndex) => {
+        return host.querySelector(`td.kfInteractiveTable__cell[data-row-index="${rowIndex}"][data-col-index="${colIndex}"]`);
+    };
+
+    const getEditableCellCoordinates = () => {
+        const coordinates = [];
+        getDisplayRowIndexes().forEach((rowIndex) => {
+            const row = rowsData[rowIndex];
+            columns.forEach((column, colIndex) => {
+                if (isEditableCell(column, row, rowIndex)) {
+                    coordinates.push({ rowIndex, colIndex });
+                }
+            });
+        });
+        return coordinates;
+    };
+
+    const findAdjacentEditableCell = (rowIndex, colIndex, direction = 1) => {
+        const editableCells = getEditableCellCoordinates();
+        const currentIndex = editableCells.findIndex((cell) => cell.rowIndex === rowIndex && cell.colIndex === colIndex);
+        if (currentIndex === -1) return null;
+
+        const nextIndex = currentIndex + (direction < 0 ? -1 : 1);
+        if (nextIndex < 0 || nextIndex >= editableCells.length) return null;
+
+        const nextCell = editableCells[nextIndex];
+        return getCellElement(nextCell.rowIndex, nextCell.colIndex);
+    };
+
+    const focusEditableCell = (cell, { open = false } = {}) => {
+        if (!cell) return;
+
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => {
+                cell.focus();
+                if (open) {
+                    void openEditor(cell);
+                }
+            });
+            return;
+        }
+
+        setTimeout(() => {
+            cell.focus();
+            if (open) {
+                void openEditor(cell);
+            }
+        }, 0);
+    };
+
+    const emitChange = (payload) => {
+        if (typeof settings.onChange !== 'function') return;
+        try {
+            settings.onChange(payload);
+        } catch (err) {
+            console.error('renderInteractiveTable onChange error:', err);
+        }
+    };
+
+    const renderCell = (cell, rowIndex, colIndex) => {
+        if (!cell) return;
+        const column = columns[colIndex];
+        const row = rowsData[rowIndex];
+        const value = getCellValue(row, column, colIndex);
+        const formatted = formatCellValue(value, column, row, rowIndex);
+        cell.innerHTML = column.allowHtml ? formatted : escapeHTML(formatted);
+    };
+
+    const renderTable = () => {
+        const tableClass = `kn-table knTable is-bordered is-striped ${String(settings.tableClassName || '').trim()}`.trim();
+        const saveMode = String(settings.saveMode || 'none').trim().toLowerCase();
+        const showSubmitButton = saveMode === 'manual';
+        const saveButtonText = String(settings.saveButtonText || 'Save').trim() || 'Save';
+        const saveButtonClassName = String(settings.saveButtonClassName || '').trim();
+        const submitButtonClass = ['kn-button', 'is-primary', saveButtonClassName].filter(Boolean).join(' ');
+        const showClearButton = settings.showClearButton === true;
+        const clearButtonText = String(settings.clearButtonText || 'Clear').trim() || 'Clear';
+        const clearButtonClassName = String(settings.clearButtonClassName || '').trim();
+        const clearButtonClass = ['kn-button', 'is-secondary', clearButtonClassName].filter(Boolean).join(' ');
+
+        const headersHtml = columns.map((column) => {
+            const align = String(column.align || 'left');
+            const maxWidth = toCssSize(column.maxWidth);
+            const styleParts = [`text-align:${escapeHTML(align)}`, 'padding:6px 8px'];
+            if (maxWidth) styleParts.push(`max-width:${escapeHTML(maxWidth)}`);
+            const headerHtml = String(column.header || '');
+            return `<th style="${styleParts.join('; ')};">${headerHtml}</th>`;
+        }).join('');
+
+        let previousGroupValue = null;
+        const rowsHtml = getDisplayRowIndexes().map((rowIndex) => {
+            const row = rowsData[rowIndex];
+            let groupHeaderHtml = '';
+            if (groupByConfig && isRowPopulated(row, rowIndex)) {
+                const groupValue = getGroupValue(row);
+                if (groupValue !== previousGroupValue) {
+                    previousGroupValue = groupValue;
+                    groupHeaderHtml = renderGroupHeaderRow(groupValue);
+                }
+            }
+
+            const cellsHtml = columns.map((column, colIndex) => {
+                const editable = isEditableCell(column, row, rowIndex);
+                const value = getCellValue(row, column, colIndex);
+                const formatted = formatCellValue(value, column, row, rowIndex);
+                const classes = [
+                    'kfInteractiveTable__cell',
+                    editable ? 'is-editable' : '',
+                    editable ? 'ktlInlineEditableCellsStyle' : '',
+                    String(column.className || '').trim(),
+                ].filter(Boolean).join(' ');
+                const align = String(column.align || 'left');
+                const maxWidth = toCssSize(column.maxWidth);
+                const styleParts = ['padding:4px 8px', `text-align:${escapeHTML(align)}`];
+                if (maxWidth) styleParts.push(`max-width:${escapeHTML(maxWidth)}`);
+                const tabIndexAttr = editable ? ' tabindex="0"' : '';
+                return `<td class="${escapeHTML(classes)}" data-row-index="${rowIndex}" data-col-index="${colIndex}" data-col-key="${escapeHTML(String(column.key))}" style="${styleParts.join('; ')};"${tabIndexAttr}>${column.allowHtml ? formatted : escapeHTML(formatted)}</td>`;
+            }).join('');
+
+            const rowClassName = getRowClassName(row, rowIndex);
+            const rowClassAttr = rowClassName ? ` class="${escapeHTML(rowClassName)}"` : '';
+            return `${groupHeaderHtml}<tr data-row-index="${rowIndex}"${rowClassAttr}>${cellsHtml}</tr>`;
+        }).join('');
+
+        const clearButtonHtml = showClearButton
+            ? `<button class="${escapeHTML(clearButtonClass)}" type="button" data-kf-interactive-table-clear="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(clearButtonText)}</button>`
+            : '';
+
+        const headerActionsHtml = clearButtonHtml && !usesExternalActionContainer
+            ? `<div class="kfInteractiveTable__toolbar" style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;"><button class="${escapeHTML(clearButtonClass)}" type="button" data-kf-interactive-table-clear="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(clearButtonText)}</button></div>`
+            : '';
+
+        const actionButtons = [
+            showSubmitButton
+                ? `<button class="${escapeHTML(submitButtonClass)}" type="submit" data-kf-interactive-table-submit="true"${isSubmitting ? ' disabled' : ''}>${escapeHTML(saveButtonText)}</button>`
+                : '',
+        ].filter(Boolean).join('');
+
+        const actionsHtml = actionButtons && !usesExternalActionContainer
+            ? `<div class="kfInteractiveTable__actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">${actionButtons}</div>`
+            : '';
+
+        host.innerHTML = `${headerActionsHtml}<table class="${escapeHTML(tableClass)}"><thead><tr>${headersHtml}</tr></thead><tbody>${rowsHtml}</tbody></table>${actionsHtml}`;
+        if (usesExternalActionContainer) {
+            actionContainer.innerHTML = `${clearButtonHtml}${actionButtons}`;
+        }
+    };
+
+    const clearTable = async () => {
+        if (isSubmitting) return;
+
+        const shouldConfirmClear = settings.confirmOnClear !== false;
+        const clearConfirmMessage = String(settings.clearConfirmMessage || '').trim()
+            || 'Are you sure you want to clear all rows? This will remove any unsaved table data.';
+
+        if (shouldConfirmClear) {
+            const confirmationResult = await showConfirmationDialog({
+                title: 'Clear rows',
+                message: clearConfirmMessage,
+                buttons: [
+                    {
+                        text: 'Cancel',
+                        className: 'kn-button is-secondary',
+                        value: 'cancel',
+                    },
+                    {
+                        text: 'Clear rows',
+                        className: 'kn-button is-danger',
+                        value: 'confirm',
+                    },
+                ],
+            });
+
+            if (confirmationResult?.value !== 'confirm') return;
+        }
+
+        rowsData = [];
+        ensureTrailingEmptyRow();
+        renderTable();
+
+        if (typeof settings.onClear === 'function') {
+            try {
+                await settings.onClear({
+                    viewId,
+                    host,
+                    data: getData(),
+                    rawData: getRawData(),
+                    controller,
+                });
+            } catch (err) {
+                console.error('renderInteractiveTable onClear error:', err);
+                throw err;
+            }
+        }
+    };
+
+    /**
+     * Removes a row and notifies the caller so it can queue any persistence work.
+     * @param {number} rowIndex
+     * @param {string} [source='api']
+     * @returns {void}
+     */
+    const removeRow = (rowIndex, source = 'api') => {
+        const index = Number(rowIndex);
+        if (!Number.isFinite(index) || index < 0 || index >= rowsData.length) return;
+
+        const removedRow = cloneRow(rowsData[index]);
+        if (!isRowPopulated(removedRow, index)) return;
+
+        rowsData.splice(index, 1);
+        ensureTrailingEmptyRow();
+        renderTable();
+
+        if (typeof settings.onRemoveRow === 'function') {
+            try {
+                settings.onRemoveRow({
+                    rowIndex: index,
+                    row: removedRow,
+                    data: getData(),
+                    rawData: getRawData(),
+                    source,
+                    controller,
+                });
+            } catch (err) {
+                console.error('renderInteractiveTable onRemoveRow error:', err);
+            }
+        }
+    };
+
+    const submitTable = async () => {
+        if (typeof settings.onSubmit !== 'function') {
+            console.warn('renderInteractiveTable: manual submit requested but no onSubmit handler was provided.');
+            return;
+        }
+
+        if (isSubmitting) return;
+
+        isSubmitting = true;
+        renderTable();
+
+        try {
+            await settings.onSubmit({
+                viewId,
+                host,
+                data: getData(),
+                rawData: getRawData(),
+                controller,
+            });
+        } catch (err) {
+            console.error('renderInteractiveTable onSubmit error:', err);
+            throw err;
+        } finally {
+            isSubmitting = false;
+            renderTable();
+        }
+    };
+
+    const EDITOR_BLUR_SETTLE_DELAY_MS = 120;
+    const EDITOR_INITIAL_BLUR_GUARD_MS = 400;
+    const EDITOR_POINTER_BLUR_GUARD_MS = 250;
+
+    const shouldKeepEditorOpenOnBlur = (inputEl, editingCell, relatedTarget) => {
+        const activeElement = document.activeElement;
+
+        if (Date.now() < Number(inputEl._kfIgnoreBlurUntil || 0)) {
+            return true;
+        }
+
+        if (activeElement === inputEl) {
+            return true;
+        }
+
+        if (editingCell && activeElement instanceof Node && editingCell.contains(activeElement)) {
+            return true;
+        }
+
+        if (editingCell && relatedTarget instanceof Node && editingCell.contains(relatedTarget)) {
+            return true;
+        }
+
+        return false;
+    };
+
+    const closeEditor = (inputEl, commit, options = {}) => {
+        const restoreFocus = options.restoreFocus !== false;
+        const cell = inputEl.closest('.kfInteractiveTable__cell');
+        if (!cell) return;
+
+        const rowIndex = Number(cell.getAttribute('data-row-index'));
+        const colIndex = Number(cell.getAttribute('data-col-index'));
+        const column = columns[colIndex];
+        const row = rowsData[rowIndex];
+        const previousValue = getCellValue(row, column, colIndex);
+
+        if (commit) {
+            const rawValue = column.type === 'checkbox'
+                ? !!inputEl.checked
+                : column.type === 'search-select'
+                    ? String(inputEl._kfSearchSelectedValue ?? '').trim() || resolveSearchSelectValue(inputEl.value, inputEl._kfSearchOptions)
+                    : inputEl.value;
+            const nextValue = parseCellValue(rawValue, column, row, rowIndex);
+            setCellValue(row, column, colIndex, nextValue);
+            const appendedRow = ensureTrailingEmptyRow();
+            if (appendedRow || isGroupByColumn(column)) {
+                renderTable();
+            } else {
+                renderCell(cell, rowIndex, colIndex);
+            }
+            emitChange({
+                rowIndex,
+                columnIndex: colIndex,
+                columnKey: column.key,
+                column,
+                previousValue,
+                nextValue,
+                row: cloneRow(row),
+                data: getData(),
+                rawData: getRawData(),
+                source: 'editor',
+            });
+        } else {
+            renderCell(cell, rowIndex, colIndex);
+        }
+
+        cell.classList.remove('is-editing');
+        if (isEditableCell(column, row, rowIndex)) {
+            cell.setAttribute('tabindex', '0');
+        } else {
+            cell.removeAttribute('tabindex');
+        }
+
+        if (pendingEditorNavigation) {
+            const nextCell = findAdjacentEditableCell(rowIndex, colIndex, pendingEditorNavigation.direction);
+            pendingEditorNavigation = null;
+            if (nextCell) {
+                focusEditableCell(nextCell, { open: true });
+                return;
+            }
+        }
+
+        if (!restoreFocus) return;
+
+        // A regroup or appended row re-renders the table, detaching `cell`.
+        const liveCell = cell.isConnected ? cell : getCellElement(rowIndex, colIndex);
+        if (!liveCell || liveCell.matches(':focus')) return;
+        focusEditableCell(liveCell);
+    };
+
+    const isDatepickerOpen = (jq) => {
+        if (!jq) return false;
+        try {
+            return jq('.ui-datepicker:visible').length > 0;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const openEditor = async (cell) => {
+        if (!cell || cell.classList.contains('is-editing')) return;
+
+        const rowIndex = Number(cell.getAttribute('data-row-index'));
+        const colIndex = Number(cell.getAttribute('data-col-index'));
+        const column = columns[colIndex];
+        const row = rowsData[rowIndex];
+
+        if (!isEditableCell(column, row, rowIndex)) return;
+
+        const jq = typeof jQuery === 'function' ? jQuery : (typeof $ === 'function' ? $ : null);
+        const hasJqDatepicker = !!(jq && jq.fn && typeof jq.fn.datepicker === 'function');
+        const currentValue = getCellValue(row, column, colIndex);
+
+        cell.classList.add('is-editing');
+        cell.removeAttribute('tabindex');
+        cell.textContent = '';
+
+        let inputEl;
+        if (column.type === 'select') {
+            inputEl = document.createElement('select');
+            inputEl.className = ['input', 'kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
+            inputEl.disabled = true;
+            const loadingOption = document.createElement('option');
+            loadingOption.value = '';
+            loadingOption.textContent = 'Loading...';
+            inputEl.appendChild(loadingOption);
+        } else if (column.type === 'search-select') {
+            const wrapperEl = document.createElement('div');
+            wrapperEl.className = 'kfInteractiveTable__searchSelect';
+            wrapperEl.style.position = 'relative';
+            wrapperEl.style.display = 'flex';
+            wrapperEl.style.alignItems = 'center';
+            wrapperEl.style.width = '100%';
+
+            inputEl = document.createElement('input');
+            inputEl.type = 'text';
+            inputEl.className = ['input', 'kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
+            inputEl.disabled = true;
+            inputEl.placeholder = 'Select...';
+            inputEl.autocomplete = 'off';
+            inputEl.spellcheck = false;
+            inputEl.setAttribute('aria-autocomplete', 'list');
+            inputEl.setAttribute('aria-expanded', 'false');
+            inputEl.style.paddingRight = '34px';
+
+            const iconEl = document.createElement('span');
+            iconEl.textContent = '▾';
+            iconEl.style.position = 'absolute';
+            iconEl.style.right = '10px';
+            iconEl.style.top = '50%';
+            iconEl.style.transform = 'translateY(-50%)';
+            iconEl.style.pointerEvents = 'none';
+            iconEl.style.color = '#64748b';
+            iconEl.style.fontSize = '12px';
+
+            wrapperEl.appendChild(inputEl);
+            wrapperEl.appendChild(iconEl);
+            cell.appendChild(wrapperEl);
+            inputEl._kfSearchWrapper = wrapperEl;
+        } else if (column.type === 'checkbox') {
+            inputEl = document.createElement('input');
+            inputEl.type = 'checkbox';
+            inputEl.className = ['kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
+            inputEl.checked = !!currentValue;
+        } else {
+            inputEl = document.createElement('input');
+            inputEl.className = ['input', 'kfInteractiveTable__editor', column.inputClassName || ''].filter(Boolean).join(' ');
+
+            if (column.type === 'date') {
+                const valueDisplay = toDisplayDate(currentValue);
+                const valueIso = toIsoDate(currentValue);
+                if (hasJqDatepicker) {
+                    inputEl.type = 'text';
+                    inputEl.value = valueDisplay;
+                } else {
+                    inputEl.type = 'date';
+                    inputEl.value = valueIso;
+                }
+            } else if (column.type === 'number') {
+                inputEl.type = 'number';
+                inputEl.value = String(currentValue ?? '');
+            } else {
+                inputEl.type = 'text';
+                inputEl.value = String(currentValue ?? '');
+            }
+        }
+
+        inputEl.style.width = '100%';
+        inputEl.style.minHeight = '30px';
+        inputEl.style.maxWidth = '100%';
+        inputEl._kfIgnoreBlurUntil = Date.now() + EDITOR_INITIAL_BLUR_GUARD_MS;
+        const markInternalPointerInteraction = () => {
+            inputEl._kfIgnoreBlurUntil = Date.now() + EDITOR_POINTER_BLUR_GUARD_MS;
+        };
+
+        inputEl.addEventListener('mousedown', markInternalPointerInteraction);
+        inputEl.addEventListener('pointerdown', markInternalPointerInteraction);
+        inputEl.addEventListener('touchstart', markInternalPointerInteraction, { passive: true });
+
+        if (column.type !== 'search-select') {
+            cell.appendChild(inputEl);
+        }
+
+        if (column.type === 'select' || column.type === 'search-select') {
+            const options = await resolveSelectOptions(column, row, rowIndex, colIndex);
+            const editingCell = inputEl.closest('.kfInteractiveTable__cell');
+            if (!editingCell || !editingCell.classList.contains('is-editing')) return;
+
+            const currentValueText = String(currentValue ?? '');
+
+            if (column.type === 'select') {
+                inputEl.innerHTML = '';
+                options.forEach((opt) => {
+                    const optionEl = document.createElement('option');
+                    optionEl.value = opt.value;
+                    optionEl.textContent = opt.label;
+                    inputEl.appendChild(optionEl);
+                });
+
+                if (currentValueText && !options.some((opt) => opt.value === currentValueText)) {
+                    const fallbackOption = document.createElement('option');
+                    fallbackOption.value = currentValueText;
+                    fallbackOption.textContent = currentValueText;
+                    inputEl.insertBefore(fallbackOption, inputEl.firstChild);
+                }
+
+                inputEl.value = currentValueText;
+                inputEl.disabled = false;
+            } else {
+                const currentOption = options.find((opt) => String(opt.value) === currentValueText);
+                inputEl._kfSearchOptions = options;
+                inputEl._kfSearchHighlightedIndex = 0;
+                inputEl._kfSearchSelectedValue = currentOption ? String(currentOption.value ?? '') : '';
+                inputEl.value = currentOption ? currentOption.label : currentValueText;
+                inputEl.disabled = false;
+                renderSearchSelectDropdown(inputEl, options, inputEl.value);
+            }
+        }
+
+        if (column.type === 'date' && hasJqDatepicker) {
+            const inputJq = jq(inputEl);
+            const openDateHint = String(row?.[column.openDateHintKey] || '').trim();
+            const dateFormat = String(column.dateFormat || (settings.dateLocale === 'us' ? 'mm/dd/yy' : 'dd/mm/yy'));
+
+            if (!inputJq.hasClass('hasDatepicker')) {
+                inputJq.datepicker({
+                    dateFormat,
+                    changeMonth: true,
+                    changeYear: true,
+                    defaultDate: openDateHint || null,
+                    minDate: column.minDate ?? null,
+                    maxDate: column.maxDate ?? null,
+                    onSelect: function () {
+                        closeEditor(inputEl, true);
+                    },
+                    onClose: function () {
+                        setTimeout(function () {
+                            const editingCell = inputEl.closest('.kfInteractiveTable__cell');
+                            if (editingCell && editingCell.classList.contains('is-editing')) {
+                                closeEditor(inputEl, true, { restoreFocus: false });
+                            }
+                        }, 0);
+                    },
+                });
+            }
+
+            if (typeof formatDatePicker === 'function') {
+                try { formatDatePicker(inputEl); } catch (_) {}
+            }
+
+            if (typeof enhanceDateTimePicker === 'function') {
+                try {
+                    enhanceDateTimePicker(inputEl, {
+                        mode: 'date',
+                        dateFormat,
+                        minDate: column.minDate ?? null,
+                        maxDate: column.maxDate ?? null,
+                        waitForInit: false,
+                    });
+                } catch (_) {}
+            }
+
+            try {
+                if (String(inputEl.value || '').trim()) {
+                    inputJq.datepicker('setDate', inputEl.value);
+                } else {
+                    if (openDateHint) {
+                        inputJq.datepicker('option', 'defaultDate', openDateHint);
+                    }
+                    inputJq.datepicker('setDate', null);
+                }
+                inputJq.datepicker('show');
+            } catch (_) {}
+        }
+
+        inputEl.addEventListener('keydown', function (event) {
+            if (column.type === 'search-select') {
+                const filteredOptions = Array.isArray(inputEl._kfSearchFilteredOptions) ? inputEl._kfSearchFilteredOptions : [];
+
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    if (filteredOptions.length) {
+                        const direction = event.key === 'ArrowDown' ? 1 : -1;
+                        const currentIndex = Number(inputEl._kfSearchHighlightedIndex);
+                        const nextIndex = Number.isFinite(currentIndex)
+                            ? (currentIndex + direction + filteredOptions.length) % filteredOptions.length
+                            : 0;
+                        inputEl._kfSearchHighlightedIndex = nextIndex;
+                    } else {
+                        inputEl._kfSearchHighlightedIndex = -1;
+                    }
+                    renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
+                    return;
+                }
+
+                if (event.key === 'Enter') {
+                    const highlightedOption = filteredOptions[inputEl._kfSearchHighlightedIndex] || filteredOptions[0] || null;
+                    if (highlightedOption) {
+                        event.preventDefault();
+                        inputEl.value = String(highlightedOption.label ?? '');
+                        inputEl._kfSearchSelectedValue = String(highlightedOption.value ?? '');
+                    }
+                }
+
+                if (event.key === 'Escape') {
+                    closeSearchSelectDropdown(inputEl);
+                }
+            }
+
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                closeEditor(inputEl, true);
+            }
+            if (event.key === 'Tab') {
+                const nextCell = findAdjacentEditableCell(rowIndex, colIndex, event.shiftKey ? -1 : 1);
+                if (nextCell) {
+                    event.preventDefault();
+                    pendingEditorNavigation = {
+                        direction: event.shiftKey ? -1 : 1,
+                    };
+                    closeEditor(inputEl, true);
+                }
+            }
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                closeEditor(inputEl, false);
+            }
+        });
+
+        inputEl.addEventListener('change', function () {
+            if (column.type === 'checkbox' || column.type === 'select' || column.type === 'search-select') {
+                closeEditor(inputEl, true);
+            }
+        });
+
+        if (column.type === 'search-select') {
+            inputEl.addEventListener('input', function () {
+                inputEl._kfSearchHighlightedIndex = 0;
+                inputEl._kfSearchSelectedValue = '';
+                renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
+            });
+
+            inputEl.addEventListener('focus', function () {
+                renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
+            });
+
+            inputEl.addEventListener('click', function () {
+                renderSearchSelectDropdown(inputEl, inputEl._kfSearchOptions, inputEl.value);
+            });
+        }
+
+        inputEl.addEventListener('blur', function (event) {
+            setTimeout(function () {
+                const jq = typeof jQuery === 'function' ? jQuery : (typeof $ === 'function' ? $ : null);
+                if (column.type === 'date' && isDatepickerOpen(jq)) {
+                    return;
+                }
+                const editingCell = inputEl.closest('.kfInteractiveTable__cell');
+                if (shouldKeepEditorOpenOnBlur(inputEl, editingCell, event.relatedTarget)) {
+                    return;
+                }
+
+                if (column.type === 'search-select') {
+                    closeSearchSelectDropdown(inputEl);
+                }
+                if (editingCell && editingCell.classList.contains('is-editing')) {
+                    closeEditor(inputEl, true, { restoreFocus: false });
+                }
+            }, EDITOR_BLUR_SETTLE_DELAY_MS);
+        });
+
+        inputEl.focus();
+        if (typeof inputEl.select === 'function' && column.type !== 'checkbox') {
+            inputEl.select();
+        }
+        if (column.type === 'select') {
+            tryOpenSelectMenu(inputEl);
+        }
+    };
+
+    const handleTableClick = (event) => {
+        const submitButton = event.target.closest('[data-kf-interactive-table-submit="true"]');
+        if (submitButton && (host.contains(submitButton) || actionContainer?.contains(submitButton))) {
+            event.preventDefault();
+            void submitTable();
+            return;
+        }
+
+        const clearButton = event.target.closest('[data-kf-interactive-table-clear="true"]');
+        if (clearButton && (host.contains(clearButton) || actionContainer?.contains(clearButton))) {
+            event.preventDefault();
+            void clearTable();
+            return;
+        }
+
+        const removeButton = event.target.closest('[data-kf-interactive-table-remove-row="true"]');
+        if (removeButton && host.contains(removeButton)) {
+            event.preventDefault();
+            const rowIndex = Number(removeButton.closest('tr[data-row-index]')?.getAttribute('data-row-index'));
+            removeRow(rowIndex, 'button');
+            return;
+        }
+
+        const editor = event.target.closest('.kfInteractiveTable__editor');
+        if (editor && host.contains(editor)) return;
+
+        const cell = event.target.closest('.kfInteractiveTable__cell');
+        if (!cell || !host.contains(cell) || cell.classList.contains('is-editing')) return;
+        void openEditor(cell);
+    };
+
+    const handleTableMouseDown = (event) => {
+        const submitButton = event.target.closest('[data-kf-interactive-table-submit="true"]');
+        if (submitButton && (host.contains(submitButton) || actionContainer?.contains(submitButton))) return;
+
+        const clearButton = event.target.closest('[data-kf-interactive-table-clear="true"]');
+        if (clearButton && (host.contains(clearButton) || actionContainer?.contains(clearButton))) return;
+
+        const removeButton = event.target.closest('[data-kf-interactive-table-remove-row="true"]');
+        if (removeButton && host.contains(removeButton)) return;
+
+        const editor = event.target.closest('.kfInteractiveTable__editor');
+        if (editor && host.contains(editor)) return;
+
+        const cell = event.target.closest('.kfInteractiveTable__cell');
+        if (!cell || !host.contains(cell)) return;
+
+        if (!cell.classList.contains('is-editing')) {
+            event.preventDefault();
+        }
+    };
+
+    const handleTableKeydown = (event) => {
+        const cell = event.target.closest('.kfInteractiveTable__cell');
+        if (!cell || !host.contains(cell) || cell.classList.contains('is-editing')) return;
+
+        if (event.key === 'Enter' || event.key === ' ' || event.key === 'F2') {
+            event.preventDefault();
+            void openEditor(cell);
+        }
+    };
+
+    renderTable();
+    host.addEventListener('mousedown', handleTableMouseDown);
+    host.addEventListener('click', handleTableClick);
+    host.addEventListener('keydown', handleTableKeydown);
+    if (usesExternalActionContainer) {
+        actionContainer.addEventListener('mousedown', handleTableMouseDown);
+        actionContainer.addEventListener('click', handleTableClick);
+    }
+
+    if (typeof settings.onRenderComplete === 'function') {
+        try {
+            settings.onRenderComplete({
+                viewId,
+                host,
+                data: getData(),
+                rawData: getRawData(),
+            });
+        } catch (err) {
+            console.error('renderInteractiveTable onRenderComplete error:', err);
+        }
+    }
+
+    controller = {
+        getData(options = {}) {
+            return getData(options);
+        },
+        setData(nextRows) {
+            rowsData = Array.isArray(nextRows) ? nextRows.map(cloneRow) : [];
+            ensureTrailingEmptyRow();
+            renderTable();
+        },
+        updateCell(rowIndex, columnKeyOrIndex, value, options = {}) {
+            const idx = Number(rowIndex);
+            if (!Number.isFinite(idx) || idx < 0 || idx >= rowsData.length) return;
+
+            const colIndex = typeof columnKeyOrIndex === 'number'
+                ? columnKeyOrIndex
+                : colIndexByKey.get(String(columnKeyOrIndex));
+            if (!Number.isFinite(colIndex) || colIndex < 0 || colIndex >= columns.length) return;
+
+            const column = columns[colIndex];
+            const row = rowsData[idx];
+            const previousValue = getCellValue(row, column, colIndex);
+            const nextValue = parseCellValue(value, column, row, idx);
+            setCellValue(row, column, colIndex, nextValue);
+            const appendedRow = ensureTrailingEmptyRow();
+
+            const cell = getCellElement(idx, colIndex);
+            if (cell && !appendedRow && !isGroupByColumn(column)) {
+                renderCell(cell, idx, colIndex);
+            } else {
+                renderTable();
+            }
+
+            if (options.emit !== false) {
+                emitChange({
+                    rowIndex: idx,
+                    columnIndex: colIndex,
+                    columnKey: column.key,
+                    column,
+                    previousValue,
+                    nextValue,
+                    row: cloneRow(row),
+                    data: getData(),
+                    rawData: getRawData(),
+                    source: options.source || 'api',
+                });
+            }
+        },
+        async submit() {
+            await submitTable();
+        },
+        async clear() {
+            await clearTable();
+        },
+        removeRow(rowIndex) {
+            removeRow(rowIndex);
+        },
+        destroy() {
+            selectOptionsCache.clear();
+            host.removeEventListener('mousedown', handleTableMouseDown);
+            host.removeEventListener('click', handleTableClick);
+            host.removeEventListener('keydown', handleTableKeydown);
+            if (usesExternalActionContainer) {
+                actionContainer.removeEventListener('mousedown', handleTableMouseDown);
+                actionContainer.removeEventListener('click', handleTableClick);
+                actionContainer.innerHTML = '';
+            }
+            host.innerHTML = '';
+        },
+    };
+
+    return controller;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: file-carousel
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// File carousel ported as-is (analysis C24).
+
+let fileCarouselState = null;
+
+/**
+ * Creates (once) the shared file-carousel overlay markup and styles, and returns the overlay root.
+ * @returns {HTMLElement} The overlay root element.
+ */
+function ensureFileCarouselOverlay() {
+    const existing = document.getElementById('kfnFileCarousel');
+    if (existing) return existing;
+
+    const style = document.createElement('style');
+    style.id = 'kfnFileCarouselStyles';
+    style.textContent = `
+        .kfn-file-carousel { position: fixed; inset: 0; z-index: 2147483000; display: none; }
+        .kfn-file-carousel.is-open { display: block; }
+        .kfn-file-carousel__backdrop { position: absolute; inset: 0; background: rgba(20, 20, 20, 0.9); }
+        .kfn-file-carousel__dialog { position: relative; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px 90px; box-sizing: border-box; }
+        .kfn-file-carousel__scroll { height: 100%; max-width: 100%; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; align-items: center; }
+        .kfn-file-carousel__stage { position: relative; max-width: 100%; flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; border-radius: 4px; overflow: hidden; }
+        .kfn-file-carousel__stage img { max-width: 88vw; max-height: 100%; object-fit: contain; opacity: 0; transition: opacity 0.15s ease; }
+        .kfn-file-carousel__stage img.is-loaded { opacity: 1; }
+        .kfn-file-carousel__stage iframe { width: 88vw; height: 100%; border: 0; background: #fff; }
+        .kfn-file-carousel__spinner { width: 36px; height: 36px; border: 3px solid rgba(255,255,255,0.25); border-top-color: #fff; border-radius: 50%; animation: kfnFileCarouselSpin 0.7s linear infinite; }
+        @keyframes kfnFileCarouselSpin { to { transform: rotate(360deg); } }
+        .kfn-file-carousel__loading { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        .kfn-file-carousel__loading-label { color: #fff; font-size: 13px; opacity: 0.85; text-align: center; }
+        .kfn-file-carousel__fallback { color: #fff; text-align: center; padding: 40px; }
+        .kfn-file-carousel__fallback .kfn-file-carousel__icon { font-size: 48px; display: block; margin-bottom: 12px; }
+        .kfn-file-carousel__close, .kfn-file-carousel__nav { position: absolute; z-index: 2; background: rgba(0, 0, 0, 0.45); color: #fff; border: 0; cursor: pointer; border-radius: 50%; width: 44px; height: 44px; font-size: 24px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+        .kfn-file-carousel__close:hover, .kfn-file-carousel__nav:hover { background: rgba(0, 0, 0, 0.65); }
+        .kfn-file-carousel__close { top: 16px; right: 16px; }
+        .kfn-file-carousel__nav--prev { left: 16px; top: 50%; transform: translateY(-50%); }
+        .kfn-file-carousel__nav--next { right: 16px; top: 50%; transform: translateY(-50%); }
+        .kfn-file-carousel__nav::before { content: ''; width: 12px; height: 12px; border-style: solid; border-color: #fff; border-width: 0 3px 3px 0; display: block; }
+        .kfn-file-carousel__nav--prev::before { transform: rotate(135deg); margin-left: 5px; }
+        .kfn-file-carousel__nav--next::before { transform: rotate(-45deg); margin-right: 5px; }
+        .kfn-file-carousel__preview { display: flex; flex-direction: column; align-items: center; max-width: 100%; width: 100%; flex: 1 1 auto; min-height: 0; }
+        .kfn-file-carousel__filename { flex: 0 0 auto; color: #fff; font-size: 15px; margin: 0 0 10px; text-align: center; word-break: break-all; }
+        .kfn-file-carousel__meta { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; margin: 14px 0 0; }
+        .kfn-file-carousel__meta .kn-file-download { display: inline-flex; align-items: center; gap: 5px; padding: 6px 14px; border-radius: 999px; background: #2563eb; color: #fff; font-weight: 600; font-size: 12px; text-decoration: none; line-height: 1; }
+        .kfn-file-carousel__meta .kn-file-download:hover { background: #1d4ed8; }
+        .kfn-file-carousel__meta .kn-file-download i { font-size: 12px; }
+        .kfn-file-carousel__download-size { opacity: 0.85; font-weight: 400; }
+        .kfn-file-carousel__footer { flex: 0 0 auto; color: #fff; margin-top: 2px; text-align: center; max-width: 80vw; }
+        .kfn-file-carousel__caption { font-size: 13px; opacity: 0.8; margin-bottom: 4px; }
+        .kfn-file-carousel__counter { font-size: 12px; opacity: 0.55; }
+        @media (max-width: 640px) {
+            .kfn-file-carousel__dialog { padding: 10px 8px; }
+            .kfn-file-carousel__stage img, .kfn-file-carousel__stage iframe { max-width: 96vw; }
+            .kfn-file-carousel__close, .kfn-file-carousel__nav { width: 34px; height: 34px; font-size: 18px; }
+            .kfn-file-carousel__close { top: 6px; right: 6px; }
+            .kfn-file-carousel__nav--prev { left: 4px; }
+            .kfn-file-carousel__nav--next { right: 4px; }
+            .kfn-file-carousel__nav::before { width: 9px; height: 9px; border-width: 0 2px 2px 0; }
+            .kfn-file-carousel__nav--prev::before { margin-left: 3px; }
+            .kfn-file-carousel__nav--next::before { margin-right: 3px; }
+            .kfn-file-carousel__filename { font-size: 13px; margin-bottom: 6px; }
+            .kfn-file-carousel__meta { margin-top: 10px; }
+        }
+    `;
+    document.head.appendChild(style);
+
+    const overlay = document.createElement('div');
+    overlay.id = 'kfnFileCarousel';
+    overlay.className = 'kfn-file-carousel';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.innerHTML = `
+        <div class="kfn-file-carousel__backdrop"></div>
+        <div class="kfn-file-carousel__dialog">
+            <button type="button" class="kfn-file-carousel__close" aria-label="Close">&times;</button>
+            <button type="button" class="kfn-file-carousel__nav kfn-file-carousel__nav--prev" aria-label="Previous file"></button>
+            <div class="kfn-file-carousel__scroll">
+                <div class="kfn-file-carousel__preview">
+                    <h1 id="kn-asset-header" class="kfn-file-carousel__filename"></h1>
+                    <div class="kfn-file-carousel__stage"></div>
+                    <p class="kfn-file-carousel__meta">
+                        <a class="kn-file-download" download target="_blank" rel="noopener noreferrer">Download<span class="kfn-file-carousel__download-size"></span><i class="fa fa-cloud-download"></i></a>
+                    </p>
+                </div>
+                <div class="kfn-file-carousel__footer">
+                    <div class="kfn-file-carousel__caption"></div>
+                    <div class="kfn-file-carousel__counter"></div>
+                </div>
+            </div>
+            <button type="button" class="kfn-file-carousel__nav kfn-file-carousel__nav--next" aria-label="Next file"></button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    overlay.querySelector('.kfn-file-carousel__backdrop').addEventListener('click', closeFileCarousel);
+    overlay.querySelector('.kfn-file-carousel__close').addEventListener('click', closeFileCarousel);
+    overlay.querySelector('.kfn-file-carousel__nav--prev').addEventListener('click', () => navigateFileCarousel(-1));
+    overlay.querySelector('.kfn-file-carousel__nav--next').addEventListener('click', () => navigateFileCarousel(1));
+    // The `download` attribute is ignored on cross-origin links (api.knack.com vs the app's own domain), so force it via fetch+blob.
+    overlay.querySelector('.kn-file-download').addEventListener('click', (event) => {
+        event.preventDefault();
+        const item = fileCarouselState?.items[fileCarouselState.index];
+        if (item) forceDownloadFile(item.assetUrl, item.fileName);
+    });
+
+    return overlay;
+}
+
+/**
+ * Preloads an item's image in the background so navigating to it feels instant.
+ * @param {Object} [item] - A carousel item.
+ * @returns {void}
+ */
+function preloadFileCarouselImage(item) {
+    if (!item || !IMAGE_EXTENSIONS.includes(item.extension)) return;
+    new Image().src = item.assetUrl;
+}
+
+/**
+ * Replaces the stage content with the "can't preview" message. The Download button stays available regardless.
+ * @param {HTMLElement} stage - The carousel's stage element.
+ * @param {string} [message] - Message to show under the icon.
+ * @returns {void}
+ */
+function showFileCarouselFallback(stage, message = 'No preview available for this file type.') {
+    stage.innerHTML = '';
+    const fallback = document.createElement('div');
+    fallback.className = 'kfn-file-carousel__fallback';
+    fallback.innerHTML = `<span class="kfn-file-carousel__icon">\uD83D\uDCC4</span>${message}`;
+    stage.appendChild(fallback);
+}
+
+/**
+ * Renders the file at `index` into the carousel stage (image, PDF, attempted Office embed, or a download-only fallback).
+ * @param {number} index - Index into the current carousel's items array.
+ * @returns {void}
+ */
+function renderFileCarouselItem(index) {
+    if (!fileCarouselState || !fileCarouselState.items.length) return;
+    const overlay = document.getElementById('kfnFileCarousel');
+    if (!overlay) return;
+
+    const item = fileCarouselState.items[index];
+    if (!item) return;
+    fileCarouselState.index = index;
+
+    const stage = overlay.querySelector('.kfn-file-carousel__stage');
+    const filename = overlay.querySelector('.kfn-file-carousel__filename');
+    const caption = overlay.querySelector('.kfn-file-carousel__caption');
+    const counter = overlay.querySelector('.kfn-file-carousel__counter');
+    const downloadSize = overlay.querySelector('.kfn-file-carousel__download-size');
+    const download = overlay.querySelector('.kn-file-download');
+
+    stage.innerHTML = '';
+    if (IMAGE_EXTENSIONS.includes(item.extension)) {
+        const loading = document.createElement('div');
+        loading.className = 'kfn-file-carousel__loading';
+        loading.innerHTML = '<div class="kfn-file-carousel__spinner"></div><div class="kfn-file-carousel__loading-label">Loading file\u2026</div>';
+        stage.appendChild(loading);
+
+        // Only reassure the user once it's actually slow, so fast loads stay clean.
+        const slowLoadTimer = setTimeout(() => {
+            if (!stage.contains(loading)) return;
+            loading.querySelector('.kfn-file-carousel__loading-label').textContent = 'Still loading \u2014 this file is large, hang tight\u2026';
+        }, 4000);
+
+        const img = document.createElement('img');
+        img.alt = item.fileName;
+        img.addEventListener('load', () => {
+            clearTimeout(slowLoadTimer);
+            loading.remove();
+            img.classList.add('is-loaded');
+        }, { once: true });
+        img.addEventListener('error', () => {
+            clearTimeout(slowLoadTimer);
+            if (stage.contains(img)) showFileCarouselFallback(stage, "This image couldn't be loaded.");
+        }, { once: true });
+        img.src = item.assetUrl;
+        stage.appendChild(img);
+    } else if (item.extension === 'pdf') {
+        // Browsers render PDFs natively in an iframe, so no external viewer is needed.
+        const iframe = document.createElement('iframe');
+        iframe.src = item.assetUrl;
+        iframe.title = item.fileName;
+        stage.appendChild(iframe);
+    } else if (fileCarouselState.tryOfficeEmbed && OFFICE_EXTENSIONS.includes(item.extension)) {
+        // Office Online needs a publicly reachable src; the download button below is the fallback if this renders blank.
+        const iframe = document.createElement('iframe');
+        iframe.src = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(item.assetUrl)}`;
+        iframe.title = item.fileName;
+        stage.appendChild(iframe);
+    } else {
+        const fallback = document.createElement('div');
+        fallback.className = 'kfn-file-carousel__fallback';
+        fallback.innerHTML = '<span class="kfn-file-carousel__icon">\uD83D\uDCC4</span>No preview available for this file type.';
+        stage.appendChild(fallback);
+    }
+
+    caption.textContent = item.caption || item.fileName;
+    counter.textContent = `${index + 1} of ${fileCarouselState.items.length}`;
+    filename.textContent = item.fileName;
+    const formattedSize = formatFileSizeBytes(item.fileSize);
+    downloadSize.textContent = formattedSize ? ` (${formattedSize})` : '';
+    download.href = item.assetUrl;
+    download.setAttribute('download', item.fileName);
+
+    if (item.fileSize === undefined) {
+        fetchFileSizeBytes(item).then((bytes) => {
+            // Bail if the carousel moved on or closed while the size request was in flight.
+            if (!fileCarouselState || fileCarouselState.items[fileCarouselState.index] !== item) return;
+            const sizeText = formatFileSizeBytes(bytes);
+            overlay.querySelector('.kfn-file-carousel__download-size').textContent = sizeText ? ` (${sizeText})` : '';
+        });
+    }
+
+    const showNav = fileCarouselState.items.length > 1 ? 'visible' : 'hidden';
+    overlay.querySelector('.kfn-file-carousel__nav--prev').style.visibility = showNav;
+    overlay.querySelector('.kfn-file-carousel__nav--next').style.visibility = showNav;
+
+    // Warm the browser cache for adjacent items so Prev/Next feels instant.
+    const total = fileCarouselState.items.length;
+    preloadFileCarouselImage(fileCarouselState.items[(index + 1) % total]);
+    preloadFileCarouselImage(fileCarouselState.items[(index - 1 + total) % total]);
+}
+
+/**
+ * Moves the open carousel forward/backward by `delta`, wrapping around at either end.
+ * @param {number} delta - -1 for previous, 1 for next.
+ * @returns {void}
+ */
+function navigateFileCarousel(delta) {
+    if (!fileCarouselState || !fileCarouselState.items.length) return;
+    const total = fileCarouselState.items.length;
+    const nextIndex = (fileCarouselState.index + delta + total) % total;
+    renderFileCarouselItem(nextIndex);
+}
+
+/**
+ * Closes the carousel when the user presses the browser Back button, since opening the carousel
+ * pushed a history entry for exactly this purpose.
+ * @returns {void}
+ */
+function onFileCarouselPopState() {
+    closeFileCarousel({ viaPopState: true });
+}
+
+/**
+ * Opens the shared file carousel overlay at a given item.
+ * @param {Array<Object>} items - Ordered list of `{assetId, fileName, extension, assetUrl, caption}` entries.
+ * @param {number} startIndex - Index of the item to show first.
+ * @param {HTMLElement} [triggerElement] - Element to restore focus to when the overlay closes.
+ * @param {{tryOfficeEmbed?: boolean}} [options]
+ * @returns {void}
+ */
+function openFileCarousel(items, startIndex, triggerElement, options = {}) {
+    if (!Array.isArray(items) || !items.length) return;
+    const overlay = ensureFileCarouselOverlay();
+
+    const onKeydown = (event) => {
+        if (event.key === 'Escape') closeFileCarousel();
+        else if (event.key === 'ArrowLeft') navigateFileCarousel(-1);
+        else if (event.key === 'ArrowRight') navigateFileCarousel(1);
+    };
+
+    fileCarouselState = {
+        items,
+        index: startIndex,
+        triggerElement: triggerElement || null,
+        tryOfficeEmbed: options.tryOfficeEmbed !== false,
+        keydownHandler: onKeydown,
+    };
+
+    document.addEventListener('keydown', onKeydown);
+    window.addEventListener('popstate', onFileCarouselPopState);
+    // One history entry per open (not per Prev/Next) so a single Back press closes the overlay
+    // instead of navigating the underlying page away while it stays open on top.
+    history.pushState({ kfnFileCarouselOpen: true }, '', location.href);
+
+    document.body.style.overflow = 'hidden';
+    overlay.classList.add('is-open');
+    renderFileCarouselItem(startIndex);
+    overlay.querySelector('.kfn-file-carousel__close').focus();
+}
+
+/**
+ * Closes the shared file carousel overlay and restores focus/scroll state.
+ * @param {{viaPopState?: boolean}} [options] - Set when called from a Back-button popstate, so we don't call history.back() again.
+ * @returns {void}
+ */
+function closeFileCarousel(options = {}) {
+    const overlay = document.getElementById('kfnFileCarousel');
+    if (!overlay || !fileCarouselState) return;
+
+    overlay.classList.remove('is-open');
+    overlay.querySelector('.kfn-file-carousel__stage').innerHTML = '';
+    document.body.style.overflow = '';
+    document.removeEventListener('keydown', fileCarouselState.keydownHandler);
+    window.removeEventListener('popstate', onFileCarouselPopState);
+
+    const { triggerElement } = fileCarouselState;
+    fileCarouselState = null;
+
+    // Closed via the X/backdrop/Escape rather than Back: pop the history entry we pushed on open
+    // so it doesn't sit there as a stale extra step next time the user presses Back.
+    if (!options.viaPopState) history.back();
+
+    if (triggerElement && typeof triggerElement.focus === 'function') triggerElement.focus();
+}
+
+/**
+ * Wires a Gmail-style attachment carousel onto a Knack table's file/image column.
+ * Clicking any file cell opens an overlay that pages through every file currently rendered in the
+ * table, instead of opening each asset in a new tab. Safe to call on every `knack-view-render` for
+ * the view; the click listener is only bound once per rendered table element.
+ * @param {string} viewId - Table view id (e.g. 'view_2331').
+ * @param {string} fileFieldKey - File/image field key backing the column to enable (e.g. 'field_888').
+ * @param {Object} [options]
+ * @param {string[]} [options.captionFieldKeys] - Field keys shown as caption text under the preview, joined with " · ".
+ * @param {boolean} [options.tryOfficeEmbed=true] - Attempt an inline Office Online preview for docx/xlsx/pptx before falling back to a download-only view.
+ * @returns {void}
+ */
+function initFileCarousel(viewId, fileFieldKey, options = {}) {
+    const normalizedViewId = knackNavigator.normalizeViewId(viewId);
+    const viewElement = document.getElementById(normalizedViewId);
+    if (!viewElement || viewElement.dataset.fileCarouselInit === 'true') return;
+
+    const fileColumnSelector = knackNavigator
+        .getViewColumnSelectors(normalizedViewId, fileFieldKey)
+        .find((selector) => selector.startsWith('td.') || selector.startsWith('td['));
+    if (!fileColumnSelector) return;
+
+    const captionFieldKeys = Array.isArray(options.captionFieldKeys) ? options.captionFieldKeys : [];
+    const captionSelectors = captionFieldKeys
+        .map((fieldKey) => knackNavigator
+            .getViewColumnSelectors(normalizedViewId, fieldKey)
+            .find((selector) => selector.startsWith('td.') || selector.startsWith('td[')))
+        .filter(Boolean);
+
+    /**
+     * Extracts asset info from whichever element inside the cell carries Knack's asset identity attributes.
+     * @param {HTMLElement} cellElement - The `<td>` for the file column.
+     * @returns {{assetId: string, fileName: string, extension: string, assetUrl: string}|null}
+     */
+    function getCellAssetInfo(cellElement) {
+        const assetElement = cellElement.querySelector('[data-asset-id][data-file-name]');
+        if (!assetElement) return null;
+        const info = buildKnackAssetInfo(
+            assetElement.getAttribute('data-asset-id'),
+            assetElement.getAttribute('data-file-name')
+        );
+        if (!info.assetUrl) return null;
+
+        const fileSize = assetElement.getAttribute('data-file-size');
+        return fileSize ? { ...info, fileSize: Number(fileSize) } : info;
+    }
+
+    /**
+     * Builds the caption text for a row from the configured caption columns.
+     * @param {HTMLElement} rowElement - The `<tr>` for the record.
+     * @returns {string}
+     */
+    function getRowCaption(rowElement) {
+        return captionSelectors
+            .map((selector) => rowElement.querySelector(selector)?.textContent.trim())
+            .filter(Boolean)
+            .join(' · ');
+    }
+
+    // Capture phase runs before Knack's own bubble-phase asset click handler, so this pre-empts
+    // Knack's native image lightbox from opening behind ours (it isn't rewritten for image extensions).
+    viewElement.addEventListener('click', (event) => {
+        const fileCell = event.target.closest(fileColumnSelector);
+        if (!fileCell || !viewElement.contains(fileCell)) return;
+
+        const clickedInfo = getCellAssetInfo(fileCell);
+        if (!clickedInfo) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        const items = [];
+        let startIndex = 0;
+
+        viewElement.querySelectorAll('tbody tr').forEach((rowElement) => {
+            const cell = rowElement.querySelector(fileColumnSelector);
+            if (!cell) return;
+            const info = getCellAssetInfo(cell);
+            if (!info) return;
+
+            if (cell === fileCell) startIndex = items.length;
+            items.push({ ...info, caption: getRowCaption(rowElement) });
+        });
+
+        if (!items.length) return;
+        openFileCarousel(items, startIndex, fileCell, { tryOfficeEmbed: options.tryOfficeEmbed });
+    }, true);
+
+    viewElement.dataset.fileCarouselInit = 'true';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: quick-toggles
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Quick toggles (analysis C26): CAMultiChoiceQuickToggle as-is; CAQuickToggle with its jQuery replaced by native DOM.
+
+function caQuickToggle({ key: viewId }, data = []) {
+    // Create an instance of the CAQuickToggle class and initialize it
+    const caQuickToggle = new CAQuickToggle(viewId, data);
+    caQuickToggle.init();
+}
+
+/**
+ * Enables quick toggle behaviour for two-option multiple-choice fields in table and search views.
+ * Supports either a view-level target reference or field-level keyword usage.
+ * @param {{ key: string }} view - Knack view metadata containing the view id.
+ * @param {Array<Object>} [data=[]] - Rendered Knack row data for the view.
+ * @returns {void}
+ */
+function caMultiChoiceQuickToggle({ key: viewId }, data = []) {
+    const caMultiChoiceQuickToggle = new CAMultiChoiceQuickToggle(viewId, data);
+    caMultiChoiceQuickToggle.init();
+}
+
+class CAQuickToggle {
+    constructor(viewId, data) {
+        // Core properties
+        this.viewId = viewId;
+        this.data = data;
+        this.kw = '_caqt';
+        this.kwInstance = null;
+        this.viewModel = null;
+        this.viewType = '';
+        this.inlineEditing = false;
+        this.fieldMap = new Map();
+
+        // State properties
+        this.quickToggleParams = {
+            bgColorTrue: '#e2efda',
+            bgColorFalse: '#ffb557',
+            bgColorPending: '#ffe699',
+            showNotification: false,
+            showSpinner: false,
+            pendingClass: 'ktlProgress',
+        };
+        this.qtScanItv = null;
+        this.quickToggleObj = {};
+        this.numToProcess = 0;
+        this.refreshTimer = null;
+        this.viewsToRefresh = [];
+        this.viewHasQt = false;
+        this.fieldsColor = {};
+    }
+
+    init() {
+        // Exit early if conditions aren't met
+        if (!this.isValidInitialState()) return;
+
+        // Setup keyword instances
+        if (!this.setupKeywordInstances()) return;
+
+        // Setup view model and check type
+        if (!this.setupViewModel()) return;
+
+        // Setup colors based on keywords
+        this.setupColors();
+
+        // Process fields to identify boolean fields
+        this.processFields();
+
+        // Update table colors
+        this.updateTableColors();
+
+        // Setup cell click handlers
+        this.setupCellClickHandlers();
+    }
+
+    isValidInitialState() {
+        // Exit early if no view ID, no data, or in iFrame window
+        return this.viewId && this.data.length > 0 && !ktl.scenes.isiFrameWnd();
+    }
+
+    setupKeywordInstances() {
+        // Check for the custom keyword specifically
+        this.kwInstance = ktlKeywords[this.viewId] && ktlKeywords[this.viewId][this.kw];
+        if (this.kwInstance && this.kwInstance.length) {
+            this.kwInstance = this.kwInstance[0];
+            const { options } = this.kwInstance;
+            if (!ktl.core.hasRoleAccess(options)) return false;
+        }
+
+        const hasCAQtKeyword = ktl.core.checkIfViewHasKeyword(this.viewId, this.kw);
+
+        // IMPORTANT: Check if the view has both _caqt and _qt keywords - if so, don't process
+        const hasOriginalQtKeyword = ktl.core.checkIfViewHasKeyword(this.viewId, '_qt');
+        if (hasOriginalQtKeyword) {
+            console.log(`View ${this.viewId} has both _caqt and _qt keywords. Using original quickToggle only.`);
+            return false;
+        }
+
+        // Ensure the view has our custom keyword
+        if (!hasCAQtKeyword) return false;
+
+        return true;
+    }
+
+    setupViewModel() {
+        this.viewModel = Knack.router.scene_view.model.views._byId[this.viewId];
+        if (!this.viewModel) return false;
+
+        const viewAttr = this.viewModel.attributes;
+        this.viewType = viewAttr.type;
+
+        // Only work with table and search views
+        if (!['table', 'search'].includes(this.viewType)) return false;
+
+        this.inlineEditing = this.viewType === 'table' ?
+            (viewAttr.options && viewAttr.options.cell_editor) :
+            viewAttr.cell_editor;
+
+        return true;
+    }
+
+    setupColors() {
+        // Start with hard coded default colors
+        let bgColorTrue = this.quickToggleParams.bgColorTrue;
+        let bgColorFalse = this.quickToggleParams.bgColorFalse;
+
+        // Override with view-specific colors, if any
+        if (this.kwInstance) {
+            this.viewHasQt = true; // If view has QT, then all fields inherit also
+
+            if (this.kwInstance.params && this.kwInstance.params.length) {
+                const fldColors = this.kwInstance.params[0];
+                if (fldColors.length >= 1 && fldColors[0])
+                    bgColorTrue = fldColors[0];
+
+                if (fldColors.length >= 2 && fldColors[1])
+                    bgColorFalse = fldColors[1];
+            }
+        }
+
+        // Save colors to instance variables
+        this.bgColorTrue = bgColorTrue;
+        this.bgColorFalse = bgColorFalse;
+    }
+
+    processFields() {
+        const viewAttr = this.viewModel.attributes;
+        let fieldKeywords = {};
+        const cols = this.viewType === 'table' ? viewAttr.columns : viewAttr.results.columns;
+
+        cols.forEach(col => {
+            if (col.type === 'field' && col.field && col.field.key) {
+                const field = Knack.objects.getField(col.field.key);
+                if (field && !col.connection) { // Field must be local to view's object, not a connected field.
+                    if (field.attributes.type === 'boolean') {
+                        let fieldHasQt = false;
+                        const { key: fieldId } = col.field;
+
+                        // Override with field-specific colors, if any.
+                        let tmpFieldColors = {
+                            bgColorTrue: this.bgColorTrue,
+                            bgColorFalse: this.bgColorFalse
+                        }
+
+                        ktl.fields.getFieldKeywords(fieldId, fieldKeywords);
+                        const fieldKeyword = fieldKeywords[fieldId] && fieldKeywords[fieldId][this.kw];
+                        if (this.viewHasQt || fieldKeyword) {
+                            fieldHasQt = true;
+                            if (fieldKeyword && fieldKeyword.length && fieldKeyword[0].params && fieldKeyword[0].params.length > 0) {
+                                const fldColors = fieldKeyword[0].params[0];
+                                if (fldColors.length >= 1 && fldColors[0] !== '')
+                                    tmpFieldColors.bgColorTrue = fldColors[0];
+                                if (fldColors.length >= 2 && fldColors[1] !== '')
+                                    tmpFieldColors.bgColorFalse = fldColors[1];
+                            }
+                        }
+
+                        if (fieldHasQt) {
+                            this.fieldsColor[fieldId] = tmpFieldColors;
+                            if (this.inlineEditing && !col.ignore_edit)
+                                document.querySelectorAll(`#${this.viewId} td.${fieldId}.cell-edit`).forEach((cell) => cell.classList.add('caQtCellClickable'));
+                        }
+                    }
+                }
+                this.fieldMap.set(col.field.key, col.header);
+            }
+        });
+    }
+
+    updateTableColors() {
+        if (Object.keys(this.fieldsColor).length) {
+            this.data.forEach(row => {
+                Object.keys(this.fieldsColor).forEach(fieldId => {
+                    // Merge new style with existing one.
+                    const style = `background-color:${row[fieldId + '_raw'] === true ?
+                        this.fieldsColor[fieldId].bgColorTrue :
+                        this.fieldsColor[fieldId].bgColorFalse}`;
+                    document.querySelectorAll(`#${this.viewId} tbody tr[id="${row.id}"] .${fieldId}`).forEach((cell) => {
+                        const currentStyle = cell.getAttribute('style');
+                        cell.setAttribute('style', `${currentStyle ? currentStyle + '; ' : ''}${style}`);
+                    });
+                });
+            });
+        }
+    }
+
+    setupCellClickHandlers() {
+        // Process cell clicks
+        // Capture phase so this runs before other click handlers on the cell (jQuery's bindFirst did the same job).
+        document.querySelectorAll(`#${this.viewId} .caQtCellClickable`).forEach((cell) => cell.addEventListener('click', (e) => this.handleCellClick(e), { capture: true }));
+    }
+
+    handleCellClick(e) {
+        if (document.querySelector('.bulkEditCb:checked')) return;
+
+        e.stopImmediatePropagation();
+
+        const fieldId = e.target.dataset.fieldKey || e.target.parentElement?.dataset.fieldKey;
+        const viewElement = e.target.closest('.kn-search.kn-view[id], .kn-table.kn-view[id]');
+
+        if (viewElement) {
+            const viewId = viewElement.id;
+            const dt = Date.now();
+            const recId = e.target.closest('tr')?.id;
+            let value = ktl.views.getDataFromRecId(viewId, recId)[`${fieldId}_raw`];
+            value = (value === true ? false : true);
+
+            if (!this.viewsToRefresh.includes(viewId))
+                this.viewsToRefresh.push(viewId);
+
+            this.quickToggleObj[dt] = { viewId, fieldId, value, recId, processed: false };
+
+            const cell = e.target.closest('td');
+            cell.style.backgroundColor = this.quickToggleParams.bgColorPending;
+
+            if (this.quickToggleParams.pendingClass) {
+                cell.classList.add(this.quickToggleParams.pendingClass);
+            }
+
+            clearTimeout(this.refreshTimer);
+
+            // Look for corresponding field for additional updates
+            const additionalData = this.findCorrespondingField(fieldId, value);
+            if (additionalData) {
+                this.quickToggleObj[dt].additionalData = additionalData;
+            }
+
+            this.numToProcess++;
+            this.startQtScanning();
+        }
+    }
+
+    findCorrespondingField(fieldId, value) {
+        const fieldTitle = this.fieldMap.get(fieldId);
+        let correspondingFieldId = '';
+        let isName = false;
+
+        for (const [key, header] of this.fieldMap.entries()) {
+            if (key !== fieldId &&
+                (header === fieldTitle ||
+                 header === `${fieldTitle} - Name` ||
+                 header.startsWith(`${fieldTitle} `))) {
+
+                isName = header === `${fieldTitle} - Name`;
+                correspondingFieldId = key;
+                break;
+            }
+        }
+
+        if (correspondingFieldId) {
+            const userAttributes = Knack.getUserAttributes();
+            const userAttribute = isName ? userAttributes.name : userAttributes.id;
+            return { [correspondingFieldId]: value === false ? null : userAttribute };
+        }
+
+        return null;
+    }
+
+    startQtScanning() {
+        if (this.quickToggleParams.showNotification) {
+            ktl.core.infoPopup();
+            this.showProgress();
+        }
+
+        if (this.qtScanItv) return;
+
+        ktl.views.autoRefresh(false);
+        this.qtScanItv = setInterval(() => {
+            if (Object.keys(this.quickToggleObj).length) {
+                const dt = Object.keys(this.quickToggleObj)[0];
+                const { processed } = this.quickToggleObj[dt];
+                if (!processed) {
+                    this.quickToggleObj[dt].processed = true;
+                    this.doQuickToggle(dt);
+                }
+            }
+        }, 500);
+    }
+
+    doQuickToggle(dt) {
+        const recObj = this.quickToggleObj[dt];
+        if (!Object.keys(recObj).length || !recObj.viewId || !recObj.fieldId) return;
+
+        const normalizedViewId = knackNavigator.normalizeViewId(recObj.viewId);
+        const sceneId = knackNavigator.getSceneInfoForView(normalizedViewId)?.key || '';
+        if (!sceneId || !normalizedViewId) {
+            ktl.views.autoRefresh();
+            console.error('Quick Toggle operation failed: could not resolve scene or view id.', recObj);
+            return;
+        }
+
+        const apiData = { [recObj.fieldId]: recObj.value, ...recObj.additionalData };
+        const apiClient = getKnackApiClient();
+
+        apiClient.updateRecord(sceneId, normalizedViewId, recObj.recId, apiData)
+            .then(() => {
+                if (this.quickToggleParams.showNotification) {
+                    this.showProgress();
+                }
+                this.numToProcess--;
+                delete this.quickToggleObj[dt];
+
+                if (!Object.keys(this.quickToggleObj).length) {
+                    clearInterval(this.qtScanItv);
+                    this.qtScanItv = null;
+
+                    if (this.quickToggleParams.showSpinner) {
+                        Knack.showSpinner();
+                    }
+
+                    this.refreshTimer = setTimeout(() => {
+                        ktl.core.removeInfoPopup();
+                        ktl.views.refreshViewArray(this.viewsToRefresh)
+                            .then(() => {
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            })
+                            .catch(() => { })
+                    }, 500);
+                }
+            })
+            .catch(reason => {
+                ktl.views.autoRefresh();
+                const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
+                console.error('Quick Toggle operation failed:', reason);
+                errorHandler.handleError(reason, {function: 'doQuickToggle'}, 'Quick Toggle Error')
+                alert(`Error code KEC_1025 while processing Quick Toggle operation, reason: ${errorMsg}`);
+            });
+    }
+
+    showProgress() {
+        ktl.core.setInfoPopupText('Toggling... ' + this.numToProcess + ' items remaining.');
+    }
+}
+
+/**
+ * Quick-toggle controller for two-option multiple-choice fields.
+ */
+class CAMultiChoiceQuickToggle {
+    /**
+     * Creates a controller for one rendered view.
+     * @param {string} viewId - Knack view id.
+     * @param {Array<Object>} data - Rendered Knack row data.
+     */
+    constructor(viewId, data) {
+        this.viewId = viewId;
+        this.data = data;
+        this.kw = '_mqt';
+        this.kwInstance = null;
+        this.viewModel = null;
+        this.viewType = '';
+        this.inlineEditing = false;
+        this.viewTargets = [];
+        this.fieldToggleConfig = {};
+        this.quickToggleParams = {
+            bgColorTrue: '#e2efda',
+            bgColorFalse: '#ffb557',
+            bgColorPending: '#ffe699',
+            showNotification: false,
+            showSpinner: false,
+            pendingClass: 'ktlProgress',
+        };
+        this.qtScanItv = null;
+        this.quickToggleObj = {};
+        this.numToProcess = 0;
+        this.refreshTimer = null;
+        this.viewsToRefresh = [];
+    }
+
+    /**
+     * Initialises the controller when the view and keyword configuration are valid.
+     * @returns {void}
+     */
+    init() {
+        if (!this.isValidInitialState()) return;
+        if (!this.setupKeywordInstances()) return;
+        if (!this.setupViewModel()) return;
+
+        this.processFields();
+        if (this.isToggleQueueEmpty(this.fieldToggleConfig)) return;
+
+        this.updateTableColors();
+        this.setupCellClickHandlers();
+    }
+
+    /**
+     * Confirms the view is in a usable render state.
+     * @returns {boolean} True when processing can continue.
+     */
+    isValidInitialState() {
+        return this.viewId && this.data.length > 0 && !ktl.scenes.isiFrameWnd();
+    }
+
+    /**
+     * Reads the view-level keyword instance and target references.
+     * @returns {boolean} True when processing can continue.
+     */
+    setupKeywordInstances() {
+        const keywordInstances = ktlKeywords[this.viewId] && ktlKeywords[this.viewId][this.kw];
+        if (Array.isArray(keywordInstances) && keywordInstances.length) {
+            this.kwInstance = keywordInstances[0];
+            const { options } = this.kwInstance;
+            if (!ktl.core.hasRoleAccess(options)) return false;
+            this.viewTargets = this.extractViewTargets(this.kwInstance);
+        }
+
+        return true;
+    }
+
+    /**
+     * Resolves the Knack view model and inline-edit capability.
+     * @returns {boolean} True when the view is a supported type.
+     */
+    setupViewModel() {
+        this.viewModel = Knack.router.scene_view.model.views._byId[this.viewId];
+        if (!this.viewModel) return false;
+
+        const viewAttr = this.viewModel.attributes;
+        this.viewType = viewAttr.type;
+        if (!['table', 'search'].includes(this.viewType)) return false;
+
+        this.inlineEditing = this.viewType === 'table'
+            ? Boolean(viewAttr.options && viewAttr.options.cell_editor)
+            : Boolean(viewAttr.cell_editor);
+
+        return true;
+    }
+
+    /**
+     * Scans view columns and records the eligible quick-toggle fields.
+     * @returns {void}
+     */
+    processFields() {
+        const viewAttr = this.viewModel.attributes;
+        const cols = this.viewType === 'table' ? viewAttr.columns : viewAttr.results.columns;
+        const fieldKeywords = {};
+
+        cols.forEach((col) => {
+            if (col.type !== 'field' || !col.field?.key) return;
+            if (col.connection) return;
+
+            const fieldId = knackNavigator.normalizeFieldId(col.field.key);
+            if (!fieldId) return;
+
+            const fieldType = knackNavigator.getFieldType(fieldId);
+            if (fieldType !== 'multiple_choice') return;
+
+            const toggleChoices = this.resolveToggleChoices(fieldId);
+            if (!toggleChoices) return;
+
+            ktl.fields.getFieldKeywords(fieldId, fieldKeywords);
+            const fieldKeywordInstances = fieldKeywords[fieldId] && fieldKeywords[fieldId][this.kw];
+            const isFieldKeywordEnabled = Array.isArray(fieldKeywordInstances) && fieldKeywordInstances.length > 0;
+            const isViewTargetEnabled = this.matchesViewTarget(fieldId, col.header);
+
+            if (!isFieldKeywordEnabled && !isViewTargetEnabled) return;
+
+            const fieldColors = this.resolveFieldColours(fieldKeywordInstances);
+            this.fieldToggleConfig[fieldId] = {
+                activeValue: toggleChoices.activeValue,
+                inactiveValue: toggleChoices.inactiveValue,
+                bgColorTrue: fieldColors.bgColorTrue,
+                bgColorFalse: fieldColors.bgColorFalse,
+            };
+
+            if (this.inlineEditing && !col.ignore_edit) {
+                this.getViewRoot()
+                    ?.querySelectorAll(`td.${fieldId}.cell-edit`)
+                    .forEach((cell) => {
+                        if (!(cell instanceof HTMLElement) || cell.classList.contains('ktlNoInlineEdit')) return;
+                        cell.classList.add('mqtCellClickable');
+                    });
+            }
+        });
+    }
+
+    /**
+     * Extracts target field ids or headers from the first keyword parameter group.
+     * @param {Object|null} keywordInstance - Parsed KTL keyword instance.
+     * @returns {Array<string>} Normalised target references.
+     */
+    extractViewTargets(keywordInstance) {
+        const targetGroup = Array.isArray(keywordInstance?.params?.[0]) ? keywordInstance.params[0] : [];
+        return targetGroup
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+    }
+
+    /**
+     * Resolves field-specific colours from the field keyword, falling back to shared defaults.
+     * @param {Array<Object>|undefined} fieldKeywordInstances - Parsed field keyword instances.
+     * @returns {{ bgColorTrue: string, bgColorFalse: string }} Resolved colours.
+     */
+    resolveFieldColours(fieldKeywordInstances) {
+        const fieldColors = {
+            bgColorTrue: this.quickToggleParams.bgColorTrue,
+            bgColorFalse: this.quickToggleParams.bgColorFalse,
+        };
+
+        const colorGroup = Array.isArray(fieldKeywordInstances?.[0]?.params?.[0])
+            ? fieldKeywordInstances[0].params[0]
+            : [];
+
+        if (colorGroup[0]) fieldColors.bgColorTrue = colorGroup[0];
+        if (colorGroup[1]) fieldColors.bgColorFalse = colorGroup[1];
+
+        return fieldColors;
+    }
+
+    /**
+     * Matches a view target reference against a rendered field.
+     * @param {string} fieldId - Normalised field id.
+     * @param {string} headerText - Raw column header text.
+     * @returns {boolean} True when the field was explicitly targeted by the view keyword.
+     */
+    matchesViewTarget(fieldId, headerText) {
+        if (!this.viewTargets.length) return false;
+
+        const normalisedFieldId = knackNavigator.normalizeFieldId(fieldId);
+        const normalisedHeader = knackNavigator.normalizeViewColumnHeader(headerText);
+
+        return this.viewTargets.some((target) => {
+            const targetFieldId = knackNavigator.normalizeFieldId(target);
+            if (targetFieldId && targetFieldId === normalisedFieldId) return true;
+            return knackNavigator.normalizeViewColumnHeader(target) === normalisedHeader;
+        });
+    }
+
+    /**
+     * Resolves the two available choice labels from field metadata.
+     * @param {string} fieldId - Normalised field id.
+     * @returns {{ activeValue: string, inactiveValue: string }|null} Choice labels, or null when unsupported.
+     */
+    resolveToggleChoices(fieldId) {
+        const options = knackNavigator.getFieldChoiceOptions(fieldId);
+        if (options.length !== 2) return null;
+        return {
+            activeValue: options[0],
+            inactiveValue: options[1],
+        };
+    }
+
+    /**
+     * Applies state colours to every eligible rendered cell.
+     * @returns {void}
+     */
+    updateTableColors() {
+        this.data.forEach((row) => {
+            Object.entries(this.fieldToggleConfig).forEach(([fieldId, config]) => {
+                const nextState = this.resolveSemanticChoice(row, fieldId, config);
+                if (nextState === null) return;
+
+                const cell = this.getViewRoot()?.querySelector(`tbody tr[id="${row.id}"] .${fieldId}`);
+                if (!(cell instanceof HTMLElement)) return;
+
+                const backgroundColor = nextState ? config.bgColorTrue : config.bgColorFalse;
+                cell.style.backgroundColor = backgroundColor;
+            });
+        });
+    }
+
+    /**
+     * Marks eligible cells as clickable and binds the quick-toggle handler.
+     * @returns {void}
+     */
+    setupCellClickHandlers() {
+        this.getViewRoot()
+            ?.querySelectorAll('.mqtCellClickable')
+            .forEach((cell) => {
+                if (!(cell instanceof HTMLElement)) return;
+                if (cell.classList.contains('ktlNoInlineEdit')) {
+                    cell.classList.remove('mqtCellClickable');
+                    return;
+                }
+                if (cell.dataset.mqtBound === 'true') return;
+                cell.dataset.mqtBound = 'true';
+                cell.addEventListener('click', (e) => this.handleCellClick(e), true);
+            });
+    }
+
+    /**
+     * Handles a click on a supported cell and queues the update.
+     * @param {Event} e - Click event.
+     * @returns {void}
+     */
+    handleCellClick(e) {
+        if (document.querySelector('.bulkEditCb:checked')) return;
+
+        const eventTarget = e.target instanceof Element ? e.target : null;
+        const clickedCell = eventTarget?.closest('td');
+        if (clickedCell instanceof HTMLElement && clickedCell.classList.contains('ktlNoInlineEdit')) return;
+
+        e.stopImmediatePropagation();
+
+        const fieldId = knackNavigator.normalizeFieldId(
+            clickedCell?.getAttribute('data-field-key')
+            || eventTarget?.getAttribute('data-field-key')
+            || eventTarget?.parentElement?.getAttribute('data-field-key')
+        );
+        const fieldConfig = this.fieldToggleConfig[fieldId];
+        if (!fieldConfig) return;
+
+        const viewElement = eventTarget?.closest('.kn-search.kn-view[id], .kn-table.kn-view[id]');
+        if (!(viewElement instanceof HTMLElement)) return;
+
+        const viewId = viewElement.id;
+        const recId = eventTarget?.closest('tr')?.id || '';
+        const record = ktl.views.getDataFromRecId(viewId, recId);
+        const value = this.getNextChoiceValue(record, fieldId, fieldConfig);
+        if (value === undefined) return;
+
+        if (!this.viewsToRefresh.includes(viewId)) {
+            this.viewsToRefresh.push(viewId);
+        }
+
+        const dt = Date.now();
+        this.quickToggleObj[dt] = { viewId, fieldId, value, recId, processed: false };
+
+        if (clickedCell instanceof HTMLElement) {
+            clickedCell.style.backgroundColor = this.quickToggleParams.bgColorPending;
+            if (this.quickToggleParams.pendingClass) {
+                clickedCell.classList.add(this.quickToggleParams.pendingClass);
+            }
+        }
+
+        clearTimeout(this.refreshTimer);
+        this.numToProcess++;
+        this.startQtScanning();
+    }
+
+    /**
+     * Resolves the current two-option state from the rendered record.
+     * @param {Object} record - Knack row record.
+     * @param {string} fieldId - Normalised field id.
+     * @param {{ activeValue: string, inactiveValue: string }} fieldConfig - Field toggle configuration.
+     * @returns {boolean|null} True for the first option, false for the second, null when unresolved.
+     */
+    resolveSemanticChoice(record, fieldId, fieldConfig) {
+        const typedValue = knackValueResolver.resolve(record, fieldId, { mode: 'typed', fallback: undefined });
+        const values = Array.isArray(typedValue) ? typedValue : [typedValue];
+        const normalisedValues = values
+            .map((value) => String(value || '').trim().toLowerCase())
+            .filter(Boolean);
+
+        if (normalisedValues.includes(String(fieldConfig.activeValue).trim().toLowerCase())) return true;
+        if (normalisedValues.includes(String(fieldConfig.inactiveValue).trim().toLowerCase())) return false;
+        return null;
+    }
+
+    /**
+     * Builds the next request value while preserving single-value versus array field shapes.
+     * @param {Object} record - Knack row record.
+     * @param {string} fieldId - Normalised field id.
+     * @param {{ activeValue: string, inactiveValue: string }} fieldConfig - Field toggle configuration.
+     * @returns {string|Array<string>|undefined} Knack request value for the next state.
+     */
+    getNextChoiceValue(record, fieldId, fieldConfig) {
+        const rawValue = record?.[`${fieldId}_raw`];
+        const currentState = this.resolveSemanticChoice(record, fieldId, fieldConfig);
+        const nextValue = currentState === true ? fieldConfig.inactiveValue : fieldConfig.activeValue;
+
+        if (Array.isArray(rawValue)) {
+            return [nextValue];
+        }
+
+        return nextValue;
+    }
+
+    /**
+     * Starts the queued PUT processing loop.
+     * @returns {void}
+     */
+    startQtScanning() {
+        if (this.quickToggleParams.showNotification) {
+            ktl.core.infoPopup();
+            this.showProgress();
+        }
+
+        if (this.qtScanItv) return;
+
+        ktl.views.autoRefresh(false);
+        this.qtScanItv = setInterval(() => {
+            if (this.isToggleQueueEmpty(this.quickToggleObj)) return;
+
+            const dt = Object.keys(this.quickToggleObj)[0];
+            const { processed } = this.quickToggleObj[dt];
+            if (!processed) {
+                this.quickToggleObj[dt].processed = true;
+                this.doQuickToggle(dt);
+            }
+        }, 500);
+    }
+
+    /**
+     * Sends the queued Knack update for one record.
+     * @param {string} dt - Queue key.
+     * @returns {void}
+     */
+    doQuickToggle(dt) {
+        const recObj = this.quickToggleObj[dt];
+        if (this.isToggleQueueEmpty(recObj) || !recObj.viewId || !recObj.fieldId) return;
+
+        const normalisedViewId = knackNavigator.normalizeViewId(recObj.viewId);
+        const sceneId = knackNavigator.getSceneInfoForView(normalisedViewId)?.key || '';
+        if (!sceneId || !normalisedViewId) {
+            ktl.views.autoRefresh();
+            console.error('Multi-choice quick toggle operation failed: could not resolve scene or view id.', recObj);
+            return;
+        }
+
+        const apiData = { [recObj.fieldId]: recObj.value };
+        const apiClient = getKnackApiClient();
+
+        apiClient.updateRecord(sceneId, normalisedViewId, recObj.recId, apiData)
+            .then(() => {
+                if (this.quickToggleParams.showNotification) {
+                    this.showProgress();
+                }
+
+                this.numToProcess--;
+                delete this.quickToggleObj[dt];
+
+                if (this.isToggleQueueEmpty(this.quickToggleObj)) {
+                    clearInterval(this.qtScanItv);
+                    this.qtScanItv = null;
+
+                    if (this.quickToggleParams.showSpinner) {
+                        Knack.showSpinner();
+                    }
+
+                    this.refreshTimer = setTimeout(() => {
+                        ktl.core.removeInfoPopup();
+                        ktl.views.refreshViewArray(this.viewsToRefresh)
+                            .then(() => {
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            })
+                            .catch(() => { });
+                    }, 500);
+                }
+            })
+            .catch((reason) => {
+                ktl.views.autoRefresh();
+                const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
+                console.error('Multi-choice quick toggle operation failed:', reason);
+                errorHandler.handleError(reason, { function: 'doQuickToggle' }, 'Multi-choice Quick Toggle Error');
+                alert(`Error code KEC_1025 while processing multi-choice quick toggle, reason: ${errorMsg}`);
+            });
+    }
+
+    /**
+     * Updates the shared progress popup text.
+     * @returns {void}
+     */
+    showProgress() {
+        ktl.core.setInfoPopupText('Toggling... ' + this.numToProcess + ' items remaining.');
+    }
+
+    /**
+     * Returns the rendered root element for the current view.
+     * @returns {HTMLElement|null} View root element.
+     */
+    getViewRoot() {
+        const viewRoot = document.getElementById(this.viewId);
+        return viewRoot instanceof HTMLElement ? viewRoot : null;
+    }
+
+    /**
+     * Checks whether a plain object has any enumerable keys.
+     * @param {Object|null|undefined} value - Object to inspect.
+     * @returns {boolean} True when the object is empty or invalid.
+     */
+    isToggleQueueEmpty(value) {
+        return !value || typeof value !== 'object' || Object.keys(value).length === 0;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: version-refresh
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Version refresh controller ported as-is (analysis C05).
+
+/**
+ * Creates a reusable version-refresh controller for Knack apps.
+ * Callers provide app-specific storage keys, version normalisation, sync callbacks,
+ * and safe-refresh UI hooks while the shared controller handles storage, postMessage,
+ * duplicate suppression, and deferred refresh orchestration.
+ * @param {Object} [options={}] - Controller options.
+ * @returns {{readState: Function, writeState: Function, storeUserVersion: Function, resetState: Function, evaluateIframeVersionState: Function, syncIframeVersion: Function, postRefreshMessage: Function, runRefreshIfSafe: Function, handleRefreshMessage: Function}} Version refresh controller.
+ */
+function createVersionRefreshController(options = {}) {
+    const {
+        storageKey = '',
+        storageAdapter = createBulkActionStorageAdapter(
+            typeof localStorage !== 'undefined' ? localStorage : null,
+            { preferKtl: true }
+        ),
+        messageSource = '',
+        messageType = '',
+        isIframeWindow = function () {
+            return ktl.scenes.isiFrameWnd();
+        },
+        getCurrentUserId = function () {
+            return knackValueResolver.toStringSafe(Knack?.getUserAttributes?.()?.id);
+        },
+        normaliseVersion = function (value) {
+            return knackValueResolver.toStringSafe(value)
+                .replace(/<br\s*\/?>/gi, ' ')
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/&nbsp;/gi, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        },
+        userVersionIndicatorId = '',
+        userVersionIndicatorClassName = '',
+        renderUserVersion = function (userVersion) {
+            if (isIframeWindow() || !userVersionIndicatorId) {
+                return;
+            }
+
+            renderVersionIndicator(userVersion, {
+                indicatorId: userVersionIndicatorId,
+                className: userVersionIndicatorClassName,
+            });
+        },
+        canRefreshNow = null,
+        refreshWaitMessage = 'There is a new version available. You will be updated when it is safe to do so.',
+        refreshNowMessage = 'There is a new version available. Updating now...',
+        refreshNotificationTarget = document.body,
+        refreshNotificationClassName = ['notification-fixed-center', 'notification-fixed-center--warning'],
+        refreshNotificationDelay = 5000,
+        refreshNotificationFadeTime = 300,
+        targetVersionItem = '',
+        targetVersionItemFieldId = '',
+        targetVersionValueFieldId = '',
+        syncUserVersionViewId = '',
+        syncUserVersionFieldId = '',
+        showRefreshWait = function (targetVersion) {
+            showNotification({
+                message: refreshWaitMessage,
+                delay: refreshNotificationDelay,
+                target: refreshNotificationTarget,
+                fadeTime: refreshNotificationFadeTime,
+                className: refreshNotificationClassName,
+            });
+        },
+        showRefreshNow = function (targetVersion) {
+            showNotification({
+                message: refreshNowMessage,
+                delay: refreshNotificationDelay,
+                target: refreshNotificationTarget,
+                fadeTime: refreshNotificationFadeTime,
+                className: refreshNotificationClassName,
+            });
+        },
+        syncUserVersion = async function (targetVersion, context = {}) {
+            const userId = knackValueResolver.toStringSafe(context.userId);
+            const normalizedViewId = knackNavigator.normalizeViewId(syncUserVersionViewId);
+            const normalizedFieldId = knackNavigator.normalizeFieldId(syncUserVersionFieldId);
+            const sceneKey = knackNavigator.getSceneInfoForView(normalizedViewId)?.key || '';
+
+            if (!userId || !targetVersion || !normalizedViewId || !normalizedFieldId || !sceneKey) {
+                return '';
+            }
+
+            await getKnackApiClient().updateRecord(sceneKey, normalizedViewId, userId, {
+                [normalizedFieldId]: targetVersion,
+            });
+
+            return targetVersion;
+        },
+        onUserVersionSynced = function (syncedVersion, context) {},
+        onSyncError = function (error, context) {
+            console.error('[VersionRefreshController] Failed to sync the user version.', error, context);
+        },
+        reload = function () {
+            window.location.reload();
+        },
+        refreshHoldEventName = 'kf-version-refresh-hold',
+        refreshReleaseEventName = 'kf-version-refresh-release',
+        reloadDelayMs = 1200,
+        recentReloadWindowMs = 15000,
+    } = options;
+
+    const internalState = {
+        deferredNoticeTargetVersion: '',
+        iframeCurrentUserRecord: null,
+        iframeTargetRecords: [],
+        pendingRequestActive: false,
+        reloadTimerId: 0,
+        pendingObserver: null,
+        refreshHoldIds: new Set(),
+        syncInFlight: false,
+    };
+
+    const normalizedSyncUserVersionFieldId = knackNavigator.normalizeFieldId(syncUserVersionFieldId);
+    const normalizedTargetVersionItemFieldId = knackNavigator.normalizeFieldId(targetVersionItemFieldId);
+    const normalizedTargetVersionValueFieldId = knackNavigator.normalizeFieldId(targetVersionValueFieldId);
+
+    /**
+     * Normalises a version string using the configured app callback.
+     * @param {string} value - Raw version value.
+     * @returns {string} Normalised version value.
+     */
+    function normalizeVersion(value) {
+        return knackValueResolver.toStringSafe(normaliseVersion(value));
+    }
+
+    /**
+     * Builds a normalised iframe version snapshot.
+     * @param {{ userVersion?: string, targetVersion?: string }} [snapshot={}] - Raw iframe version values.
+     * @returns {{ userVersion: string, targetVersion: string }} Normalised iframe version values.
+     */
+    function createIframeVersionSnapshot(snapshot = {}) {
+        return {
+            userVersion: normalizeVersion(snapshot.userVersion),
+            targetVersion: normalizeVersion(snapshot.targetVersion),
+        };
+    }
+
+    /**
+     * Merges a partial stored-state update with the current persisted state.
+     * @param {{ targetVersion?: string, lastReloadedTarget?: string, lastReloadedAt?: string, userVersion?: string }} [state={}] - Partial stored state.
+     * @param {{ targetVersion: string, lastReloadedTarget: string, lastReloadedAt: string, userVersion: string }} [baseState=readState()] - Base stored state.
+     * @returns {{ targetVersion: string, lastReloadedTarget: string, lastReloadedAt: string, userVersion: string }} Merged stored state.
+     */
+    function mergeStoredState(state = {}, baseState = readState()) {
+        return {
+            targetVersion: state?.targetVersion ?? baseState.targetVersion,
+            lastReloadedTarget: state?.lastReloadedTarget ?? baseState.lastReloadedTarget,
+            lastReloadedAt: state?.lastReloadedAt ?? baseState.lastReloadedAt,
+            userVersion: state?.userVersion ?? baseState.userVersion,
+        };
+    }
+
+    /**
+     * Caches the current-user record used for iframe version control.
+     * @param {Object|Object[]|null} recordOrRecords - Current-user record payload.
+     * @returns {Object|null} Cached current-user record.
+     */
+    function cacheCurrentUserRecord(recordOrRecords) {
+        const record = Array.isArray(recordOrRecords) ? recordOrRecords[0] : recordOrRecords;
+        internalState.iframeCurrentUserRecord = record && typeof record === 'object' ? record : null;
+        return internalState.iframeCurrentUserRecord;
+    }
+
+    /**
+     * Caches the target-version records used for iframe version control.
+     * @param {Object[]|null} records - Target-version records.
+     * @returns {Object[]} Cached target-version records.
+     */
+    function cacheTargetVersionRecords(records) {
+        internalState.iframeTargetRecords = Array.isArray(records) ? records : [];
+        return internalState.iframeTargetRecords;
+    }
+
+    /**
+     * Reads the current user version from the cached iframe record.
+     * @param {Object|null} [record=internalState.iframeCurrentUserRecord] - Cached current-user record.
+     * @returns {string} Normalised cached user version.
+     */
+    function getCachedUserVersion(record = internalState.iframeCurrentUserRecord) {
+        return normalizeVersion(record?.[normalizedSyncUserVersionFieldId]);
+    }
+
+    /**
+     * Resolves the configured target version from cached or supplied records.
+     * @param {Object[]|null} [records=internalState.iframeTargetRecords] - Cached target-version records.
+     * @returns {string} Normalised configured target version.
+     */
+    function getTargetVersion(records = internalState.iframeTargetRecords) {
+        const targetItemValue = knackValueResolver.toStringSafe(targetVersionItem);
+        if (!targetItemValue || !Array.isArray(records) || !normalizedTargetVersionItemFieldId || !normalizedTargetVersionValueFieldId) {
+            return '';
+        }
+
+        const matchingRecord = records.find(function (record) {
+            return knackValueResolver.toStringSafe(record?.[normalizedTargetVersionItemFieldId]) === targetItemValue;
+        });
+
+        return normalizeVersion(matchingRecord?.[normalizedTargetVersionValueFieldId]);
+    }
+
+    /**
+     * Builds an iframe version snapshot from cached controller state.
+     * @returns {{ userVersion: string, targetVersion: string }} Normalised cached iframe versions.
+     */
+    function createCachedIframeVersionSnapshot() {
+        return createIframeVersionSnapshot({
+            userVersion: getCachedUserVersion(),
+            targetVersion: getTargetVersion(),
+        });
+    }
+
+    /**
+     * Determines whether the current route points at the app home page.
+     * @returns {boolean} True when the current hash has no nested route segments.
+     */
+    function isHomeRoute() {
+        const currentHash = knackValueResolver.toStringSafe(window.location.hash).replace(/^#/, '');
+        const pathOnly = currentHash.split('?')[0];
+        const segments = pathOnly.split('/').map(function (segment) {
+            return String(segment || '').trim();
+        }).filter(Boolean);
+        return segments.length <= 1;
+    }
+
+    /**
+     * Determines whether a visible non-modal form is present on the page.
+     * @returns {boolean} True when a blocking form is visible.
+     */
+    function hasBlockingForm() {
+        return Array.from(document.querySelectorAll('.kn-form.kn-view form, .kn-view.kn-form form')).some(function (formEl) {
+            return isElementVisible(formEl) && !formEl.closest('.kn-modal');
+        });
+    }
+
+    /**
+     * Determines whether the current page can safely refresh.
+     * @returns {boolean} True when no blocking modal or form is visible.
+     */
+    function canRefreshPageNow() {
+        if (typeof canRefreshNow === 'function') {
+            return canRefreshNow();
+        }
+
+        if (Array.from(document.querySelectorAll('.kn-modal')).some(function (modalEl) {
+            return isElementVisible(modalEl);
+        })) {
+            return false;
+        }
+
+        if (isHomeRoute()) {
+            return true;
+        }
+
+        return !hasBlockingForm();
+    }
+
+    /**
+     * Reads the persisted version-refresh state.
+     * @returns {{ targetVersion: string, lastReloadedTarget: string, lastReloadedAt: string, userVersion: string }} Stored state.
+     */
+    function readState() {
+        let stored = null;
+
+        try {
+            stored = JSON.parse(storageAdapter?.get?.(storageKey) || 'null');
+        } catch (error) {
+            console.warn('[VersionRefreshController] Ignoring invalid stored version state.', error);
+        }
+
+        return {
+            targetVersion: normalizeVersion(stored?.targetVersion),
+            lastReloadedTarget: normalizeVersion(stored?.lastReloadedTarget),
+            lastReloadedAt: knackValueResolver.toStringSafe(stored?.lastReloadedAt),
+            userVersion: normalizeVersion(stored?.userVersion),
+        };
+    }
+
+    /**
+     * Persists the supplied version-refresh state when it has changed.
+     * @param {{ targetVersion?: string, lastReloadedTarget?: string, lastReloadedAt?: string, userVersion?: string }} state - State to persist.
+     * @returns {void}
+     */
+    function writeState(state) {
+        if (!storageKey || !storageAdapter || typeof storageAdapter.set !== 'function') {
+            return;
+        }
+
+        const nextState = {
+            targetVersion: normalizeVersion(state?.targetVersion),
+            lastReloadedTarget: normalizeVersion(state?.lastReloadedTarget),
+            lastReloadedAt: knackValueResolver.toStringSafe(state?.lastReloadedAt),
+            userVersion: normalizeVersion(state?.userVersion),
+        };
+        const currentState = readState();
+        if (currentState.targetVersion === nextState.targetVersion
+            && currentState.lastReloadedTarget === nextState.lastReloadedTarget
+            && currentState.lastReloadedAt === nextState.lastReloadedAt
+            && currentState.userVersion === nextState.userVersion) {
+            return;
+        }
+
+        storageAdapter.set(storageKey, JSON.stringify(nextState));
+    }
+
+    /**
+     * Persists and renders the current user version.
+     * @param {string} userVersion - Current user version.
+     * @returns {void}
+     */
+    function storeUserVersion(userVersion) {
+        const versionText = normalizeVersion(userVersion);
+        const storedState = readState();
+
+        if (storedState.userVersion !== versionText) {
+            writeState(mergeStoredState({ userVersion: versionText }, storedState));
+        }
+
+        if (typeof renderUserVersion === 'function') {
+            renderUserVersion(versionText);
+        }
+    }
+
+    /**
+     * Stops any active deferred-refresh observer.
+     * @returns {void}
+     */
+    function stopPendingRefreshWatch() {
+        if (!(internalState.pendingObserver instanceof MutationObserver)) {
+            internalState.pendingObserver = null;
+            return;
+        }
+
+        internalState.pendingObserver.disconnect();
+        internalState.pendingObserver = null;
+    }
+
+    /**
+     * Returns whether a pending refresh is currently blocked by an app-level hold.
+     * @returns {boolean} True when one or more refresh holds are active.
+     */
+    function hasActiveRefreshHold() {
+        return internalState.refreshHoldIds.size > 0;
+    }
+
+    /**
+     * Creates or renews a refresh hold and cancels any scheduled reload.
+     * @param {string} [holdId=''] - Identifier for the hold so it can be released later.
+     * @returns {string} Normalised hold identifier.
+     * @example
+     * const holdId = controller.holdRefresh('post-submit-api');
+     *
+     * try {
+     *     await saveRecord();
+     * } finally {
+     *     controller.releaseRefresh(holdId);
+     * }
+     */
+    function holdRefresh(holdId = '') {
+        const normalizedHoldId = knackValueResolver.toStringSafe(holdId) || `hold_${Date.now()}_${internalState.refreshHoldIds.size + 1}`;
+        internalState.refreshHoldIds.add(normalizedHoldId);
+
+        if (internalState.reloadTimerId) {
+            window.clearTimeout(internalState.reloadTimerId);
+            internalState.reloadTimerId = 0;
+        }
+
+        if (internalState.pendingRequestActive) {
+            ensurePendingRefreshWatch();
+            showDeferredRefreshNotice(readState().targetVersion);
+        }
+
+        return normalizedHoldId;
+    }
+
+    /**
+     * Releases a refresh hold and resumes pending refresh checks when safe.
+     * @param {string} holdId - Hold identifier returned by holdRefresh.
+     * @returns {boolean} True when the hold existed and was removed.
+     */
+    function releaseRefresh(holdId) {
+        const normalizedHoldId = knackValueResolver.toStringSafe(holdId);
+        if (!normalizedHoldId) {
+            return false;
+        }
+
+        const removed = internalState.refreshHoldIds.delete(normalizedHoldId);
+        if (removed && internalState.pendingRequestActive && !internalState.reloadTimerId) {
+            ensurePendingRefreshWatch();
+            if (canRefreshPageNow()) {
+                runRefreshIfSafe();
+            }
+        }
+
+        return removed;
+    }
+
+    /**
+     * Releases every active refresh hold.
+     * @returns {number} Number of released holds.
+     * @example
+     * window.dispatchEvent(new CustomEvent('kf-version-refresh-release', {
+     *     detail: { all: true },
+     * }));
+     */
+    function releaseAllRefreshHolds() {
+        const holdCount = internalState.refreshHoldIds.size;
+        internalState.refreshHoldIds.clear();
+
+        if (holdCount && internalState.pendingRequestActive && !internalState.reloadTimerId) {
+            ensurePendingRefreshWatch();
+            if (canRefreshPageNow()) {
+                runRefreshIfSafe();
+            }
+        }
+
+        return holdCount;
+    }
+
+    /**
+     * Handles a global refresh-hold event from app code.
+     * @param {CustomEvent|Event} event - Browser event containing an optional hold id in detail.
+     * @returns {void}
+     * @example
+     * window.dispatchEvent(new CustomEvent('kf-version-refresh-hold', {
+     *     detail: { holdId: 'post-submit-api' },
+     * }));
+     */
+    function handleRefreshHoldEvent(event) {
+        const detail = event?.detail;
+        const holdId = knackValueResolver.toStringSafe(detail?.holdId);
+        holdRefresh(holdId);
+    }
+
+    /**
+     * Handles a global refresh-release event from app code.
+     * @param {CustomEvent|Event} event - Browser event containing a hold id in detail, or detail.all to release every hold.
+     * @returns {void}
+     * @example
+     * window.dispatchEvent(new CustomEvent('kf-version-refresh-release', {
+     *     detail: { holdId: 'post-submit-api' },
+     * }));
+     */
+    function handleRefreshReleaseEvent(event) {
+        const detail = event?.detail;
+        if (detail?.all) {
+            releaseAllRefreshHolds();
+            return;
+        }
+
+        const holdId = knackValueResolver.toStringSafe(detail?.holdId);
+        releaseRefresh(holdId);
+    }
+
+    /**
+     * Resets pending state while preserving the stored user version.
+     * @returns {void}
+     */
+    function resetState() {
+        const storedState = readState();
+        writeState(mergeStoredState({
+            targetVersion: '',
+            lastReloadedTarget: '',
+            lastReloadedAt: '',
+            userVersion: storedState.userVersion,
+        }, storedState));
+        internalState.deferredNoticeTargetVersion = '';
+        internalState.pendingRequestActive = false;
+        internalState.refreshHoldIds.clear();
+        stopPendingRefreshWatch();
+        if (internalState.reloadTimerId) {
+            window.clearTimeout(internalState.reloadTimerId);
+            internalState.reloadTimerId = 0;
+        }
+    }
+
+    /**
+     * Observes DOM changes until the page is safe to refresh.
+     * @returns {void}
+     */
+    function ensurePendingRefreshWatch() {
+        if (isIframeWindow() || internalState.pendingObserver || !internalState.pendingRequestActive) {
+            return;
+        }
+
+        if (!(document.body instanceof HTMLElement)) {
+            return;
+        }
+
+        const runPendingRefreshCheck = function () {
+            if (!internalState.pendingRequestActive) {
+                stopPendingRefreshWatch();
+                return;
+            }
+
+            if (internalState.reloadTimerId) {
+                stopPendingRefreshWatch();
+                return;
+            }
+
+            if (!hasActiveRefreshHold() && canRefreshPageNow()) {
+                stopPendingRefreshWatch();
+                runRefreshIfSafe();
+            }
+        };
+
+        internalState.pendingObserver = new MutationObserver(function () {
+            runPendingRefreshCheck();
+        });
+        internalState.pendingObserver.observe(document.body, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'],
+        });
+
+        runPendingRefreshCheck();
+    }
+
+    /**
+     * Determines whether the same target was already reloaded recently.
+     * @param {{ lastReloadedTarget: string, lastReloadedAt: string }} storedState - Stored state.
+     * @param {string} targetVersion - Requested target version.
+     * @returns {boolean} True when the same target was reloaded recently.
+     */
+    function wasTargetReloadedRecently(storedState, targetVersion) {
+        if (!targetVersion || !storedState || storedState.lastReloadedTarget !== targetVersion) {
+            return false;
+        }
+
+        const lastReloadedAt = Date.parse(storedState.lastReloadedAt);
+        if (Number.isNaN(lastReloadedAt)) {
+            return false;
+        }
+
+        return (Date.now() - lastReloadedAt) < recentReloadWindowMs;
+    }
+
+    /**
+     * Shows the deferred refresh notice once for the pending target.
+     * @param {string} targetVersion - Pending target version.
+     * @returns {void}
+     */
+    function showDeferredRefreshNotice(targetVersion) {
+        if (!targetVersion || internalState.deferredNoticeTargetVersion === targetVersion) {
+            return;
+        }
+
+        internalState.deferredNoticeTargetVersion = targetVersion;
+        if (typeof showRefreshWait === 'function') {
+            showRefreshWait(targetVersion);
+        }
+    }
+
+    /**
+     * Sends the current iframe version state to the main window.
+     * @param {string} targetVersion - Version that should be loaded after refresh.
+     * @param {string} [userVersion=''] - Current stored user version.
+     * @returns {void}
+     */
+    function postRefreshMessage(targetVersion, userVersion = '') {
+        if (typeof window === 'undefined' || window.parent === window) {
+            return;
+        }
+
+        window.parent.postMessage({
+            source: messageSource,
+            type: messageType,
+            userId: knackValueResolver.toStringSafe(getCurrentUserId()),
+            targetVersion: normalizeVersion(targetVersion),
+            userVersion: normalizeVersion(userVersion),
+        }, window.location.origin);
+    }
+
+    /**
+     * Evaluates the iframe version snapshot and notifies the main window.
+     * @param {{ userVersion?: string, targetVersion?: string }} [snapshot={}] - Current iframe versions.
+     * @returns {{ userVersion: string, targetVersion: string }} Normalised iframe versions.
+     */
+    function evaluateIframeVersionState(snapshot = {}) {
+        const versionSnapshot = createIframeVersionSnapshot(snapshot);
+
+        if (versionSnapshot.userVersion) {
+            storeUserVersion(versionSnapshot.userVersion);
+            postRefreshMessage(
+                versionSnapshot.targetVersion && versionSnapshot.userVersion !== versionSnapshot.targetVersion
+                    ? versionSnapshot.targetVersion
+                    : '',
+                versionSnapshot.userVersion
+            );
+        }
+
+        return versionSnapshot;
+    }
+
+    /**
+     * Synchronises the user version when the iframe detects a mismatch.
+     * @param {{ userVersion?: string, targetVersion?: string }} [snapshot={}] - Current iframe versions.
+     * @returns {Promise<string|void>} Synced version when an update was applied.
+     */
+    async function syncIframeVersion(snapshot = {}) {
+        if (!isIframeWindow()) {
+            return;
+        }
+
+        const userId = knackValueResolver.toStringSafe(getCurrentUserId());
+        const versionSnapshot = createIframeVersionSnapshot(snapshot);
+        const targetVersion = versionSnapshot.targetVersion;
+        const currentUserVersion = versionSnapshot.userVersion;
+
+        // Do not treat an uncached current-user record as a version mismatch.
+        if (
+            !internalState.iframeCurrentUserRecord
+            || !userId
+            || !targetVersion
+            || currentUserVersion === targetVersion
+            || internalState.syncInFlight
+            || typeof syncUserVersion !== 'function'
+        ) {
+            return;
+        }
+
+        const syncContext = {
+            userId,
+            targetVersion,
+            userVersion: currentUserVersion,
+        };
+        internalState.syncInFlight = true;
+        try {
+            const syncedVersion = normalizeVersion(
+                await syncUserVersion(targetVersion, syncContext) || targetVersion
+            );
+            if (internalState.iframeCurrentUserRecord && normalizedSyncUserVersionFieldId) {
+                internalState.iframeCurrentUserRecord[normalizedSyncUserVersionFieldId] = syncedVersion || targetVersion;
+            }
+            storeUserVersion(syncedVersion || targetVersion);
+            if (typeof onUserVersionSynced === 'function') {
+                onUserVersionSynced(syncedVersion || targetVersion, syncContext);
+            }
+            postRefreshMessage('', syncedVersion || targetVersion);
+            return syncedVersion || targetVersion;
+        } catch (error) {
+            if (typeof onSyncError === 'function') {
+                onSyncError(error, syncContext);
+            }
+        } finally {
+            internalState.syncInFlight = false;
+        }
+    }
+
+    /**
+     * Evaluates the iframe version snapshot and then applies any required user-version sync.
+     * @param {{ userVersion?: string, targetVersion?: string }} [snapshot={}] - Raw iframe versions.
+     * @returns {Promise<{ userVersion: string, targetVersion: string }>} Normalised iframe versions.
+     */
+    async function evaluateAndSyncIframeVersion(snapshot = {}) {
+        const versionSnapshot = evaluateIframeVersionState(snapshot);
+        await syncIframeVersion(versionSnapshot);
+        return versionSnapshot;
+    }
+
+    /**
+     * Caches a current-user record and then re-evaluates iframe version control.
+     * @param {Object|Object[]|null} recordOrRecords - Current-user record payload.
+     * @returns {Promise<{ userVersion: string, targetVersion: string }>} Normalised cached iframe versions.
+     */
+    async function cacheCurrentUserRecordAndSync(recordOrRecords) {
+        cacheCurrentUserRecord(recordOrRecords);
+        return evaluateAndSyncIframeVersion(createCachedIframeVersionSnapshot());
+    }
+
+    /**
+     * Caches target-version records and then re-evaluates iframe version control.
+     * @param {Object[]|null} records - Target-version records.
+     * @returns {Promise<{ userVersion: string, targetVersion: string }>} Normalised cached iframe versions.
+     */
+    async function cacheTargetVersionRecordsAndSync(records) {
+        cacheTargetVersionRecords(records);
+        return evaluateAndSyncIframeVersion(createCachedIframeVersionSnapshot());
+    }
+
+    /**
+     * Applies a pending refresh when the page is safe.
+     * @returns {void}
+     */
+    function runRefreshIfSafe() {
+        if (isIframeWindow() || !internalState.pendingRequestActive) {
+            return;
+        }
+
+        const storedState = readState();
+        const targetVersion = storedState.targetVersion;
+        if (!targetVersion) {
+            return;
+        }
+
+        if (hasActiveRefreshHold() || !canRefreshPageNow()) {
+            ensurePendingRefreshWatch();
+            showDeferredRefreshNotice(targetVersion);
+            return;
+        }
+
+        if (internalState.reloadTimerId) {
+            return;
+        }
+
+        stopPendingRefreshWatch();
+        internalState.deferredNoticeTargetVersion = '';
+        if (typeof showRefreshNow === 'function') {
+            showRefreshNow(targetVersion, storedState.userVersion);
+        }
+
+        internalState.reloadTimerId = window.setTimeout(function () {
+            internalState.reloadTimerId = 0;
+            internalState.pendingRequestActive = false;
+            stopPendingRefreshWatch();
+            writeState(mergeStoredState({
+                targetVersion: '',
+                lastReloadedTarget: targetVersion,
+                lastReloadedAt: new Date().toISOString(),
+                userVersion: storedState.userVersion,
+            }, storedState));
+            if (typeof reload === 'function') {
+                reload(targetVersion, storedState.userVersion);
+            }
+        }, reloadDelayMs);
+    }
+
+    /**
+     * Handles refresh messages sent from the iframe.
+     * @param {MessageEvent} event - PostMessage event.
+     * @returns {void}
+     */
+    function handleRefreshMessage(event) {
+        if (isIframeWindow()) {
+            return;
+        }
+
+        if (event?.origin && event.origin !== window.location.origin) {
+            return;
+        }
+
+        const payload = event?.data;
+        if (!payload || typeof payload !== 'object') {
+            return;
+        }
+
+        if (payload.source !== messageSource || payload.type !== messageType) {
+            return;
+        }
+
+        const storedState = readState();
+        const userVersion = normalizeVersion(payload.userVersion);
+        const targetVersion = normalizeVersion(payload.targetVersion);
+        const shouldWaitForUserVersionSync = Boolean(
+            normalizedSyncUserVersionFieldId
+            && userVersion
+            && targetVersion
+            && userVersion !== targetVersion
+        );
+        if (userVersion) {
+            storeUserVersion(userVersion);
+        }
+
+        if (!targetVersion) {
+            if (userVersion && storedState.targetVersion && userVersion === storedState.targetVersion && !internalState.reloadTimerId) {
+                internalState.pendingRequestActive = true;
+                if (canRefreshPageNow()) {
+                    runRefreshIfSafe();
+                } else {
+                    ensurePendingRefreshWatch();
+                }
+            }
+            return;
+        }
+
+        if (wasTargetReloadedRecently(storedState, targetVersion)) {
+            return;
+        }
+
+        if (internalState.pendingRequestActive && storedState.targetVersion === targetVersion) {
+            if (shouldWaitForUserVersionSync) {
+                ensurePendingRefreshWatch();
+                showDeferredRefreshNotice(targetVersion);
+                return;
+            }
+
+            ensurePendingRefreshWatch();
+            runRefreshIfSafe();
+            return;
+        }
+
+        internalState.pendingRequestActive = true;
+        writeState(mergeStoredState({
+            targetVersion,
+            userVersion: userVersion || storedState.userVersion,
+        }, storedState));
+
+        if (shouldWaitForUserVersionSync) {
+            ensurePendingRefreshWatch();
+            showDeferredRefreshNotice(targetVersion);
+            return;
+        }
+
+        ensurePendingRefreshWatch();
+        runRefreshIfSafe();
+    }
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        if (refreshHoldEventName) {
+            window.addEventListener(refreshHoldEventName, handleRefreshHoldEvent);
+        }
+
+        if (refreshReleaseEventName) {
+            window.addEventListener(refreshReleaseEventName, handleRefreshReleaseEvent);
+        }
+    }
+
+    return {
+        normalizeVersion,
+        createIframeVersionSnapshot,
+        createCachedIframeVersionSnapshot,
+        cacheCurrentUserRecord,
+        cacheTargetVersionRecords,
+        getCachedUserVersion,
+        getTargetVersion,
+        isHomeRoute,
+        hasBlockingForm,
+        canRefreshNow: canRefreshPageNow,
+        readState,
+        writeState,
+        storeUserVersion,
+        holdRefresh,
+        releaseRefresh,
+        releaseAllRefreshHolds,
+        hasActiveRefreshHold,
+        resetState,
+        evaluateIframeVersionState,
+        syncIframeVersion,
+        evaluateAndSyncIframeVersion,
+        cacheCurrentUserRecordAndSync,
+        cacheTargetVersionRecordsAndSync,
+        postRefreshMessage,
+        runRefreshIfSafe,
+        handleRefreshHoldEvent,
+        handleRefreshReleaseEvent,
+        handleRefreshMessage,
+    };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: knack-error
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// KnackError ported as-is (analysis C27; jQuery only to bind Knack events, which Knack fires through jQuery).
+
+/**
+ * KnackError - Comprehensive error handling utility for Knack applications
+ *
+ * This class captures and logs detailed information about errors that occur in a Knack application.
+ * It stores error information in a designated Knack table via the KnackAPI for later analysis.
+ *
+ * @version 1.3.0
+ * @author Craig Winnall, GitHub Copilot
+ */
+class KnackError {
+    /**
+     * Creates a new KnackError instance
+     * @param {Object} options - Configuration options
+     * @param {string} options.sceneId - The scene ID/key for the error logging table
+     * @param {string} options.viewId - The view ID/key for the error logging table
+     * @param {Object} options.fieldMap - Mapping of error data to Knack field keys
+     * @param {boolean} [options.captureUserData=true] - Whether to capture user information
+     * @param {boolean} [options.captureSystemInfo=true] - Whether to capture system information
+     * @param {boolean} [options.consoleLog=true] - Whether to also log errors to console
+     * @param {boolean} [options.groupSimilarErrors=true] - Whether to group similar errors
+     * @param {number} [options.maxErrorsPerMinute=10] - Rate limiting for error logging
+     * @param {Array} [options.ignoredErrors=[]] - Error messages or patterns to ignore
+     * @param {boolean} [options.captureKnackContext=true] - Whether to capture Knack context (scene, view, etc.)
+     * @param {boolean} [options.separateContextFields=true] - Whether to store context in separate fields
+     */
+    constructor(options = {}) {
+        this.options = {
+            sceneId: options.sceneId || '',
+            viewId: options.viewId || '',
+            fieldMap: options.fieldMap || {},
+            captureUserData: options.captureUserData !== undefined ? options.captureUserData : true,
+            captureSystemInfo: options.captureSystemInfo !== undefined ? options.captureSystemInfo : true,
+            consoleLog: options.consoleLog !== undefined ? options.consoleLog : true,
+            groupSimilarErrors: options.groupSimilarErrors !== undefined ? options.groupSimilarErrors : true,
+            maxErrorsPerMinute: options.maxErrorsPerMinute || 10,
+            ignoredErrors: options.ignoredErrors || [],
+            captureKnackContext: options.captureKnackContext !== undefined ? options.captureKnackContext : true,
+            separateContextFields: options.separateContextFields !== undefined ? options.separateContextFields : true
+        };
+
+        // Initialize KnackAPI instance with spinner disabled
+        this.api = new KnackAPI({ debug: false, showSpinner: false });
+
+        this.boundHandleError = this.handleError.bind(this);
+
+        // Rate limiting data
+        this._errorCount = 0;
+        this._lastResetTime = Date.now();
+        this._errorHashes = new Map();
+
+        // Track the last known context
+        this._lastKnownContext = {
+            sceneId: null,
+            viewId: null,
+            eventType: null,
+            timestamp: null
+        };
+
+        // Setup context tracking if enabled
+        if (this.options.captureKnackContext) {
+            this._setupContextTracking();
+        }
+
+        // Validate required options
+        this._validateOptions();
+
+        // Performance metrics
+        this.performanceData = {
+            javaScriptErrors: 0,
+            networkErrors: 0,
+            apiErrors: 0,
+            totalErrors: 0,
+            slowestOperation: null,
+            averageResponseTime: 0
+        };
+    }
+
+    /**
+     * Handles an error by logging it to the Knack table and optionally to console
+     * @param {Error|string} error - The error object or message
+     * @param {Object} [additionalInfo={}] - Additional information to log with the error
+     * @param {string} [errorSource='Unknown'] - The source of the error (function name, component, etc)
+     * @returns {Promise<Object|null>} - The created error record or null if logging failed
+     */
+    async handleError(error, additionalInfo = {}, errorSource = 'Unknown') {
+        // Quickly check if we should process this error
+        if (this._shouldIgnoreError(error) || this._isRateLimited()) {
+            return null;
+        }
+
+        // Capture context data once
+        if (this.options.captureKnackContext) {
+            Object.assign(additionalInfo, this._captureContextData());
+        }
+
+        // Capture all error data
+        const errorData = this._captureErrorData(error, additionalInfo, errorSource);
+
+        // Handle error grouping
+        if (this.options.groupSimilarErrors) {
+            const existingError = this._processErrorGroup(errorData);
+            if (existingError) return existingError.record;
+        }
+
+        // Track metrics
+        this._updatePerformanceMetrics(errorData);
+
+        // Console logging
+        if (this.options.consoleLog) {
+            console.error('KnackError:', errorData);
+        }
+
+        // Knack table logging
+        if (this.options.sceneId && this.options.viewId) {
+            try {
+                return await this._logToKnackTable(errorData);
+            } catch (loggingError) {
+                console.error('Error logging to Knack table:', loggingError);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Creates a wrapper for Knack event handlers that automatically includes context
+     * @param {string} eventType - The type of Knack event (e.g., 'knack-view-render')
+     * @param {Function} handler - The event handler function to wrap
+     * @returns {Function} - The wrapped handler function
+     * @public
+     */
+    wrapEventHandler(eventType, handler) {
+        const self = this;
+
+        return async function (event, view, record) {
+            try {
+                // Store context information
+                const context = {
+                    eventType: eventType.replace('knack-', ''),
+                    viewId: view ? view.key : null,
+                    sceneId: self._getCurrentSceneId(),
+                    recordId: record ? record.id : null,
+                    timestamp: new Date().toISOString()
+                };
+
+                // Update last known context
+                self._lastKnownContext = context;
+
+                // Call the original handler
+                return await handler.apply(this, arguments);
+            } catch (error) {
+                // Handle the error with context information
+                await self.handleError(error, { knackContext: self._lastKnownContext }, `${eventType} Handler`);
+
+                // Re-throw so the calling code knows an error occurred
+                throw error;
+            }
+        };
+    }
+
+    /**
+     * Sets up global error handling
+     * @param {boolean} [unhandledRejections=true] - Whether to catch unhandled promise rejections
+     * @returns {KnackError} - This instance for chaining
+     */
+    setupGlobalErrorHandling(unhandledRejections = true) {
+        // Handle regular errors
+        window.addEventListener('error', (event) => {
+            this.handleError(
+                event.error || event.message,
+                {
+                    errorFile: event.filename,
+                    errorLine: event.lineno,
+                    errorColumn: event.colno
+                },
+                'Global Error Event'
+            );
+        });
+
+        // Handle unhandled promise rejections if enabled
+        if (unhandledRejections) {
+            window.addEventListener('unhandledrejection', (event) => {
+                const error = event.reason instanceof Error ? event.reason : new Error(String(event.reason));
+                this.handleError(error, {}, 'Unhandled Promise Rejection');
+            });
+        }
+
+        return this;
+    }
+
+    /**
+     * Creates a function that wraps another function with error handling
+     * @param {Function} fn - The function to wrap
+     * @param {string} [source] - Source identifier for the error
+     * @param {Object} [additionalInfo={}] - Additional information to include in error logs
+     * @returns {Function} - Wrapped function with error handling
+     */
+    wrapFunction(fn, source, additionalInfo = {}) {
+        return this.executeFunction(fn, {
+            source,
+            rethrowError: true,
+            additionalInfo
+        });
+    }
+
+    /**
+     * Creates a try-catch wrapper for use in async functions
+     * @param {Function} fn - The function to wrap
+     * @param {string} [source] - Source identifier for the error
+     * @param {Object} [additionalInfo={}] - Additional information to include in error logs
+     * @returns {Function} - Function that returns a promise that resolves with the result or rejects with the error
+     */
+    tryCatch(fn, source, additionalInfo = {}) {
+        const self = this;
+
+        return async function (...args) {
+            try {
+                return await fn.apply(this, args);
+            } catch (error) {
+                self.handleError(error, {
+                    functionArgs: JSON.stringify(args, (key, value) => {
+                        if (typeof value === 'function') return 'function() { ... }';
+                        if (value instanceof Node) return value.nodeName;
+                        if (value instanceof Window) return 'Window';
+                        return value;
+                    }),
+                    knackContext: self.getCurrentContext(),
+                    ...additionalInfo
+                }, source || fn.name || 'Anonymous Function');
+
+                return {
+                    success: false,
+                    error: error,
+                    message: error.message
+                };
+            }
+        };
+    }
+
+    /**
+     * Monitors the performance of function calls and logs errors
+     * @param {Function} fn - The function to monitor
+     * @param {string} [source] - Source identifier for the error
+     * @param {number} [thresholdMs=1000] - Threshold in milliseconds for performance warnings
+     * @param {Object} [additionalInfo={}] - Additional information to include in error logs
+     * @returns {Function} - Monitored function
+     */
+    monitorPerformance(fn, source, thresholdMs = 1000, additionalInfo = {}) {
+        const self = this;
+        return async function(...args) {
+            const startTime = performance.now();
+            try {
+                const result = await fn.apply(this, args);
+                const executionTime = performance.now() - startTime;
+
+                // Only log if exceeding threshold
+                if (executionTime > thresholdMs) {
+                    console.warn(`Performance warning: ${source || fn.name || 'Anonymous'} took ${executionTime.toFixed(2)}ms`);
+                    // Could also log this as a special type of "performance warning" error
+                }
+
+                return result;
+            } catch (error) {
+                const executionTime = performance.now() - startTime;
+                self.handleError(error, {
+                    functionArgs: JSON.stringify(args, (_, v) =>
+                        typeof v === 'function' ? '[Function]' : v
+                    ),
+                    responseTime: executionTime.toFixed(2),
+                    performanceContext: {
+                        threshold: thresholdMs,
+                        executionTime: executionTime.toFixed(2)
+                    },
+                    ...additionalInfo
+                }, source || fn.name || 'Performance Monitor');
+
+                throw error;
+            }
+        };
+    }
+
+        /**
+     * Monitors a Knack API call and logs any errors that occur
+     * @param {Function} apiCallFn - The API call function to monitor
+     * @param {string} [source] - Source identifier for the error
+     * @param {Object} [additionalInfo={}] - Additional information to include in error logs
+     * @returns {Function} - Wrapped API call function
+     */
+    monitorApiCall(apiCallFn, source = 'Knack API Call', additionalInfo = {}) {
+        const self = this;
+        return async function (...args) {
+            const startTime = performance.now();
+            try {
+                const result = await apiCallFn.apply(this, args);
+                const endTime = performance.now();
+
+                // Log slow API calls (over 2000ms) as warnings
+                const executionTime = endTime - startTime;
+                if (executionTime > 2000) {
+                    console.warn(`KnackError: Slow API call to ${source}: ${executionTime.toFixed(2)}ms`);
+                }
+
+                return result;
+            } catch (error) {
+                const endTime = performance.now();
+                const executionTime = endTime - startTime;
+
+                // Get parameters for the API call for better debugging
+                let apiParams = {};
+                if (args.length >= 2) {
+                    apiParams = {
+                        sceneKey: args[0] || null,
+                        viewId: args[1] || null,
+                        recordId: args.length > 2 ? args[2] : null,
+                        requestData: args.length > 3 ? args[3] : null
+                    };
+
+                    // Determine request type from function name
+                    if (apiCallFn.name) {
+                        const fnName = apiCallFn.name.toLowerCase();
+                        if (fnName.includes('create')) {
+                            apiParams.requestType = 'POST';
+                        } else if (fnName.includes('update')) {
+                            apiParams.requestType = 'PUT';
+                        } else if (fnName.includes('delete')) {
+                            apiParams.requestType = 'DELETE';
+                        } else if (fnName.includes('get')) {
+                            apiParams.requestType = 'GET';
+                        }
+                    }
+                }
+
+                self.handleError(error, {
+                    apiParams,
+                    responseTime: executionTime.toFixed(2),
+                    knackContext: self.getCurrentContext(),
+                    ...additionalInfo
+                }, source);
+
+                throw error;
+            }
+        };
+    }
+
+    /**
+     * Gets performance data collected by the error handler
+     * @returns {Object} - Performance metrics
+     */
+    getPerformanceMetrics() {
+        return {
+            ...this.performanceData,
+            errorRate: {
+                total: this.performanceData.totalErrors,
+                perMinute: this._errorCount / ((Date.now() - this._lastResetTime) / 60000)
+            }
+        };
+    }
+
+    /**
+     * Adds an error pattern to the ignore list
+     * @param {string|RegExp} pattern - Error message pattern to ignore
+     * @returns {KnackError} - This instance for chaining
+     */
+    ignoreError(pattern) {
+        this.options.ignoredErrors.push(pattern);
+        return this;
+    }
+
+    /**
+     * Wraps all methods of an object with error handling
+     * @param {Object} obj - The object whose methods to wrap
+     * @param {string} [source] - Source identifier prefix for the errors
+     * @param {Object} [additionalInfo={}] - Additional information to include in error logs
+     * @returns {Object} - Object with wrapped methods
+     */
+    wrapAllMethods(obj, source, additionalInfo = {}) {
+        const wrapped = {};
+
+        for (const key in obj) {
+            if (typeof obj[key] === 'function') {
+                wrapped[key] = this.wrapFunction(obj[key], source ? `${source}.${key}` : key, additionalInfo);
+            } else {
+                wrapped[key] = obj[key];
+            }
+        }
+
+        return wrapped;
+    }
+
+    /**
+     * Safely executes code and returns a result or default value on error
+     * @param {Function} fn - Function to execute
+     * @param {*} defaultValue - Default value to return on error
+     * @param {string} [source] - Source identifier for the error
+     * @param {Object} [additionalInfo={}] - Additional information to include in error logs
+     * @returns {*} - Result of function or default value on error
+     */
+    safeExecute(fn, defaultValue, source, additionalInfo = {}) {
+        return this.executeFunction(fn, {
+            returnDefaultOnError: true,
+            defaultValue,
+            source,
+            immediate: true,
+            additionalInfo
+        });
+    }
+
+    /**
+     * Executes a function safely with error handling
+     * @param {Function} fn - The function to execute
+     * @param {Object} options - Configuration options
+     * @param {boolean} [options.returnDefaultOnError=false] - Whether to return default value on error
+     * @param {*} [options.defaultValue=null] - Default value to return on error
+     * @param {boolean} [options.captureArgs=true] - Whether to capture function arguments in error logs
+     * @param {boolean} [options.captureContext=true] - Whether to capture Knack context
+     * @param {boolean} [options.rethrowError=true] - Whether to rethrow the error after logging
+     * @param {string} [options.source] - Source identifier for the error
+     * @param {Object} [options.additionalInfo={}] - Additional information to include in error logs
+     * @returns {Function|*} - Either wrapped function or result of immediate execution
+     */
+    executeFunction(fn, options = {}) {
+        const {
+            returnDefaultOnError = false,
+            defaultValue = null,
+            captureArgs = true,
+            captureContext = true,
+            rethrowError = true,
+            source = fn.name || 'Execute Function',
+            immediate = false,
+            immediateArgs = [],
+            additionalInfo = {}
+        } = options;
+
+        const self = this;
+
+        const wrappedFn = async function(...args) {
+            try {
+                return await fn.apply(this, args);
+            } catch (error) {
+                // Build error context
+                const errorInfo = {
+                    ...additionalInfo // Include any passed additionalInfo
+                };
+
+                if (captureArgs) {
+                    errorInfo.functionArgs = JSON.stringify(args, (key, value) => {
+                        if (typeof value === 'function') return 'function() { ... }';
+                        if (value instanceof Node) return value.nodeName;
+                        if (value instanceof Window) return 'Window';
+                        return value;
+                    });
+                }
+
+                if (captureContext) {
+                    errorInfo.knackContext = self.getCurrentContext();
+                }
+
+                // Log the error
+                self.handleError(error, errorInfo, source);
+
+                // Either return default value or rethrow
+                if (returnDefaultOnError) {
+                    return defaultValue;
+                } else if (rethrowError) {
+                    throw error;
+                }
+            }
+        };
+
+        // Either return the wrapped function or execute immediately
+        if (immediate) {
+            return wrappedFn(...immediateArgs);
+        }
+
+        return wrappedFn;
+    }
+
+    /**
+     * Creates a wrapper specifically for Knack event listeners
+     * @param {string} viewId - The view ID to listen for events on
+     * @param {string} eventType - The type of event (e.g., 'knack-view-render')
+     * @param {Function} handler - The handler function for the event
+     * @param {Object} [additionalInfo={}] - Additional information to include in error logs
+     * @returns {KnackError} - This instance for chaining
+     * @public
+     */
+    wrapKnackListener(viewId, eventType, handler, additionalInfo = {}) {
+        const self = this;
+
+        // Create a wrapped handler that includes error handling with the additionalInfo
+        const wrappedHandler = function(event, view, record) {
+            // Create a merged info object with dynamic context and passed additionalInfo
+            const contextInfo = {
+                ...additionalInfo,
+                listenerViewId: viewId,
+                listenerEventType: eventType
+            };
+
+            try {
+                // Call the original handler with the original event arguments
+                return handler.apply(this, arguments);
+            } catch (error) {
+                // Use the eventType and viewId to create a source string
+                const source = `${eventType} Listener for ${viewId}`;
+
+                // Handle the error with the contextInfo
+                self.handleError(error, contextInfo, source);
+
+                // Don't re-throw the error - this allows the view to continue rendering
+                console.error(`Error in ${source}: ${error.message}`);
+                // Optionally return a value if needed
+                return undefined;
+            }
+        };
+
+        // If viewId is 'any', capture all events of this type
+        const eventSelector = viewId === 'any' ?
+            `${eventType}.any` :
+            `${eventType}.${viewId}`;
+
+        $(document).on(eventSelector, wrappedHandler);
+
+        return this;
+    }
+
+    /**
+     * Gets the current Knack context (scene ID, view ID, event type)
+     * @returns {Object} The current Knack context
+     * @public
+     */
+    getCurrentContext() {
+        const context = {
+            ...this._lastKnownContext,
+            currentSceneId: this._getCurrentSceneId(),
+            currentViewId: this._getCurrentViewId(),
+            url: window.location.href
+        };
+
+        // If we don't have a tracked scene ID, use the current one from the DOM
+        if (!context.sceneId) {
+            context.sceneId = context.currentSceneId;
+        }
+
+        // If we don't have a tracked view ID, use the current one from the DOM
+        if (!context.viewId) {
+            context.viewId = context.currentViewId;
+        }
+
+        return context;
+    }
+
+    /**
+     * Sets up tracking for Knack context events
+     * @private
+     */
+    _setupContextTracking() {
+        // Handle all Knack events with a single handler
+        const knackEvents = ['view-render', 'scene-render', 'form-submit', 'record-update', 'cell-update', 'record-delete'];
+
+        knackEvents.forEach(eventType => {
+            $(document).on(`knack-${eventType}.any`, (event, view, record) => {
+                this._lastKnownContext = {
+                    viewId: view?.key || null,
+                    sceneId: this._getCurrentSceneId(),
+                    eventType,
+                    recordId: record?.id || null,
+                    timestamp: new Date().toISOString()
+                };
+            });
+        });
+    }
+
+    /**
+     * Gets the current scene ID from the DOM
+     * @returns {string|null} The current scene ID or null if not found
+     * @private
+     */
+    _getCurrentSceneId() {
+        // Try to get from the Knack object first
+        if (typeof Knack !== 'undefined' && Knack.router && Knack.router.current_scene_key) {
+            return Knack.router.current_scene_key;
+        }
+
+        // Try to get from the DOM
+        const sceneElement = document.querySelector('.kn-scene');
+        if (sceneElement) {
+            const sceneId = sceneElement.id;
+            if (sceneId && sceneId.startsWith('kn-scene_')) {
+                return sceneId.replace('kn-', '');
+            }
+        }
+
+        // Try to extract from URL
+        return this._extractSceneIdFromUrl();
+    }
+
+    /**
+     * Gets the current view ID from the DOM
+     * @returns {string|null} The current view ID or null if not found
+     * @private
+     */
+    _getCurrentViewId() {
+        // Try each view finding method
+        return this._getActiveViewId() || this._getFirstViewId();
+    }
+
+    /**
+     * Gets the active view ID (the one with focus or most recently interacted with)
+     * @returns {string|null} The active view ID or null if not found
+     * @private
+     */
+    _getActiveViewId() {
+        // Check for active form or last interacted element
+        const activeElement = document.activeElement;
+        if (activeElement) {
+            // Traverse up to find a view container
+            let currentElement = activeElement;
+            while (currentElement && currentElement !== document.body) {
+                // Check if this element is a view
+                if (currentElement.id && currentElement.id.startsWith('view_')) {
+                    return currentElement.id;
+                }
+                currentElement = currentElement.parentElement;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Gets the first view ID found in the current scene
+     * @returns {string|null} The first view ID or null if not found
+     * @private
+     */
+    _getFirstViewId() {
+        const viewElement = document.querySelector('[id^="view_"]');
+        return viewElement ? viewElement.id : null;
+    }
+
+    /**
+     * Extracts the scene ID from the URL
+     * @returns {string|null} The scene ID or null if not found
+     * @private
+     */
+    _extractSceneIdFromUrl() {
+        const url = window.location.href;
+        // Knack URLs often follow the pattern /scene_XX/...
+        const sceneMatch = url.match(/\/scene_(\d+)/i);
+        if (sceneMatch && sceneMatch[1]) {
+            return `scene_${sceneMatch[1]}`;
+        }
+        return null;
+    }
+
+    /**
+     * Validates that required options are provided
+     * @private
+     */
+    _validateOptions() {
+        if (!this.options.sceneId || !this.options.viewId) {
+            console.error('KnackError: Missing required options sceneId and viewId');
+        }
+
+        const requiredFields = ['errorMessage', 'errorSource', 'errorStack'];
+        const missingFields = requiredFields.filter(field => !this.options.fieldMap[field]);
+
+        if (missingFields.length > 0) {
+            console.error(`KnackError: Missing required field mappings: ${missingFields.join(', ')}`);
+        }
+    }
+
+        /**
+     * Processes an error to handle grouping of similar errors
+     * @param {Object} errorData - Error data to process
+     * @returns {Object|null} - Existing error record if found, null otherwise
+     * @private
+     */
+    _processErrorGroup(errorData) {
+        // Generate a hash for this error to identify similar ones
+        const errorHash = this._generateErrorHash(errorData);
+
+        // Check if we've seen this error recently
+        const now = Date.now();
+        const oneHour = 60 * 60 * 1000;
+
+        if (this._errorHashes.has(errorHash)) {
+            const existingError = this._errorHashes.get(errorHash);
+            existingError.count++;
+            existingError.lastSeen = now;
+
+            // Only log if it's been a while since the last occurrence
+            if (now - existingError.firstLogged > oneHour) {
+                // Reset to treat as a fresh error after an hour
+                this._errorHashes.set(errorHash, {
+                    count: 1,
+                    firstLogged: now,
+                    lastSeen: now,
+                    record: null
+                });
+                return null;
+            }
+
+            return existingError;
+        } else {
+            // New error, add to tracking
+            this._errorHashes.set(errorHash, {
+                count: 1,
+                firstLogged: now,
+                lastSeen: now,
+                record: null
+            });
+            return null;
+        }
+    }
+
+    /**
+     * Checks if an error should be ignored based on predefined patterns
+     * @param {Error|string} error - The error to check
+     * @returns {boolean} - Whether the error should be ignored
+     * @private
+     */
+    _shouldIgnoreError(error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        // Check against ignored error patterns
+        return this.options.ignoredErrors.some(pattern => {
+            if (pattern instanceof RegExp) {
+                return pattern.test(errorMessage);
+            } else {
+                return errorMessage.includes(pattern);
+            }
+        });
+    }
+
+    /**
+     * Checks if error logging is currently rate limited
+     * @returns {boolean} - Whether rate limiting is in effect
+     * @private
+     */
+    _isRateLimited() {
+        const now = Date.now();
+        const oneMinute = 60 * 1000;
+
+        // Reset counter if a minute has passed
+        if (now - this._lastResetTime > oneMinute) {
+            this._errorCount = 0;
+            this._lastResetTime = now;
+        }
+
+        // Check if over limit after incrementing
+        return ++this._errorCount > this.options.maxErrorsPerMinute;
+    }
+
+    /**
+     * Generates a hash for an error to identify similar errors
+     * @param {Object} errorData - Error data to hash
+     * @returns {string} - Hash string representing the error
+     * @private
+     */
+    _generateErrorHash(errorData) {
+        // Create a more stable hash by focusing on key properties
+        const keyParts = [
+            errorData.errorName || '',
+            errorData.errorMessage || '',
+            errorData.errorSource || '',
+            errorData.contextSceneId || '',
+            errorData.contextViewId || '',
+            errorData.contextEventType || ''
+        ];
+
+        return keyParts.join('|');
+    }
+
+    /**
+     * Updates performance metrics based on error data
+     * @param {Object} errorData - Error data to analyze
+     * @private
+     */
+    _updatePerformanceMetrics(errorData) {
+        this.performanceData.totalErrors++;
+
+        // Categorize error types
+        if (errorData.errorName === 'NetworkError' || errorData.errorMessage.includes('network')) {
+            this.performanceData.networkErrors++;
+        } else if (errorData.errorMessage.includes('API') ||
+            errorData.errorSource.includes('API') ||
+            errorData.errorSource.includes('caAPI')) {
+            this.performanceData.apiErrors++;
+        } else {
+            this.performanceData.javaScriptErrors++;
+        }
+
+        // Track response time if available
+        if (errorData.responseTime) {
+            const responseTime = parseFloat(errorData.responseTime);
+            if (!isNaN(responseTime)) {
+                if (!this.performanceData.slowestOperation ||
+                    responseTime > this.performanceData.slowestOperation.time) {
+                    this.performanceData.slowestOperation = {
+                        time: responseTime,
+                        source: errorData.errorSource,
+                        timestamp: errorData.errorTime
+                    };
+                }
+
+                // Update average response time
+                const prevTotal = this.performanceData.averageResponseTime *
+                    (this.performanceData.totalErrors - 1);
+                this.performanceData.averageResponseTime =
+                    (prevTotal + responseTime) / this.performanceData.totalErrors;
+            }
+        }
+    }
+
+    /**
+     * Captures and formats error data for logging
+     * @param {Error|string} error - The error object or message
+     * @param {Object} additionalInfo - Additional information to log
+     * @param {string} errorSource - The source of the error
+     * @returns {Object} - Formatted error data
+     * @private
+     */
+    _captureErrorData(error, additionalInfo, errorSource) {
+        // Create the base error object with all essential data
+        const errorData = {
+            errorMessage: error instanceof Error ? error.message : String(error),
+            errorName: error instanceof Error ? error.name : 'CustomError',
+            errorStack: error instanceof Error ? error.stack : new Error().stack,
+            errorSource: errorSource,
+            errorTime: new Date().toISOString(),
+            errorUrl: window.location.href
+        };
+
+        // Add specific context fields from additionalInfo
+        const contextFields = [
+            'contextSceneId', 'contextViewId', 'contextEventType',
+            'contextRecordId', 'contextUrl', 'contextTimestamp',
+            'knackContext', 'knackContextFormatted'
+        ];
+
+        contextFields.forEach(field => {
+            if (additionalInfo[field]) errorData[field] = additionalInfo[field];
+        });
+
+        // Add user data in one step if enabled
+        if (this.options.captureUserData) {
+            Object.assign(errorData, this._captureUserData());
+        }
+
+        // Add system info in one step if enabled
+        if (this.options.captureSystemInfo) {
+            Object.assign(errorData, this._captureSystemInfo());
+        }
+
+        // Add context data in one step if enabled
+        if (this.options.captureKnackContext) {
+            Object.assign(errorData, this._captureContextData(additionalInfo));
+        }
+
+        // Keep a clean copy of additionalInfo
+        errorData.additionalInfo = { ...additionalInfo };
+
+        return errorData;
+    }
+
+    /**
+     * Captures user data if enabled
+     * @returns {Object} - User data
+     * @private
+     * */
+    _captureUserData() {
+        const errorData = {};
+        // User information if enabled
+        if (this.options.captureUserData && Knack && Knack.getUserAttributes) {
+            try {
+                const userAttributes = Knack.getUserAttributes();
+                errorData.userName = userAttributes.name || 'Unknown User';
+                errorData.userId = userAttributes.id || 'Unknown ID';
+
+                if (Knack.getUserRoleNames) {
+                    errorData.userRoles = Knack.getUserRoleNames();
+                }
+            } catch (userInfoError) {
+                errorData.userInfoError = 'Failed to capture user data';
+            }
+        }
+        return errorData;
+    }
+
+    /**
+     * Captures system information if enabled
+     * @returns {Object} - System information
+     * @private
+     * */
+    _captureSystemInfo() {
+        const errorData = {};
+        // System/browser information if enabled
+        if (this.options.captureSystemInfo) {
+            try {
+                const userAgent = navigator.userAgent;
+                errorData.userAgent = userAgent;
+                errorData.browserName = this._getBrowserInfo(userAgent).name;
+                errorData.browserVersion = this._getBrowserInfo(userAgent).version;
+                errorData.deviceType = this._getDeviceType(userAgent);
+                errorData.operatingSystem = this._getOperatingSystem(userAgent);
+                errorData.screenSize = `${window.innerWidth}x${window.innerHeight}`;
+                errorData.viewportSize = `${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`;
+                errorData.knackAppId = Knack ? Knack.application_id : 'Unknown';
+
+                // Add network information
+                if (navigator.connection) {
+                    errorData.networkType = navigator.connection.effectiveType;
+                    errorData.downlink = navigator.connection.downlink;
+                }
+
+                // Add memory information if available
+                if (window.performance && window.performance.memory) {
+                    const memory = window.performance.memory;
+                    errorData.jsHeapSizeLimit = memory.jsHeapSizeLimit;
+                    errorData.totalJSHeapSize = memory.totalJSHeapSize;
+                    errorData.usedJSHeapSize = memory.usedJSHeapSize;
+                }
+
+                // Add timing information
+                if (window.performance && window.performance.timing) {
+                    const timing = window.performance.timing;
+                    errorData.pageLoadTime = timing.loadEventEnd - timing.navigationStart;
+                    errorData.domReadyTime = timing.domComplete - timing.domLoading;
+                }
+            } catch (systemInfoError) {
+                errorData.systemInfoError = 'Failed to capture system data';
+            }
+        }
+        return errorData;
+    }
+
+    /**
+     * Captures context data if enabled
+     * @param {Object} additionalInfo - Additional information to log
+     * * @returns {Object} - Context data
+     * @private
+     * */
+    _captureContextData(additionalInfo) {
+        const errorData = {};
+        // Knack context information if enabled
+        if (this.options.captureKnackContext && this.options.separateContextFields) {
+            try {
+                const context = this.getCurrentContext();
+
+                // Extract context into separate fields for better filtering and sorting in Knack
+                errorData.contextSceneId = context.sceneId || context.currentSceneId || null;
+                errorData.contextViewId = context.viewId || context.currentViewId || null;
+                errorData.contextEventType = context.eventType || null;
+                errorData.contextRecordId = context.recordId || null;
+                errorData.contextTimestamp = context.timestamp || null;
+                errorData.contextUrl = context.url || window.location.href;
+
+                // If the event was a form submit or record action, include any record ID
+                if (context.recordId) {
+                    errorData.contextRecordId = context.recordId;
+                }
+
+                // Create a formatted context string for easy reading
+                errorData.knackContextFormatted = this._formatKnackContext(context);
+            } catch (contextError) {
+                errorData.contextError = 'Failed to capture Knack context';
+            }
+        }
+
+        return errorData;
+    }
+
+    /**
+     * Formats Knack context into a readable string
+     * @param {Object} context - The Knack context object
+     * @returns {string} - Formatted context string
+     * @private
+     */
+    _formatKnackContext(context) {
+        const parts = [];
+
+        if (context.eventType) {
+            parts.push(`Event: ${context.eventType}`);
+        }
+
+        if (context.sceneId || context.currentSceneId) {
+            parts.push(`Scene: ${context.sceneId || context.currentSceneId}`);
+        }
+
+        if (context.viewId || context.currentViewId) {
+            parts.push(`View: ${context.viewId || context.currentViewId}`);
+        }
+
+        if (context.recordId) {
+            parts.push(`Record: ${context.recordId}`);
+        }
+
+        if (context.timestamp) {
+            // Format timestamp to be more readable
+            const date = new Date(context.timestamp);
+            const formattedDate = date.toLocaleString();
+            parts.push(`Time: ${formattedDate}`);
+        }
+
+        return parts.join(' | ');
+    }
+
+        /**
+     * Logs the error data to a Knack table
+     * @param {Object} errorData - The error data to log
+     * @returns {Promise<Object>} - The created record
+     * @private
+     */
+    _logToKnackTable(errorData) {
+        // Map the error data to Knack fields
+        const recordData = {};
+
+        // First handle all direct mappings from errorData (excluding additionalInfo)
+        Object.entries(this.options.fieldMap).forEach(([errorKey, fieldId]) => {
+            if (errorKey !== 'additionalInfo' && errorData[errorKey] !== undefined) {
+                recordData[fieldId] = errorData[errorKey];
+            }
+        });
+
+        // Handle the additionalInfo field specially - but first remove fields that already exist in the main record
+        if (this.options.fieldMap.additionalInfo && errorData.additionalInfo) {
+            const additionalInfoField = this.options.fieldMap.additionalInfo;
+
+            // Create a copy of additionalInfo that doesn't include fields already captured elsewhere
+            const filteredAdditionalInfo = { ...errorData.additionalInfo };
+
+            // Remove fields that are already captured in dedicated fields
+            Object.keys(this.options.fieldMap).forEach(key => {
+                if (key !== 'additionalInfo') {
+                    delete filteredAdditionalInfo[key];
+                }
+            });
+
+            // Additional fields to exclude that might be in additionalInfo but are already in errorData
+            const fieldsToExclude = [
+                'contextSceneId', 'contextViewId', 'contextEventType',
+                'contextRecordId', 'contextUrl', 'contextTimestamp',
+                'knackContext', 'knackContextFormatted'
+            ];
+
+            fieldsToExclude.forEach(field => {
+                delete filteredAdditionalInfo[field];
+            });
+
+            // Only include additionalInfo if it has content after filtering
+            if (Object.keys(filteredAdditionalInfo).length > 0) {
+                const stringifiedInfo = JSON.stringify(filteredAdditionalInfo, null, 2);
+                recordData[additionalInfoField] = stringifiedInfo;
+            }
+        }
+
+        // Create the error record in Knack
+        return this.api.createRecord(this.options.sceneId, this.options.viewId, recordData);
+    }
+
+    /**
+     * Extracts browser name and version from user agent
+     * @param {string} userAgent - Browser user agent string
+     * @returns {Object} - Object containing browser name and version
+     * @private
+     */
+    _getBrowserInfo(userAgent) {
+        const browsers = [
+            { name: 'Edge', pattern: /Edge|Edg/i },
+            { name: 'Chrome', pattern: /Chrome/i },
+            { name: 'Firefox', pattern: /Firefox/i },
+            { name: 'Safari', pattern: /Safari/i },
+            { name: 'Opera', pattern: /Opera|OPR/i },
+            { name: 'Internet Explorer', pattern: /Trident|MSIE/i }
+        ];
+
+        let browserInfo = { name: 'Unknown', version: 'Unknown' };
+
+        for (const browser of browsers) {
+            if (browser.pattern.test(userAgent)) {
+                browserInfo.name = browser.name;
+
+                // Extract version based on browser
+                let versionMatch;
+                switch (browser.name) {
+                    case 'Edge':
+                        versionMatch = userAgent.match(/Edge?\/(\d+(\.\d+)?)/i);
+                        break;
+                    case 'Chrome':
+                        versionMatch = userAgent.match(/Chrome\/(\d+(\.\d+)?)/i);
+                        break;
+                    case 'Firefox':
+                        versionMatch = userAgent.match(/Firefox\/(\d+(\.\d+)?)/i);
+                        break;
+                    case 'Safari':
+                        versionMatch = userAgent.match(/Version\/(\d+(\.\d+)?)/i);
+                        break;
+                    case 'Opera':
+                        versionMatch = userAgent.match(/OPR\/(\d+(\.\d+)?)/i) || userAgent.match(/Opera\/(\d+(\.\d+)?)/i);
+                        break;
+                    case 'Internet Explorer':
+                        versionMatch = userAgent.match(/(?:MSIE |rv:)(\d+(\.\d+)?)/i);
+                        break;
+                }
+
+                if (versionMatch && versionMatch[1]) {
+                    browserInfo.version = versionMatch[1];
+                }
+
+                break;
+            }
+        }
+
+        return browserInfo;
+    }
+
+    /**
+     * Determines the device type from user agent
+     * @param {string} userAgent - Browser user agent string
+     * @returns {string} - Device type (Mobile, Tablet, Desktop)
+     * @private
+     */
+    _getDeviceType(userAgent) {
+        if (/Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent)) {
+            if (/Tablet|iPad/i.test(userAgent)) {
+                return 'Tablet';
+            }
+            return 'Mobile';
+        }
+        return 'Desktop';
+    }
+
+    /**
+     * Determines the operating system from user agent
+     * @param {string} userAgent - Browser user agent string
+     * @returns {string} - Operating system name
+     * @private
+     */
+    _getOperatingSystem(userAgent) {
+        const systems = [
+            { name: 'Windows', pattern: /Windows NT/i },
+            { name: 'Windows Phone', pattern: /Windows Phone/i },
+            { name: 'macOS', pattern: /Macintosh/i },
+            { name: 'iOS', pattern: /iPhone|iPad|iPod/i },
+            { name: 'Android', pattern: /Android/i },
+            { name: 'Linux', pattern: /Linux/i }
+        ];
+
+        for (const system of systems) {
+            if (system.pattern.test(userAgent)) {
+                return system.name;
+            }
+        }
+
+        return 'Unknown OS';
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 // Compatibility shims (deprecated names kept for existing callers; remove in V3)
 // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -15377,37 +21822,3 @@ function fileViewer(extension, url) {
 // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 // Format: TODO(v2-wave-N): globalName  - tests/v2/v2-structure.test.cjs reads these lines.
-
-// Wave 2
-// TODO(v2-wave-2): QuillEditor
-// TODO(v2-wave-2): initializeQuillIcons
-// TODO(v2-wave-2): QuillModal
-// TODO(v2-wave-2): createQuillModules
-// TODO(v2-wave-2): replaceKnackRichTextWithQuillEditor
-// TODO(v2-wave-2): gridTruncationControllers
-// TODO(v2-wave-2): gridTruncationCells
-// TODO(v2-wave-2): truncateColumnsInGrid
-// TODO(v2-wave-2): renderGridTruncation
-// TODO(v2-wave-2): attachTimePicker
-// TODO(v2-wave-2): enhanceDateTimePicker
-// TODO(v2-wave-2): updateOptions
-// TODO(v2-wave-2): applyMenuLinkFilters
-// TODO(v2-wave-2): renderInteractiveTable
-// TODO(v2-wave-2): fileCarouselState
-// TODO(v2-wave-2): ensureFileCarouselOverlay
-// TODO(v2-wave-2): preloadFileCarouselImage
-// TODO(v2-wave-2): showFileCarouselFallback
-// TODO(v2-wave-2): renderFileCarouselItem
-// TODO(v2-wave-2): navigateFileCarousel
-// TODO(v2-wave-2): onFileCarouselPopState
-// TODO(v2-wave-2): openFileCarousel
-// TODO(v2-wave-2): closeFileCarousel
-// TODO(v2-wave-2): initFileCarousel
-// TODO(v2-wave-2): caQuickToggle
-// TODO(v2-wave-2): caMultiChoiceQuickToggle
-// TODO(v2-wave-2): CAQuickToggle
-// TODO(v2-wave-2): CAMultiChoiceQuickToggle
-
-// Wave 3
-// TODO(v2-wave-3): createVersionRefreshController
-// TODO(v2-wave-3): KnackError
