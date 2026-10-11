@@ -18644,6 +18644,23 @@ function caMultiChoiceQuickToggle({ key: viewId }, data = []) {
  * a single refresh of the affected views once the queue is empty. Subclasses supply their wording and the data to send.
  */
 class QuickToggleQueue {
+    /** Sets up the queue state and colour defaults shared by both controllers. */
+    constructor() {
+        this.quickToggleParams = {
+            bgColorTrue: '#e2efda',
+            bgColorFalse: '#ffb557',
+            bgColorPending: '#ffe699',
+            showNotification: false,
+            showSpinner: false,
+            pendingClass: 'ktlProgress',
+        };
+        this.qtScanItv = null;
+        this.quickToggleObj = {};
+        this.numToProcess = 0;
+        this.refreshTimer = null;
+        this.viewsToRefresh = [];
+    }
+
     /**
      * Wording for logs, error handling and the failure alert.
      * @returns {{failure: string, handler: string, alertAction: string, refresh: string}}
@@ -18767,7 +18784,7 @@ class QuickToggleQueue {
     dropFailedToggle(dt) {
         delete this.quickToggleObj[dt];
         this.numToProcess = Math.max(0, this.numToProcess - 1);
-        if (!Object.keys(this.quickToggleObj).length) {
+        if (this.isToggleQueueEmpty(this.quickToggleObj)) {
             clearInterval(this.qtScanItv);
             this.qtScanItv = null;
         }
@@ -18800,19 +18817,6 @@ class CAQuickToggle extends QuickToggleQueue {
         this.fieldMap = new Map();
 
         // State properties
-        this.quickToggleParams = {
-            bgColorTrue: '#e2efda',
-            bgColorFalse: '#ffb557',
-            bgColorPending: '#ffe699',
-            showNotification: false,
-            showSpinner: false,
-            pendingClass: 'ktlProgress',
-        };
-        this.qtScanItv = null;
-        this.quickToggleObj = {};
-        this.numToProcess = 0;
-        this.refreshTimer = null;
-        this.viewsToRefresh = [];
         this.viewHasQt = false;
         this.fieldsColor = {};
     }
@@ -19072,19 +19076,6 @@ class CAMultiChoiceQuickToggle extends QuickToggleQueue {
         this.inlineEditing = false;
         this.viewTargets = [];
         this.fieldToggleConfig = {};
-        this.quickToggleParams = {
-            bgColorTrue: '#e2efda',
-            bgColorFalse: '#ffb557',
-            bgColorPending: '#ffe699',
-            showNotification: false,
-            showSpinner: false,
-            pendingClass: 'ktlProgress',
-        };
-        this.qtScanItv = null;
-        this.quickToggleObj = {};
-        this.numToProcess = 0;
-        this.refreshTimer = null;
-        this.viewsToRefresh = [];
     }
 
     /**
