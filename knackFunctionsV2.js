@@ -18646,8 +18646,156 @@ function caMultiChoiceQuickToggle({ key: viewId }, data = []) {
     caMultiChoiceQuickToggle.init();
 }
 
-class CAQuickToggle {
+/**
+ * Shared behaviour of the quick toggle controllers: a queue of record updates sent one at a time, a progress popup, and
+ * a single refresh of the affected views once the queue is empty. Subclasses supply their wording and the data to send.
+ */
+class QuickToggleQueue {
+    /**
+     * Wording for logs, error handling and the failure alert.
+     * @returns {{failure: string, handler: string, alertAction: string, refresh: string}}
+     */
+    get toggleMessages() {
+        return { failure: 'Quick Toggle operation failed', handler: 'Quick Toggle Error', alertAction: 'Quick Toggle operation', refresh: 'Quick Toggle Refresh' };
+    }
+
+    /**
+     * Builds the record data to PUT for a queued toggle.
+     * @param {{fieldId: string, value: *}} recObj - Queued job.
+     * @returns {Object}
+     */
+    buildToggleApiData(recObj) {
+        return { [recObj.fieldId]: recObj.value };
+    }
+
+    /**
+     * Checks whether a plain object has any enumerable keys.
+     * @param {Object|null|undefined} value - Object to inspect.
+     * @returns {boolean} True when the object is empty or invalid.
+     */
+    isToggleQueueEmpty(value) {
+        return !value || typeof value !== 'object' || Object.keys(value).length === 0;
+    }
+
+    /**
+     * Starts the queued PUT processing loop.
+     * @returns {void}
+     */
+    startQtScanning() {
+        if (this.quickToggleParams.showNotification) {
+            ktl.core.infoPopup();
+            this.showProgress();
+        }
+
+        if (this.qtScanItv) return;
+
+        ktl.views.autoRefresh(false);
+        this.qtScanItv = setInterval(() => {
+            if (this.isToggleQueueEmpty(this.quickToggleObj)) return;
+
+            const dt = Object.keys(this.quickToggleObj)[0];
+            const { processed } = this.quickToggleObj[dt];
+            if (!processed) {
+                this.quickToggleObj[dt].processed = true;
+                this.doQuickToggle(dt);
+            }
+        }, 500);
+    }
+
+    /**
+     * Sends the queued Knack update for one record.
+     * @param {string} dt - Queue key.
+     * @returns {void}
+     */
+    doQuickToggle(dt) {
+        const recObj = this.quickToggleObj[dt];
+        if (this.isToggleQueueEmpty(recObj) || !recObj.viewId || !recObj.fieldId) return;
+
+        const msg = this.toggleMessages;
+        const normalisedViewId = knackNavigator.normalizeViewId(recObj.viewId);
+        const sceneId = knackNavigator.getSceneInfoForView(normalisedViewId)?.key || '';
+        if (!sceneId || !normalisedViewId) {
+            ktl.views.autoRefresh();
+            console.error(`${msg.failure}: could not resolve scene or view id.`, recObj);
+            this.dropFailedToggle(dt);
+            return;
+        }
+
+        const apiData = this.buildToggleApiData(recObj);
+        const apiClient = getKnackApiClient();
+
+        apiClient.updateRecord(sceneId, normalisedViewId, recObj.recId, apiData)
+            .then(() => {
+                if (this.quickToggleParams.showNotification) {
+                    this.showProgress();
+                }
+
+                this.numToProcess--;
+                delete this.quickToggleObj[dt];
+
+                if (this.isToggleQueueEmpty(this.quickToggleObj)) {
+                    clearInterval(this.qtScanItv);
+                    this.qtScanItv = null;
+
+                    if (this.quickToggleParams.showSpinner) {
+                        Knack.showSpinner();
+                    }
+
+                    this.refreshTimer = setTimeout(() => {
+                        ktl.core.removeInfoPopup();
+                        ktl.views.refreshViewArray(this.viewsToRefresh)
+                            .then(() => {
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            })
+                            .catch((error) => {
+                                errorHandler.handleError(error, { function: 'refreshViewArray' }, msg.refresh);
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            });
+                    }, 500);
+                }
+            })
+            .catch((reason) => {
+                this.dropFailedToggle(dt);
+                ktl.views.autoRefresh();
+                const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
+                console.error(`${msg.failure}:`, reason);
+                errorHandler.handleError(reason, { function: 'doQuickToggle' }, msg.handler);
+                alert(`Error code KEC_1025 while processing ${msg.alertAction}, reason: ${errorMsg}`);
+            });
+    }
+
+    /**
+     * Removes a job whose update failed, so the queue keeps moving instead of retrying it forever.
+     * @param {string} dt - Queue key.
+     * @returns {void}
+     */
+    dropFailedToggle(dt) {
+        delete this.quickToggleObj[dt];
+        this.numToProcess = Math.max(0, this.numToProcess - 1);
+        if (!Object.keys(this.quickToggleObj).length) {
+            clearInterval(this.qtScanItv);
+            this.qtScanItv = null;
+        }
+    }
+
+    /**
+     * Updates the shared progress popup text.
+     * @returns {void}
+     */
+    showProgress() {
+        ktl.core.setInfoPopupText('Toggling... ' + this.numToProcess + ' items remaining.');
+    }
+}
+
+class CAQuickToggle extends QuickToggleQueue {
+    buildToggleApiData(recObj) {
+        return { [recObj.fieldId]: recObj.value, ...recObj.additionalData };
+    }
+
     constructor(viewId, data) {
+        super();
         // Core properties
         this.viewId = viewId;
         this.data = data;
@@ -18902,113 +19050,26 @@ class CAQuickToggle {
         return null;
     }
 
-    startQtScanning() {
-        if (this.quickToggleParams.showNotification) {
-            ktl.core.infoPopup();
-            this.showProgress();
-        }
 
-        if (this.qtScanItv) return;
 
-        ktl.views.autoRefresh(false);
-        this.qtScanItv = setInterval(() => {
-            if (Object.keys(this.quickToggleObj).length) {
-                const dt = Object.keys(this.quickToggleObj)[0];
-                const { processed } = this.quickToggleObj[dt];
-                if (!processed) {
-                    this.quickToggleObj[dt].processed = true;
-                    this.doQuickToggle(dt);
-                }
-            }
-        }, 500);
-    }
 
-    doQuickToggle(dt) {
-        const recObj = this.quickToggleObj[dt];
-        if (!Object.keys(recObj).length || !recObj.viewId || !recObj.fieldId) return;
-
-        const normalizedViewId = knackNavigator.normalizeViewId(recObj.viewId);
-        const sceneId = knackNavigator.getSceneInfoForView(normalizedViewId)?.key || '';
-        if (!sceneId || !normalizedViewId) {
-            ktl.views.autoRefresh();
-            console.error('Quick Toggle operation failed: could not resolve scene or view id.', recObj);
-            this.dropFailedToggle(dt);
-            return;
-        }
-
-        const apiData = { [recObj.fieldId]: recObj.value, ...recObj.additionalData };
-        const apiClient = getKnackApiClient();
-
-        apiClient.updateRecord(sceneId, normalizedViewId, recObj.recId, apiData)
-            .then(() => {
-                if (this.quickToggleParams.showNotification) {
-                    this.showProgress();
-                }
-                this.numToProcess--;
-                delete this.quickToggleObj[dt];
-
-                if (!Object.keys(this.quickToggleObj).length) {
-                    clearInterval(this.qtScanItv);
-                    this.qtScanItv = null;
-
-                    if (this.quickToggleParams.showSpinner) {
-                        Knack.showSpinner();
-                    }
-
-                    this.refreshTimer = setTimeout(() => {
-                        ktl.core.removeInfoPopup();
-                        ktl.views.refreshViewArray(this.viewsToRefresh)
-                            .then(() => {
-                                Knack.hideSpinner();
-                                ktl.views.autoRefresh();
-                            })
-                            .catch((error) => {
-                                errorHandler.handleError(error, { function: 'refreshViewArray' }, 'Quick Toggle Refresh');
-                                Knack.hideSpinner();
-                                ktl.views.autoRefresh();
-                            })
-                    }, 500);
-                }
-            })
-            .catch(reason => {
-                this.dropFailedToggle(dt);
-                ktl.views.autoRefresh();
-                const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
-                console.error('Quick Toggle operation failed:', reason);
-                errorHandler.handleError(reason, {function: 'doQuickToggle'}, 'Quick Toggle Error')
-                alert(`Error code KEC_1025 while processing Quick Toggle operation, reason: ${errorMsg}`);
-            });
-    }
-
-    /**
-     * Removes a job whose update failed, so the queue keeps moving instead of retrying it forever.
-     * @param {string} dt - Queue key.
-     * @returns {void}
-     */
-    dropFailedToggle(dt) {
-        delete this.quickToggleObj[dt];
-        this.numToProcess = Math.max(0, this.numToProcess - 1);
-        if (!Object.keys(this.quickToggleObj).length) {
-            clearInterval(this.qtScanItv);
-            this.qtScanItv = null;
-        }
-    }
-
-    showProgress() {
-        ktl.core.setInfoPopupText('Toggling... ' + this.numToProcess + ' items remaining.');
-    }
 }
 
 /**
  * Quick-toggle controller for two-option multiple-choice fields.
  */
-class CAMultiChoiceQuickToggle {
+class CAMultiChoiceQuickToggle extends QuickToggleQueue {
+    get toggleMessages() {
+        return { failure: 'Multi-choice quick toggle operation failed', handler: 'Multi-choice Quick Toggle Error', alertAction: 'multi-choice quick toggle', refresh: 'Multi-choice Quick Toggle Refresh' };
+    }
+
     /**
      * Creates a controller for one rendered view.
      * @param {string} viewId - Knack view id.
      * @param {Array<Object>} data - Rendered Knack row data.
      */
     constructor(viewId, data) {
+        super();
         this.viewId = viewId;
         this.data = data;
         this.kw = '_mqt';
@@ -19332,115 +19393,9 @@ class CAMultiChoiceQuickToggle {
         return nextValue;
     }
 
-    /**
-     * Starts the queued PUT processing loop.
-     * @returns {void}
-     */
-    startQtScanning() {
-        if (this.quickToggleParams.showNotification) {
-            ktl.core.infoPopup();
-            this.showProgress();
-        }
 
-        if (this.qtScanItv) return;
 
-        ktl.views.autoRefresh(false);
-        this.qtScanItv = setInterval(() => {
-            if (this.isToggleQueueEmpty(this.quickToggleObj)) return;
 
-            const dt = Object.keys(this.quickToggleObj)[0];
-            const { processed } = this.quickToggleObj[dt];
-            if (!processed) {
-                this.quickToggleObj[dt].processed = true;
-                this.doQuickToggle(dt);
-            }
-        }, 500);
-    }
-
-    /**
-     * Sends the queued Knack update for one record.
-     * @param {string} dt - Queue key.
-     * @returns {void}
-     */
-    doQuickToggle(dt) {
-        const recObj = this.quickToggleObj[dt];
-        if (this.isToggleQueueEmpty(recObj) || !recObj.viewId || !recObj.fieldId) return;
-
-        const normalisedViewId = knackNavigator.normalizeViewId(recObj.viewId);
-        const sceneId = knackNavigator.getSceneInfoForView(normalisedViewId)?.key || '';
-        if (!sceneId || !normalisedViewId) {
-            ktl.views.autoRefresh();
-            console.error('Multi-choice quick toggle operation failed: could not resolve scene or view id.', recObj);
-            this.dropFailedToggle(dt);
-            return;
-        }
-
-        const apiData = { [recObj.fieldId]: recObj.value };
-        const apiClient = getKnackApiClient();
-
-        apiClient.updateRecord(sceneId, normalisedViewId, recObj.recId, apiData)
-            .then(() => {
-                if (this.quickToggleParams.showNotification) {
-                    this.showProgress();
-                }
-
-                this.numToProcess--;
-                delete this.quickToggleObj[dt];
-
-                if (this.isToggleQueueEmpty(this.quickToggleObj)) {
-                    clearInterval(this.qtScanItv);
-                    this.qtScanItv = null;
-
-                    if (this.quickToggleParams.showSpinner) {
-                        Knack.showSpinner();
-                    }
-
-                    this.refreshTimer = setTimeout(() => {
-                        ktl.core.removeInfoPopup();
-                        ktl.views.refreshViewArray(this.viewsToRefresh)
-                            .then(() => {
-                                Knack.hideSpinner();
-                                ktl.views.autoRefresh();
-                            })
-                            .catch((error) => {
-                                errorHandler.handleError(error, { function: 'refreshViewArray' }, 'Multi-choice Quick Toggle Refresh');
-                                Knack.hideSpinner();
-                                ktl.views.autoRefresh();
-                            });
-                    }, 500);
-                }
-            })
-            .catch((reason) => {
-                this.dropFailedToggle(dt);
-                ktl.views.autoRefresh();
-                const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
-                console.error('Multi-choice quick toggle operation failed:', reason);
-                errorHandler.handleError(reason, { function: 'doQuickToggle' }, 'Multi-choice Quick Toggle Error');
-                alert(`Error code KEC_1025 while processing multi-choice quick toggle, reason: ${errorMsg}`);
-            });
-    }
-
-    /**
-     * Removes a job whose update failed, so the queue keeps moving instead of retrying it forever.
-     * @param {string} dt - Queue key.
-     * @returns {void}
-     */
-    dropFailedToggle(dt) {
-        delete this.quickToggleObj[dt];
-        this.numToProcess = Math.max(0, this.numToProcess - 1);
-        if (!Object.keys(this.quickToggleObj).length) {
-            clearInterval(this.qtScanItv);
-            this.qtScanItv = null;
-        }
-    }
-
-    /**
-     * Updates the shared progress popup text.
-     * @returns {void}
-     */
-    showProgress() {
-        ktl.core.setInfoPopupText('Toggling... ' + this.numToProcess + ' items remaining.');
-    }
 
     /**
      * Returns the rendered root element for the current view.
@@ -19451,14 +19406,6 @@ class CAMultiChoiceQuickToggle {
         return viewRoot instanceof HTMLElement ? viewRoot : null;
     }
 
-    /**
-     * Checks whether a plain object has any enumerable keys.
-     * @param {Object|null|undefined} value - Object to inspect.
-     * @returns {boolean} True when the object is empty or invalid.
-     */
-    isToggleQueueEmpty(value) {
-        return !value || typeof value !== 'object' || Object.keys(value).length === 0;
-    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════

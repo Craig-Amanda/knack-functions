@@ -89,3 +89,29 @@ test('cleanups: file carousel re-open, idle watchdog restart and KnackAPI base U
         assert.deepEqual(out.urls, ['https://api.knack.com/v1/applications/app1/assets/file/upload', 'https://dev.example/v1/applications/app1/assets/image/upload']);
     } finally { await r.close(); }
 });
+
+test('both toggle classes send the same updates and report failures with the same wording as V1', async () => {
+    const { both } = require('./harness.cjs');
+    const { v1, v2 } = await both({ names: ['CAQuickToggle', 'CAMultiChoiceQuickToggle', 'getKnackApiClient', 'KnackAPI', 'knackNavigator', 'knackValueResolver', 'KnackError'], html: HTML,
+        before: BEFORE + `Knack.scenes = { models: [{ attributes: { key: 'scene_1', slug: 'home' }, views: { models: [{ attributes: { key: 'view_7' } }] } }] }; Knack.showSpinner = () => {}; Knack.hideSpinner = () => {};` }, async () => {
+        const out = []; const alerts = []; window.alert = (m) => alerts.push(m); const ce = console.error; const errs = []; console.error = (...a) => errs.push(a.map(String).join(' '));
+        window.errorHandler.handleError = (e, info, source) => errs.push(['handler', e && e.message, info.function, source].join('|'));
+        ktl.views.autoRefresh = () => {}; ktl.views.refreshViewArray = async () => {}; ktl.core.removeInfoPopup = () => {}; ktl.core.setInfoPopupText = () => {};
+        for (const Toggle of [CAQuickToggle, CAMultiChoiceQuickToggle]) {
+            window.knackAPI = new KnackAPI({ showSpinner: false, debug: false }); const puts = [];
+            window.knackAPI.updateRecord = async (...a) => { puts.push(a); if (a[2] === 'bad') throw new Error('PUT failed'); return {}; };
+            const t = Object.create(Toggle.prototype);
+            Object.assign(t, { quickToggleObj: {}, numToProcess: 0, viewsToRefresh: ['view_7'], quickToggleParams: { showNotification: true, showSpinner: true }, qtScanItv: null, fieldMap: new Map() });
+            t.quickToggleObj[1] = { viewId: 'view_7', fieldId: 'field_3', value: true, recId: 'ok', processed: false, additionalData: { field_9: 'x' } }; t.numToProcess = 1;
+            t.quickToggleObj[2] = { viewId: 'view_99', fieldId: 'field_3', value: true, recId: 'noscene', processed: true }; t.numToProcess += 1; t.doQuickToggle('2');
+            t.doQuickToggle('1'); await new Promise((r) => setTimeout(r, 60)); await new Promise((r) => setTimeout(r, 650));
+            t.quickToggleObj[3] = { viewId: 'view_7', fieldId: 'field_3', value: false, recId: 'bad', processed: true }; t.doQuickToggle('3'); await new Promise((r) => setTimeout(r, 40));
+            t.startQtScanning(); clearInterval(t.qtScanItv);
+            out.push(['puts', puts]);
+        }
+        console.error = ce;
+        return JSON.parse(JSON.stringify({ out, alerts, errs }));
+    });
+    assert.deepEqual(v2, v1);
+    assert.ok(v1.alerts.length === 2 && v1.errs.some((e) => e.startsWith('Multi-choice quick toggle operation failed')), 'fixture should reach the failure paths');
+});
