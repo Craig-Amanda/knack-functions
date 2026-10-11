@@ -1170,23 +1170,25 @@ class KnackAPI {
     }
 
     /**
+     * Builds a rate-limit snapshot; anything not supplied is "unknown" (null / empty).
+     * @param {Object} [fields={}] - Values to set on top of the unavailable defaults.
+     * @returns {{available: boolean, reason: string|null, limit: number|null, remaining: number|null, used: number|null, reset: number|null, status: number|null, observedAt: number|null, headerNames: Array<string>, headers: Object}}
+     * @private
+     */
+    _buildRateLimitSnapshot(fields = {}) {
+        return {
+            available: false, reason: null, limit: null, remaining: null, used: null, reset: null,
+            status: null, observedAt: null, headerNames: [], headers: {}, ...fields
+        };
+    }
+
+    /**
      * Creates an empty rate-limit snapshot.
      * @returns {{available: boolean, reason: string|null, limit: number|null, remaining: number|null, used: number|null, reset: number|null, status: number|null, observedAt: number|null, headerNames: Array<string>, headers: Object}}
      * @private
      */
     _createEmptyRateLimitSnapshot() {
-        return {
-            available: false,
-            reason: 'No rate-limit headers observed yet.',
-            limit: null,
-            remaining: null,
-            used: null,
-            reset: null,
-            status: null,
-            observedAt: null,
-            headerNames: [],
-            headers: {}
-        };
+        return this._buildRateLimitSnapshot({ reason: 'No rate-limit headers observed yet.' });
     }
 
     /**
@@ -1199,18 +1201,13 @@ class KnackAPI {
      */
     _createUnavailableRateLimitSnapshot(reason, status = null, headers = {}) {
         const normalizedHeaders = this._normalizeResponseHeaders(headers);
-        return {
-            available: false,
+        return this._buildRateLimitSnapshot({
             reason: typeof reason === 'string' && reason.trim() ? reason.trim() : 'Rate-limit data is unavailable.',
-            limit: null,
-            remaining: null,
-            used: null,
-            reset: null,
             status: Number.isFinite(status) ? status : null,
             observedAt: Date.now(),
             headerNames: Object.keys(normalizedHeaders).sort(),
             headers: normalizedHeaders
-        };
+        });
     }
 
     /**
@@ -1248,20 +1245,10 @@ class KnackAPI {
      * @private
      */
     _normalizeResponseHeaders(headersLike) {
-        const normalized = {};
-        if (!headersLike) return normalized;
-
-        if (typeof headersLike.forEach === 'function') {
-            headersLike.forEach((value, key) => {
-                normalized[String(key).toLowerCase()] = value;
-            });
-            return normalized;
-        }
-
-        Object.entries(headersLike).forEach(([key, value]) => {
-            normalized[String(key).toLowerCase()] = value;
-        });
-        return normalized;
+        if (!headersLike) return {};
+        const entries = typeof headersLike.forEach === 'function' ? [] : Object.entries(headersLike);
+        if (typeof headersLike.forEach === 'function') headersLike.forEach((value, key) => entries.push([key, value]));
+        return Object.fromEntries(entries.map(([key, value]) => [String(key).toLowerCase(), value]));
     }
 
     /**
@@ -1332,39 +1319,24 @@ class KnackAPI {
     _extractRateLimitSnapshot(headersLike, status = null) {
         const headers = this._normalizeResponseHeaders(headersLike);
         const headerNames = Object.keys(headers).sort();
-        const remaining = this._parseRateLimitHeaderInt(headers['x-planlimit-remaining'] || headers['x-rate-limit-remaining']);
-        const limit = this._parseRateLimitHeaderInt(headers['x-planlimit-limit'] || headers['x-rate-limit-limit']);
-        const reset = this._parseRateLimitHeaderInt(headers['x-planlimit-reset'] || headers['x-rate-limit-reset']);
+        const read = (name) => this._parseRateLimitHeaderInt(headers[`x-planlimit-${name}`] || headers[`x-rate-limit-${name}`]);
+        const [remaining, limit, reset] = [read('remaining'), read('limit'), read('reset')];
+        const available = remaining !== null || limit !== null || reset !== null;
 
-        if (remaining === null && limit === null && reset === null) {
-            return {
-                available: false,
-                reason: headerNames.length
-                    ? 'The browser can read response headers, but Knack did not expose any rate-limit headers on this response.'
-                    : 'The browser could not read any response headers for this request. Knack may not expose rate-limit headers to browser JavaScript for this endpoint.',
-                limit: null,
-                remaining: null,
-                used: null,
-                reset: null,
-                status: Number.isFinite(status) ? status : null,
-                observedAt: Date.now(),
-                headerNames,
-                headers
-            };
-        }
-
-        return {
-            available: true,
-            reason: null,
+        return this._buildRateLimitSnapshot({
+            available,
+            reason: available ? null : (headerNames.length
+                ? 'The browser can read response headers, but Knack did not expose any rate-limit headers on this response.'
+                : 'The browser could not read any response headers for this request. Knack may not expose rate-limit headers to browser JavaScript for this endpoint.'),
             limit,
             remaining,
-            used: Number.isFinite(limit) && Number.isFinite(remaining) ? Math.max(0, limit - remaining) : null,
+            used: available && Number.isFinite(limit) && Number.isFinite(remaining) ? Math.max(0, limit - remaining) : null,
             reset,
             status: Number.isFinite(status) ? status : null,
             observedAt: Date.now(),
             headerNames,
             headers
-        };
+        });
     }
 
     /**
@@ -2261,16 +2233,6 @@ class KnackAPI {
             this._writeQueue.queue.push({ task, resolve, reject });
             this._drainWriteQueue();
         });
-    }
-
-    /**
-     * Backward-compatible alias for older internals.
-     * @param {Function} task
-     * @returns {Promise<*>}
-     * @private
-     */
-    _scheduleWrite(task) {
-        return this._enqueueWrite(task);
     }
 
     /**

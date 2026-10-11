@@ -110,3 +110,19 @@ test('V2 update verification compares the prepared payload (V1 compared the raw 
     assert.equal(await run(V1), 1, 'V1 flags the upload as a failed verification');
     assert.equal(await run(V2), 0, 'V2 compares what was actually sent');
 });
+
+test('rate-limit snapshots are built the same way for headers, dev-server payloads and failures', async () => {
+    await same(() => {
+        Date.now = () => 1700000000000;
+        const api = new KnackAPI({ showSpinner: false, debug: false });
+        const headerSets = [null, {}, { 'X-PlanLimit-Remaining': '40', 'X-PlanLimit-Limit': '100', 'X-PlanLimit-Reset': '99' }, { 'x-rate-limit-remaining': '5' }, { other: '1' }, new Headers({ 'X-Rate-Limit-Limit': '10', 'X-Rate-Limit-Remaining': '3' })];
+        const payloads = [null, 'x', { available: true, limit: '10', remaining: '4', headers: { A: 1 } }, { reason: ' nope ' }, { limit: 7, remaining: 9, used: 2, observedAt: '2024-01-01T00:00:00Z', status: '201', headerNames: ['B', 'A'] }, { observedAt: 'junk', reset: 'x' }, {}];
+        return {
+            extract: headerSets.flatMap((h) => [api._extractRateLimitSnapshot(h, 200), api._extractRateLimitSnapshot(h)]),
+            external: payloads.flatMap((p) => [api._normalizeExternalRateLimitSnapshot(p, 429), api._normalizeExternalRateLimitSnapshot(p)]),
+            unavailable: [api._createUnavailableRateLimitSnapshot(' why ', 500, { Z: 1 }), api._createUnavailableRateLimitSnapshot('', 'x'), api._createUnavailableRateLimitSnapshot()],
+            empty: api._createEmptyRateLimitSnapshot(), headers: [api._normalizeResponseHeaders(null), api._normalizeResponseHeaders({ A: 1 }), api._normalizeResponseHeaders(new Headers({ B: '2' }))],
+            status: api.getRateLimitStatus(),
+        };
+    });
+});
