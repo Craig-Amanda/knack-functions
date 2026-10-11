@@ -10878,7 +10878,7 @@ class BulkActionGridController {
      * @returns {Object|null} Active action.
      */
     resolveActiveAction() {
-        // this.actions was filtered to actions with a key in the constructor.
+        // The constructor keeps only actions that have a key and a label.
         return this.actions.find((action) => action.key === this.activeActionKey) || this.actions[0] || null;
     }
 
@@ -18816,7 +18816,6 @@ class CAQuickToggle extends QuickToggleQueue {
         this.inlineEditing = false;
         this.fieldMap = new Map();
 
-        // State properties
         this.viewHasQt = false;
         this.fieldsColor = {};
     }
@@ -19046,9 +19045,6 @@ class CAQuickToggle extends QuickToggleQueue {
 
         return null;
     }
-
-
-
 
 }
 
@@ -19376,10 +19372,6 @@ class CAMultiChoiceQuickToggle extends QuickToggleQueue {
 
         return nextValue;
     }
-
-
-
-
 
     /**
      * Returns the rendered root element for the current view.
@@ -20772,12 +20764,16 @@ class KnackError {
      * @private
      */
     _serialiseArgs(args) {
-        return JSON.stringify(args, (key, value) => {
-            if (typeof value === 'function') return 'function() { ... }';
-            if (value instanceof Node) return value.nodeName;
-            if (value instanceof Window) return 'Window';
-            return value;
-        });
+        try {
+            return JSON.stringify(args, (key, value) => {
+                if (typeof value === 'function') return 'function() { ... }';
+                if (value instanceof Node) return value.nodeName;
+                if (value instanceof Window) return 'Window';
+                return value;
+            });
+        } catch (error) {
+            return '[unserialisable arguments]'; // circular objects or BigInt must not mask the original error
+        }
     }
 
     /**

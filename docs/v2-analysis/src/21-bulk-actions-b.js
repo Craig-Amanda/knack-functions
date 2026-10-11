@@ -3023,7 +3023,7 @@ class BulkActionGridController {
      * @returns {Object|null} Active action.
      */
     resolveActiveAction() {
-        // this.actions was filtered to actions with a key in the constructor.
+        // The constructor keeps only actions that have a key and a label.
         return this.actions.find((action) => action.key === this.activeActionKey) || this.actions[0] || null;
     }
 

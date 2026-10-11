@@ -195,7 +195,6 @@ class CAQuickToggle extends QuickToggleQueue {
         this.inlineEditing = false;
         this.fieldMap = new Map();
 
-        // State properties
         this.viewHasQt = false;
         this.fieldsColor = {};
     }
@@ -425,9 +424,6 @@ class CAQuickToggle extends QuickToggleQueue {
 
         return null;
     }
-
-
-
 
 }
 
@@ -755,10 +751,6 @@ class CAMultiChoiceQuickToggle extends QuickToggleQueue {
 
         return nextValue;
     }
-
-
-
-
 
     /**
      * Returns the rendered root element for the current view.

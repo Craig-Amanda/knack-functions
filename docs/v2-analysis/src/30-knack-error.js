@@ -518,12 +518,16 @@ class KnackError {
      * @private
      */
     _serialiseArgs(args) {
-        return JSON.stringify(args, (key, value) => {
-            if (typeof value === 'function') return 'function() { ... }';
-            if (value instanceof Node) return value.nodeName;
-            if (value instanceof Window) return 'Window';
-            return value;
-        });
+        try {
+            return JSON.stringify(args, (key, value) => {
+                if (typeof value === 'function') return 'function() { ... }';
+                if (value instanceof Node) return value.nodeName;
+                if (value instanceof Window) return 'Window';
+                return value;
+            });
+        } catch (error) {
+            return '[unserialisable arguments]'; // circular objects or BigInt must not mask the original error
+        }
     }
 
     /**
