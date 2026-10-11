@@ -3023,15 +3023,8 @@ class BulkActionGridController {
      * @returns {Object|null} Active action.
      */
     resolveActiveAction() {
-        const availableActions = this.actions.filter((action) => action?.key);
-        if (!availableActions.length) return null;
-
-        if (this.activeActionKey) {
-            const match = availableActions.find((action) => action.key === this.activeActionKey);
-            if (match) return match;
-        }
-
-        return availableActions[0] || null;
+        // this.actions was filtered to actions with a key in the constructor.
+        return this.actions.find((action) => action.key === this.activeActionKey) || this.actions[0] || null;
     }
 
     /**
