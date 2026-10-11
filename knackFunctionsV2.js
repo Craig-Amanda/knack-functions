@@ -20490,12 +20490,7 @@ class KnackError {
                 return await fn.apply(this, args);
             } catch (error) {
                 self.handleError(error, {
-                    functionArgs: JSON.stringify(args, (key, value) => {
-                        if (typeof value === 'function') return 'function() { ... }';
-                        if (value instanceof Node) return value.nodeName;
-                        if (value instanceof Window) return 'Window';
-                        return value;
-                    }),
+                    functionArgs: self._serialiseArgs(args),
                     knackContext: self.getCurrentContext(),
                     ...additionalInfo
                 }, source || fn.name || 'Anonymous Function');
@@ -20535,9 +20530,7 @@ class KnackError {
             } catch (error) {
                 const executionTime = performance.now() - startTime;
                 self.handleError(error, {
-                    functionArgs: JSON.stringify(args, (_, v) =>
-                        typeof v === 'function' ? '[Function]' : v
-                    ),
+                    functionArgs: self._serialiseArgs(args),
                     responseTime: executionTime.toFixed(2),
                     performanceContext: {
                         threshold: thresholdMs,
@@ -20715,12 +20708,7 @@ class KnackError {
                 };
 
                 if (captureArgs) {
-                    errorInfo.functionArgs = JSON.stringify(args, (key, value) => {
-                        if (typeof value === 'function') return 'function() { ... }';
-                        if (value instanceof Node) return value.nodeName;
-                        if (value instanceof Window) return 'Window';
-                        return value;
-                    });
+                    errorInfo.functionArgs = self._serialiseArgs(args);
                 }
 
                 if (captureContext) {
@@ -20791,6 +20779,21 @@ class KnackError {
         $(document).on(eventSelector, wrappedHandler);
 
         return this;
+    }
+
+    /**
+     * Serialises call arguments for an error report, replacing values that can't or shouldn't be stringified.
+     * @param {Array} args - Arguments the wrapped function was called with.
+     * @returns {string}
+     * @private
+     */
+    _serialiseArgs(args) {
+        return JSON.stringify(args, (key, value) => {
+            if (typeof value === 'function') return 'function() { ... }';
+            if (value instanceof Node) return value.nodeName;
+            if (value instanceof Window) return 'Window';
+            return value;
+        });
     }
 
     /**
