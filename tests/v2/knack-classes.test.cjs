@@ -86,3 +86,14 @@ test('value resolver conversions match V1 across field types', async () => {
         };
     });
 });
+
+test('navigator user helpers match the V1 isUserRole/isUserName globals', async () => {
+    const before = BEFORE + "Knack.getUserRoles = (r) => ['profile_1', 'Admin'].includes(r); Knack.getUserAttributes = () => ({ name: 'Pat' });";
+    const [r1, r2] = await Promise.all([realm({ file: 'knackFunctions.js', names: ['isUserRole', 'isUserName'], html: HTML, before }), realm({ file: V2, names: NAMES, html: HTML, before })]);
+    try {
+        const v1 = await r1.run(() => [isUserRole(['x', 'Admin']), isUserRole(['x']), isUserRole([]), isUserRole(['profile_1']), isUserName('Pat'), isUserName('pat')]);
+        const v2 = await r2.run(() => { const n = knackNavigator; return [n.isUserRole(['x', 'Admin']), n.isUserRole(['x']), n.isUserRole([]), n.isUserRole(['profile_1']), n.isUserName('Pat'), n.isUserName('pat'), n.getUserName(), n.isUserRole('Admin'), n.isUserRole(undefined)]; });
+        assert.deepEqual(v2.slice(0, 6), v1);
+        assert.deepEqual(v2.slice(6), ['Pat', true, false]);
+    } finally { await Promise.all([r1.close(), r2.close()]); }
+});

@@ -18,3 +18,23 @@ function splitAndTrimField(fieldValue) {
     warnDeprecated('splitAndTrimField', 'csvToArray()');
     return fieldValue ? csvToArray(fieldValue) : [];
 }
+
+/**
+ * @deprecated Use knackNavigator.isUserRole().
+ * @param {string|string[]} userRoleArr - Role id(s) or name(s).
+ * @returns {boolean}
+ */
+function isUserRole(userRoleArr) {
+    warnDeprecated('isUserRole', 'knackNavigator.isUserRole()');
+    return knackNavigator.isUserRole(userRoleArr);
+}
+
+/**
+ * @deprecated Use knackNavigator.isUserName().
+ * @param {string} nameToMatch - Name to compare.
+ * @returns {boolean}
+ */
+function isUserName(nameToMatch) {
+    warnDeprecated('isUserName', 'knackNavigator.isUserName()');
+    return knackNavigator.isUserName(nameToMatch);
+}

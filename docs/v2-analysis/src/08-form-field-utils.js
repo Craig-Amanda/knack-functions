@@ -153,7 +153,7 @@ function updateFieldsInArrays(viewId) {
  * @param {Array<string|number>} fieldIds - Numeric field ids.
  */
 function updateUserFields(viewId, fieldIds) {
-    const { name } = Knack.getUserAttributes();
+    const name = knackNavigator.getUserName();
     fieldIds.forEach((fieldId) => {
         const userField = document.getElementById(`kn-input-field_${fieldId}`);
         if (!userField) return;

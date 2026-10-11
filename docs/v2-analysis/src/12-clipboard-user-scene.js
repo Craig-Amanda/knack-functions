@@ -132,25 +132,6 @@ function toggleMessage(shouldShow, eleSelector) {
 }
 
 /**
- * Whether the logged-in user has any of the given roles.
- * @param {string|string[]} userRoleArr - Role id(s) or name(s) accepted by `Knack.getUserRoles`.
- * @returns {boolean}
- */
-function isUserRole(userRoleArr) {
-    const roles = Array.isArray(userRoleArr) ? userRoleArr : [userRoleArr].filter((role) => role != null);
-    return roles.some((role) => Boolean(Knack.getUserRoles(role)));
-}
-
-/**
- * Whether the logged-in user's name equals a value.
- * @param {string} nameToMatch - Name to compare.
- * @returns {boolean}
- */
-function isUserName(nameToMatch) {
-    return Knack.getUserAttributes()?.name === nameToMatch;
-}
-
-/**
  * Gets the DOM id of the page's background scene, ignoring scenes inside a modal.
  * @returns {string|null} e.g. `kn-scene_1151`, or null.
  */
@@ -197,7 +178,7 @@ function showPopUpNotification(insertNotificationAfter, notificationTxt, notific
  */
 function insertLoggedInUser(selector, callback) {
     try {
-        const userName = Knack.getUserAttributes()?.name || 'Unknown User';
+        const userName = knackNavigator.getUserName() || 'Unknown User';
         if (typeof selector !== 'string' && !(selector instanceof Element) && !(selector instanceof NodeList)) {
             console.error('Invalid selector type provided to insertLoggedInUser');
             return userName;

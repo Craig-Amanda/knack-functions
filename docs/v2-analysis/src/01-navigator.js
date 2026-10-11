@@ -720,6 +720,32 @@ class KnackNavigator {
         this._fieldIdByViewLabelCache.set(cacheKey, resolvedFieldId);
         return resolvedFieldId;
     }
+
+    /**
+     * Gets the logged-in user's name.
+     * @returns {string|undefined} The name, or undefined when nobody is logged in.
+     */
+    getUserName() {
+        return globalThis.Knack?.getUserAttributes?.()?.name;
+    }
+
+    /**
+     * Whether the logged-in user's name equals a value.
+     * @param {string} nameToMatch - Name to compare.
+     * @returns {boolean}
+     */
+    isUserName(nameToMatch) {
+        return this.getUserName() === nameToMatch;
+    }
+
+    /**
+     * Whether the logged-in user has any of the given roles.
+     * @param {string|string[]} roles - Role id(s) or name(s) accepted by `Knack.getUserRoles`.
+     * @returns {boolean}
+     */
+    isUserRole(roles) {
+        return [roles].flat().filter((role) => role != null).some((role) => Boolean(globalThis.Knack.getUserRoles(role)));
+    }
 }
 
 const knackNavigator = new KnackNavigator();

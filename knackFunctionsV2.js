@@ -1090,6 +1090,32 @@ class KnackNavigator {
         this._fieldIdByViewLabelCache.set(cacheKey, resolvedFieldId);
         return resolvedFieldId;
     }
+
+    /**
+     * Gets the logged-in user's name.
+     * @returns {string|undefined} The name, or undefined when nobody is logged in.
+     */
+    getUserName() {
+        return globalThis.Knack?.getUserAttributes?.()?.name;
+    }
+
+    /**
+     * Whether the logged-in user's name equals a value.
+     * @param {string} nameToMatch - Name to compare.
+     * @returns {boolean}
+     */
+    isUserName(nameToMatch) {
+        return this.getUserName() === nameToMatch;
+    }
+
+    /**
+     * Whether the logged-in user has any of the given roles.
+     * @param {string|string[]} roles - Role id(s) or name(s) accepted by `Knack.getUserRoles`.
+     * @returns {boolean}
+     */
+    isUserRole(roles) {
+        return [roles].flat().filter((role) => role != null).some((role) => Boolean(globalThis.Knack.getUserRoles(role)));
+    }
 }
 
 const knackNavigator = new KnackNavigator();
@@ -2223,7 +2249,7 @@ function updateFieldsInArrays(viewId) {
  * @param {Array<string|number>} fieldIds - Numeric field ids.
  */
 function updateUserFields(viewId, fieldIds) {
-    const { name } = Knack.getUserAttributes();
+    const name = knackNavigator.getUserName();
     fieldIds.forEach((fieldId) => {
         const userField = document.getElementById(`kn-input-field_${fieldId}`);
         if (!userField) return;
@@ -3105,25 +3131,6 @@ function toggleMessage(shouldShow, eleSelector) {
 }
 
 /**
- * Whether the logged-in user has any of the given roles.
- * @param {string|string[]} userRoleArr - Role id(s) or name(s) accepted by `Knack.getUserRoles`.
- * @returns {boolean}
- */
-function isUserRole(userRoleArr) {
-    const roles = Array.isArray(userRoleArr) ? userRoleArr : [userRoleArr].filter((role) => role != null);
-    return roles.some((role) => Boolean(Knack.getUserRoles(role)));
-}
-
-/**
- * Whether the logged-in user's name equals a value.
- * @param {string} nameToMatch - Name to compare.
- * @returns {boolean}
- */
-function isUserName(nameToMatch) {
-    return Knack.getUserAttributes()?.name === nameToMatch;
-}
-
-/**
  * Gets the DOM id of the page's background scene, ignoring scenes inside a modal.
  * @returns {string|null} e.g. `kn-scene_1151`, or null.
  */
@@ -3170,7 +3177,7 @@ function showPopUpNotification(insertNotificationAfter, notificationTxt, notific
  */
 function insertLoggedInUser(selector, callback) {
     try {
-        const userName = Knack.getUserAttributes()?.name || 'Unknown User';
+        const userName = knackNavigator.getUserName() || 'Unknown User';
         if (typeof selector !== 'string' && !(selector instanceof Element) && !(selector instanceof NodeList)) {
             console.error('Invalid selector type provided to insertLoggedInUser');
             return userName;
@@ -3332,6 +3339,26 @@ function toggleElements(selectors, show) {
 function splitAndTrimField(fieldValue) {
     warnDeprecated('splitAndTrimField', 'csvToArray()');
     return fieldValue ? csvToArray(fieldValue) : [];
+}
+
+/**
+ * @deprecated Use knackNavigator.isUserRole().
+ * @param {string|string[]} userRoleArr - Role id(s) or name(s).
+ * @returns {boolean}
+ */
+function isUserRole(userRoleArr) {
+    warnDeprecated('isUserRole', 'knackNavigator.isUserRole()');
+    return knackNavigator.isUserRole(userRoleArr);
+}
+
+/**
+ * @deprecated Use knackNavigator.isUserName().
+ * @param {string} nameToMatch - Name to compare.
+ * @returns {boolean}
+ */
+function isUserName(nameToMatch) {
+    warnDeprecated('isUserName', 'knackNavigator.isUserName()');
+    return knackNavigator.isUserName(nameToMatch);
 }
 
 
