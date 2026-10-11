@@ -61,25 +61,6 @@ function warnDeprecated(oldName, replacement) {
     console.warn(`[knackFunctions] ${oldName} is deprecated; use ${replacement}.`);
 }
 
-/**
- * Normalises a Knack id to its prefixed form: `12` or `'VIEW_12'` become `'view_12'`; anything else becomes `''`.
- * @param {string|number} value - Id with or without the prefix.
- * @param {'view_'|'field_'|'scene_'|'object_'} prefix - Expected prefix.
- * @returns {string}
- */
-function normaliseKnackId(value, prefix) {
-    const text = String(value ?? '').trim().toLowerCase();
-    if (text.startsWith(prefix) && /^\d+$/.test(text.slice(prefix.length))) return text;
-    return /^\d+$/.test(text) ? `${prefix}${text}` : '';
-}
-
-/** @param {string|number} value @returns {string} `view_N` or `''`. */
-const toViewId = (value) => normaliseKnackId(value, 'view_');
-/** @param {string|number} value @returns {string} `field_N` or `''`. */
-const toFieldId = (value) => normaliseKnackId(value, 'field_');
-/** @param {string|number} value @returns {string} `scene_N` or `''`. */
-const toSceneId = (value) => normaliseKnackId(value, 'scene_');
-
 /** @param {*} val @returns {boolean} True for a NodeList. */
 const isNodeList = (val) => val instanceof NodeList;
 /** @param {*} val @returns {boolean} True for a jQuery collection (when jQuery is loaded). */
@@ -158,12 +139,12 @@ function getById(id, { context } = {}) {
  * @returns {HTMLElement|null}
  */
 function getViewRootElement(viewRef) {
-    const directId = (typeof viewRef === 'string' || typeof viewRef === 'number') ? toViewId(viewRef) : '';
+    const directId = (typeof viewRef === 'string' || typeof viewRef === 'number') ? knackNavigator.normalizeViewId(viewRef) : '';
     const element = directId ? null : resolveElement(viewRef);
     const viewRoot = element?.closest('.kn-view, #connection-form-view');
     if (viewRoot instanceof HTMLElement) return viewRoot;
 
-    const viewId = directId || toViewId(viewRef?.key || element?.id);
+    const viewId = directId || knackNavigator.normalizeViewId(viewRef?.key || element?.id);
     if (!viewId) return null;
 
     const rendered = document.getElementById(viewId);
@@ -180,7 +161,7 @@ function getViewRootElement(viewRef) {
  * @returns {HTMLElement|null}
  */
 function getFieldWrapper(fieldId, root = document) {
-    const normalisedFieldId = toFieldId(fieldId);
+    const normalisedFieldId = knackNavigator.normalizeFieldId(fieldId);
     if (!normalisedFieldId) return null;
     const wrapper = (root ?? document).querySelector(`#kn-input-${normalisedFieldId}`);
     return wrapper instanceof HTMLElement ? wrapper : null;
@@ -382,6 +363,1769 @@ function selectTextOnFocus(viewId, selector = '.kn-input-number input') {
         input.addEventListener('focus', () => setTimeout(() => input.select(), 0));
     });
 }
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: navigator
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// KnackNavigator: V1 lines 36-797 ported as-is (analysis C02: no signature change). Every V2 function resolves view, field and scene ids through knackNavigator.
+/**
+ * Lightweight Knack metadata navigator.
+ * Provides view and field metadata lookups with memoization.
+ */
+class KnackNavigator {
+    /**
+     * Creates a navigator with memoized view and field caches.
+     */
+    constructor() {
+        this._viewCache = new Map();
+        this._sceneInfoCache = new Map();
+        this._fieldIdByViewLabelCache = new Map();
+        this._fieldIdByViewHeaderCache = new Map();
+        this._viewHeaderByFieldIdCache = new Map();
+        this._viewColumnIndexCache = new Map();
+        this._viewColumnSelectorCache = new Map();
+        this._fieldMetaCache = new Map();
+        this._fieldTypeCache = new Map();
+        this._fieldChoiceOptionsCache = new Map();
+    }
+
+    /**
+     * Normalises an id to the expected prefixed Knack format.
+     * @param {string|number} value - Id value with or without the prefix.
+     * @param {string} prefix - Expected prefix, such as `view_` or `field_`.
+     * @returns {string} Normalised id, or an empty string.
+     */
+    normalizePrefixedId(value, prefix) {
+        const normalizedValue = String(value ?? '').trim().toLowerCase();
+        if (!normalizedValue) return '';
+
+        if (new RegExp(`^${prefix}\\d+$`, 'i').test(normalizedValue)) {
+            return normalizedValue;
+        }
+
+        return /^\d+$/.test(normalizedValue) ? `${prefix}${normalizedValue}` : '';
+    }
+
+    /**
+     * Normalises a view id.
+     * @param {string|number} viewId - View id with or without the `view_` prefix.
+     * @returns {string} Normalised view id.
+     */
+    normalizeViewId(viewId) {
+        return this.normalizePrefixedId(viewId, 'view_');
+    }
+
+    /**
+     * Normalises a field id.
+     * @param {string|number} fieldId - Field id with or without the `field_` prefix.
+     * @returns {string} Normalised field id.
+     */
+    normalizeFieldId(fieldId) {
+        return this.normalizePrefixedId(fieldId, 'field_');
+    }
+
+    /**
+     * Normalises every field reference in a field map.
+     * @param {Object} [fieldMap={}] - Field map keyed by logical names.
+     * @returns {Object} Field map with normalised field ids.
+     */
+    normalizeFieldMap(fieldMap = {}) {
+        return Object.fromEntries(
+            Object.entries(fieldMap || {}).map(([fieldKey, fieldValue]) => [
+                fieldKey,
+                this.normalizeFieldId(fieldValue),
+            ])
+        );
+    }
+
+    /**
+     * Normalises every field reference in a field map to its `_raw` companion key.
+     * @param {Object} [fieldMap={}] - Field map keyed by logical names.
+     * @returns {Object} Field map with normalised raw field ids.
+     */
+    normalizeRawFieldMap(fieldMap = {}) {
+        return Object.fromEntries(
+            Object.entries(fieldMap || {}).map(([fieldKey, fieldValue]) => [
+                fieldKey,
+                this.normalizeRawFieldId(fieldValue),
+            ])
+        );
+    }
+
+    /**
+     * Normalises every view reference in a view map.
+     * @param {Object} [viewMap={}] - View map keyed by logical names where each value is a view id or array of view ids.
+     * @returns {Object} View map with normalised view ids (string or array).
+     */
+    normaliseViewMap(viewMap = {}) {
+        return Object.fromEntries(
+            Object.entries(viewMap || {}).map(([key, value]) => {
+                if (Array.isArray(value)) {
+                    const normalized = value.map((v) => this.normalizeViewId(v)).filter(Boolean);
+                    // Return a single string (first normalized id) or empty string
+                    return [key, normalized[0] || ''];
+                }
+
+                return [key, this.normalizeViewId(value) || ''];
+            })
+        );
+    }
+
+    /**
+     * Returns the DOM wrapper for a Knack field inside a view.
+     * @param {Element} viewRoot - Root element for the view.
+     * @param {string|number} fieldId - Field id to resolve.
+     * @returns {Element|null} Field wrapper element.
+     */
+    getFieldWrapper(viewRoot, fieldId) {
+        if (!(viewRoot instanceof Element)) return null;
+        const normalizedFieldId = this.normalizeFieldId(fieldId);
+        if (!normalizedFieldId) return null;
+        return viewRoot.querySelector(`#kn-input-${normalizedFieldId}`);
+    }
+
+    /**
+     * Normalises a field id to its `_raw` companion key.
+     * @param {string|number} fieldId - Field id to normalise.
+     * @returns {string} Raw field id.
+     */
+    normalizeRawFieldId(fieldId) {
+        const normalized = this.normalizeFieldId(fieldId);
+        return normalized ? `${normalized}_raw` : '';
+    }
+
+    /**
+     * Normalises a scene id.
+     * @param {string|number} sceneId - Scene id with or without the `scene_` prefix.
+     * @returns {string} Normalised scene id.
+     */
+    normalizeSceneId(sceneId) {
+        return this.normalizePrefixedId(sceneId, 'scene_');
+    }
+
+    /**
+     * Resolves the Knack view metadata object for a view id.
+     * @param {string|number} viewId - View id to resolve.
+     * @returns {Object|null} Knack view metadata.
+     */
+    getViewObject(viewId) {
+        const vid = this.normalizeViewId(viewId);
+        if (!vid) return null;
+        if (this._viewCache.has(vid)) return this._viewCache.get(vid);
+
+        const direct = Knack?.views?.[vid]?.model?.view;
+        if (direct) {
+            this._viewCache.set(vid, direct);
+            return direct;
+        }
+
+        const scenes = Knack?.scenes?.models || [];
+        for (const scene of scenes) {
+            const views = scene?.views?.models || [];
+            for (const viewModel of views) {
+                if (viewModel?.attributes?.key === vid) {
+                    this._viewCache.set(vid, viewModel.attributes);
+                    return viewModel.attributes;
+                }
+            }
+        }
+
+        this._viewCache.set(vid, null);
+        return null;
+    }
+
+    /**
+     * Checks whether a Knack view uses an object, optionally requiring a view type and scene.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number} objectKey - Object key with or without the `object_` prefix.
+     * @param {{viewType?: string, sceneId?: string|number}} [options={}] - Optional Knack view type and scene to require.
+     * @returns {boolean} Whether the view uses the requested object, type, and scene.
+     */
+    isViewForObject(viewId, objectKey, options = {}) {
+        const normalisedObjectKey = this.normalizePrefixedId(objectKey, 'object_');
+        if (!normalisedObjectKey) return false;
+
+        const viewObject = this.getViewObject(viewId);
+        const requestedViewType = String(options?.viewType || '').trim().toLowerCase();
+        const requestedSceneValue = String(options?.sceneId ?? '').trim();
+        const requestedSceneId = this.normalizeSceneId(requestedSceneValue);
+        if (requestedSceneValue && !requestedSceneId) return false;
+
+        return viewObject?.source?.object === normalisedObjectKey
+            && (!requestedViewType || String(viewObject?.type || '').toLowerCase() === requestedViewType)
+            && (!requestedSceneId || this.getSceneInfoForView(viewId)?.key === requestedSceneId);
+    }
+
+    /**
+     * Finds the first currently rendered view for an object, optionally filtered by view type and scene.
+     * @param {string|number} objectKey - Object key with or without the `object_` prefix.
+     * @param {{viewType?: string, sceneId?: string|number}} [options={}] - Optional Knack view type and scene to require.
+     * @returns {string} Matching view id, or an empty string.
+     */
+    findRenderedViewIdForObject(objectKey, options = {}) {
+        if (typeof document === 'undefined') return '';
+
+        const requestedSceneValue = String(options?.sceneId ?? '').trim();
+        const requestedSceneId = this.normalizeSceneId(requestedSceneValue);
+        if (requestedSceneValue && !requestedSceneId) return '';
+
+        const searchRoot = requestedSceneId
+            ? document.getElementById(`kn-${requestedSceneId}`)
+            : document;
+        if (!searchRoot) return '';
+
+        const renderedViewElements = searchRoot.querySelectorAll('[id^="view_"]');
+        return Array.from(renderedViewElements)
+            .map((viewElement) => this.normalizeViewId(viewElement.id))
+            .find((viewId) => this.isViewForObject(viewId, objectKey, options)) || '';
+    }
+
+    /**
+     * Returns normalised field ids declared on a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {Array<string>} View field ids.
+     */
+    getViewFieldIds(viewId) {
+        const viewObject = this.getViewObject(viewId);
+        const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
+
+        return Array.from(new Set(
+            fields
+                .map((field) => this.normalizeFieldId(field?.key || ''))
+                .filter(Boolean)
+        ));
+    }
+
+    /**
+     * Returns column metadata declared on a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {Array<Object>} View columns.
+     */
+    getViewColumns(viewId) {
+        const viewObject = this.getViewObject(viewId);
+        return Array.isArray(viewObject?.columns) ? viewObject.columns : [];
+    }
+
+    /**
+     * Normalises a view column header for case-insensitive comparisons.
+     * @param {string} headerText - Raw column header text, possibly containing HTML.
+     * @returns {string} Normalised header text.
+     */
+    normalizeViewColumnHeader(headerText) {
+        return String(headerText || '')
+            .replace(/<br\s*\/?>/gi, ' ')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+    }
+
+    /**
+     * Resolves a view column by field id, header text, or column-like object.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number|Object} columnRef - Field id, header text, or column metadata.
+     * @returns {Object|null} Matching view column metadata.
+     */
+    getViewColumn(viewId, columnRef) {
+        const columns = this.getViewColumns(viewId);
+        if (!columns.length || !columnRef) return null;
+
+        if (typeof columnRef === 'object') {
+            const normalizedFieldId = this.normalizeFieldId(columnRef?.field?.key || columnRef?.id || '');
+            const normalizedHeader = this.normalizeViewColumnHeader(columnRef?.header || '');
+
+            return columns.find((column) => {
+                const columnFieldId = this.normalizeFieldId(column?.field?.key || column?.id || '');
+                const columnHeader = this.normalizeViewColumnHeader(column?.header || '');
+                return (normalizedFieldId && columnFieldId === normalizedFieldId)
+                    || (normalizedHeader && columnHeader === normalizedHeader);
+            }) || null;
+        }
+
+        const normalizedFieldId = this.normalizeFieldId(columnRef);
+        if (normalizedFieldId) {
+            const fieldMatch = columns.find((column) => {
+                return this.normalizeFieldId(column?.field?.key || column?.id || '') === normalizedFieldId;
+            });
+            if (fieldMatch) return fieldMatch;
+        }
+
+        const normalizedHeader = this.normalizeViewColumnHeader(columnRef);
+        if (!normalizedHeader) return null;
+
+        return columns.find((column) => {
+            return this.normalizeViewColumnHeader(column?.header || '') === normalizedHeader;
+        }) || null;
+    }
+
+    /**
+     * Resolves a view column field id from column header text.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string} headerText - Column header text to resolve.
+     * @returns {string} Matching field id, or an empty string.
+     */
+    getFieldIdFromHeader(viewId, headerText) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        const normalizedHeader = this.normalizeViewColumnHeader(headerText);
+        if (!normalizedViewId || !normalizedHeader) return '';
+
+        const cacheKey = `${normalizedViewId}::${normalizedHeader}`;
+        if (this._fieldIdByViewHeaderCache.has(cacheKey)) {
+            return this._fieldIdByViewHeaderCache.get(cacheKey);
+        }
+
+        const column = this.getViewColumn(normalizedViewId, normalizedHeader);
+        const resolvedFieldId = this.normalizeFieldId(column?.field?.key || column?.id || '');
+        this._fieldIdByViewHeaderCache.set(cacheKey, resolvedFieldId);
+        return resolvedFieldId;
+    }
+
+    /**
+     * Resolves the configured column header text for a field id on a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number} fieldId - Field id to resolve.
+     * @param {{ normalized?: boolean }} [options={}] - When true, returns a normalised plain-text header.
+     * @returns {string} Matching header text, or an empty string.
+     */
+    getHeaderFromFieldId(viewId, fieldId, options = {}) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        const normalizedFieldId = this.normalizeFieldId(fieldId);
+        if (!normalizedViewId || !normalizedFieldId) return '';
+
+        const useNormalizedHeader = Boolean(options?.normalized);
+        const cacheKey = `${normalizedViewId}::${normalizedFieldId}::${useNormalizedHeader ? 'normalized' : 'raw'}`;
+        if (this._viewHeaderByFieldIdCache.has(cacheKey)) {
+            return this._viewHeaderByFieldIdCache.get(cacheKey);
+        }
+
+        const column = this.getViewColumn(normalizedViewId, normalizedFieldId);
+        const rawHeader = String(column?.header || '').trim();
+        const resolvedHeader = useNormalizedHeader
+            ? this.normalizeViewColumnHeader(rawHeader)
+            : rawHeader;
+
+        this._viewHeaderByFieldIdCache.set(cacheKey, resolvedHeader);
+        return resolvedHeader;
+    }
+
+    /**
+     * Returns the 1-based visual column index for a view column.
+     * Supports field-backed columns and header-only action columns such as Edit.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number|Object} columnRef - Field id, header text, or column metadata.
+     * @returns {number} 1-based column index, or 0 when not found.
+     */
+    getViewColumnIndex(viewId, columnRef) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId || !columnRef) return 0;
+
+        const renderedColumnIndex = this.getRenderedViewColumnIndex(normalizedViewId, columnRef);
+        if (renderedColumnIndex > 0) {
+            return renderedColumnIndex;
+        }
+
+        const cacheRef = typeof columnRef === 'object'
+            ? `${this.normalizeFieldId(columnRef?.field?.key || columnRef?.id || '')}::${this.normalizeViewColumnHeader(columnRef?.header || '')}`
+            : `${this.normalizeFieldId(columnRef)}::${this.normalizeViewColumnHeader(columnRef)}`;
+        const cacheKey = `${normalizedViewId}::${cacheRef}`;
+        if (this._viewColumnIndexCache.has(cacheKey)) {
+            return this._viewColumnIndexCache.get(cacheKey);
+        }
+
+        const columns = this.getViewColumns(normalizedViewId);
+        const column = this.getViewColumn(normalizedViewId, columnRef);
+        const columnIndex = column ? columns.findIndex((candidate) => candidate === column) + 1 : 0;
+
+        this._viewColumnIndexCache.set(cacheKey, columnIndex > 0 ? columnIndex : 0);
+        return columnIndex > 0 ? columnIndex : 0;
+    }
+
+    /**
+     * Resolves the live rendered column index from the table DOM.
+     * This accounts for runtime-injected columns such as selection checkboxes.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number|Object} columnRef - Field id, header text, or column metadata.
+     * @returns {number} 1-based column index, or 0 when not found.
+     */
+    getRenderedViewColumnIndex(viewId, columnRef) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId || !columnRef) return 0;
+
+        const viewElement = typeof document !== 'undefined'
+            ? document.getElementById(normalizedViewId)
+            : null;
+        if (!(viewElement instanceof HTMLElement)) return 0;
+
+        const headerCells = Array.from(viewElement.querySelectorAll('thead tr:last-child > th'));
+        if (!headerCells.length) return 0;
+
+        const resolvedColumn = this.getViewColumn(normalizedViewId, columnRef);
+        const resolvedFieldId = this.normalizeFieldId(resolvedColumn?.field?.key || resolvedColumn?.id || columnRef);
+        const resolvedHeader = this.normalizeViewColumnHeader(resolvedColumn?.header || columnRef);
+
+        const matchingIndex = headerCells.findIndex((headerCell) => {
+            if (!(headerCell instanceof HTMLElement)) return false;
+
+            const headerFieldKey = this.normalizeFieldId(headerCell.getAttribute('data-field-key') || '');
+            if (resolvedFieldId && headerFieldKey && headerFieldKey === resolvedFieldId) {
+                return true;
+            }
+
+            if (resolvedFieldId && headerCell.classList.contains(resolvedFieldId)) {
+                return true;
+            }
+
+            if (!resolvedHeader) {
+                return false;
+            }
+
+            return this.normalizeViewColumnHeader(headerCell.innerHTML || headerCell.textContent || '') === resolvedHeader;
+        });
+
+        return matchingIndex >= 0 ? matchingIndex + 1 : 0;
+    }
+
+    /**
+     * Returns DOM selectors for a view column.
+     * Field-backed columns resolve to field selectors, while header-only columns fall back to nth-child selectors.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number|Object} columnRef - Field id, header text, or column metadata.
+     * @returns {Array<string>} CSS selectors that target the column header and cells.
+     */
+    getViewColumnSelectors(viewId, columnRef) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId || !columnRef) return [];
+
+        const cacheRef = typeof columnRef === 'object'
+            ? `${this.normalizeFieldId(columnRef?.field?.key || columnRef?.id || '')}::${this.normalizeViewColumnHeader(columnRef?.header || '')}`
+            : `${this.normalizeFieldId(columnRef)}::${this.normalizeViewColumnHeader(columnRef)}`;
+        const cacheKey = `${normalizedViewId}::${cacheRef}`;
+        if (this._viewColumnSelectorCache.has(cacheKey)) {
+            return this._viewColumnSelectorCache.get(cacheKey);
+        }
+
+        const selectors = [];
+        const column = this.getViewColumn(normalizedViewId, columnRef);
+        const fieldId = this.normalizeFieldId(column?.field?.key || column?.id || columnRef);
+        if (fieldId) {
+            selectors.push(
+                `th.${fieldId}`,
+                `td.${fieldId}`,
+                `th[data-field-key="${fieldId}"]`,
+                `td[data-field-key="${fieldId}"]`
+            );
+        }
+
+        const columnIndex = this.getViewColumnIndex(normalizedViewId, columnRef);
+        if (columnIndex > 0) {
+            selectors.push(
+                `thead tr > th:nth-child(${columnIndex})`,
+                `tbody tr > td:nth-child(${columnIndex})`,
+                `colgroup col:nth-child(${columnIndex})`
+            );
+        }
+
+        const uniqueSelectors = Array.from(new Set(selectors.filter(Boolean)));
+        this._viewColumnSelectorCache.set(cacheKey, uniqueSelectors);
+        return uniqueSelectors;
+    }
+
+    /**
+     * Returns normalised Knack width metadata for a view column.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {string|number|Object} columnRef - Field id, header text, or column metadata.
+     * @returns {{type: string, units: string, amount: number|null, amountText: string, isCustom: boolean, column: Object}|null} Width metadata.
+     */
+    getViewColumnWidth(viewId, columnRef) {
+        const column = this.getViewColumn(viewId, columnRef);
+        if (!column) return null;
+
+        const widthMeta = column?.width && typeof column.width === 'object' ? column.width : {};
+        const widthType = String(widthMeta?.type || '').trim().toLowerCase();
+        const widthUnits = String(widthMeta?.units || '').trim().toLowerCase();
+        const amountText = String(widthMeta?.amount ?? '').trim();
+        const parsedAmount = Number.parseFloat(amountText);
+
+        return {
+            type: widthType,
+            units: widthUnits,
+            amount: Number.isFinite(parsedAmount) ? parsedAmount : null,
+            amountText,
+            isCustom: widthType === 'custom',
+            column,
+        };
+    }
+
+    /**
+     * Returns scene metadata for a view.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {{ key: string, slug: string }|null} Scene info or null.
+     */
+    getSceneInfoForView(viewId) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return null;
+        }
+        if (this._sceneInfoCache.has(normalizedViewId)) return this._sceneInfoCache.get(normalizedViewId);
+
+        let fallbackSceneKey = '';
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        const directSceneKey = this.normalizeSceneId(directScene?.key);
+        if (directSceneKey) {
+            const directSceneSlug = String(directScene?.slug || '').trim();
+            if (directSceneSlug) {
+                const sceneInfo = {
+                    key: directSceneKey,
+                    slug: directSceneSlug
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            fallbackSceneKey = directSceneKey;
+        }
+
+        const viewObject = this.getViewObject(normalizedViewId);
+        const sceneKey = this.normalizeSceneId(viewObject?.scene?.key);
+        if (sceneKey) {
+            const viewObjectSceneSlug = String(viewObject?.scene?.slug || '').trim();
+            if (viewObjectSceneSlug) {
+                const sceneInfo = {
+                    key: sceneKey,
+                    slug: viewObjectSceneSlug
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            fallbackSceneKey = fallbackSceneKey || sceneKey;
+        }
+
+        const scenes = Knack?.scenes?.models || [];
+        for (const scene of scenes) {
+            const candidateSceneKey = this.normalizeSceneId(scene?.attributes?.key);
+            const views = scene?.views?.models || [];
+            for (const viewModel of views) {
+                if (viewModel?.attributes?.key !== normalizedViewId) continue;
+
+                const sceneInfo = {
+                    key: candidateSceneKey,
+                    slug: String(scene?.attributes?.slug || '').trim()
+                };
+                this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+                return sceneInfo;
+            }
+
+            if (!fallbackSceneKey || candidateSceneKey !== fallbackSceneKey) continue;
+
+            const fallbackSceneSlug = String(scene?.attributes?.slug || '').trim();
+            if (!fallbackSceneSlug) continue;
+
+            const sceneInfo = {
+                key: fallbackSceneKey,
+                slug: fallbackSceneSlug
+            };
+            this._sceneInfoCache.set(normalizedViewId, sceneInfo);
+            return sceneInfo;
+        }
+
+        return null;
+    }
+
+    /**
+     * Returns the current Knack route scene trail for a view, oldest to newest.
+     * Where Knack exposes a route key on a scene entry, treat it as the record id for
+     * that slug. If the key is missing, fall back to the current URL hash.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {{ maxScenes?: number }} [options={}] - Optional trail limit.
+     * @returns {Array<{ sceneSlug: string, recordId: string, isCurrent: boolean, index: number }>} Scene trail.
+     */
+    getCurrentSceneTrail(viewId, options = {}) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return [];
+        }
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        if (!directScene) {
+            return [];
+        }
+
+        const rawTrail = Array.isArray(directScene?.scenes) ? directScene.scenes : [];
+        const normalizedTrail = rawTrail
+            .map((sceneEntry, index, sourceTrail) => {
+                const sceneSlug = String(sceneEntry?.slug || '').trim();
+                const directRecordId = String(sceneEntry?.key || sceneEntry?.scene_id || '').trim();
+                const recordId = directRecordId || (sceneSlug ? String(getIdBeforeSceneSlug(sceneSlug) || '').trim() : '');
+
+                return {
+                    sceneSlug,
+                    recordId,
+                    isCurrent: index === sourceTrail.length - 1,
+                    index,
+                };
+            })
+            .filter((sceneEntry) => sceneEntry.sceneSlug || sceneEntry.recordId);
+
+        const maxScenes = Number(options?.maxScenes);
+        if (Number.isFinite(maxScenes) && maxScenes > 0) {
+            return normalizedTrail.slice(-maxScenes);
+        }
+
+        return normalizedTrail;
+    }
+
+    /**
+     * Returns the currently rendered scene information for a view.
+     * Unlike `getSceneInfoForView`, this includes the current scene record id.
+     * When `historyIndex` is provided, returns the matching entry from the route trail,
+     * where `0` means the current scene, `1` the previous scene, and so on.
+     * @param {string|number} viewId - View id to inspect.
+     * @param {number|{ historyIndex?: number }} [options={}] - Optional trail lookup.
+     * @returns {{ recordId: string, sceneId: string, sceneSlug: string }|null} Current scene info or null.
+     */
+    getCurrentSceneInfo(viewId, options = {}) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        if (!normalizedViewId) {
+            return null;
+        }
+
+        const historyIndex = typeof options === 'number'
+            ? options
+            : Number(options?.historyIndex || 0);
+        if (Number.isInteger(historyIndex) && historyIndex > 0) {
+            const trail = this.getCurrentSceneTrail(normalizedViewId);
+            const targetIndex = trail.length - (historyIndex + 1);
+            const targetEntry = targetIndex >= 0 ? trail[targetIndex] : null;
+            if (!targetEntry) {
+                return null;
+            }
+
+            return {
+                recordId: targetEntry.recordId,
+                sceneId: '',
+                sceneSlug: targetEntry.sceneSlug,
+            };
+        }
+
+        const directScene = Knack?.views?.[normalizedViewId]?.model?.view?.scene;
+        if (!directScene) {
+            return null;
+        }
+
+        return {
+            recordId: String(directScene?.scene_id || '').trim(),
+            sceneId: this.normalizeSceneId(directScene?.key),
+            sceneSlug: String(directScene?.slug || '').trim(),
+        };
+    }
+
+    /**
+     * Resolves field metadata from Knack object definitions.
+     * @param {string|number} fieldKey - Field id to resolve.
+     * @returns {Object|null} Field metadata.
+     */
+    getFieldMeta(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return null;
+        if (this._fieldMetaCache.has(key)) return this._fieldMetaCache.get(key);
+
+        const objects = Knack?.objects?.models || [];
+        let fieldMeta = null;
+
+        for (const objModel of objects) {
+            const fields = objModel?.fields?.models || [];
+            const match = fields.find((fieldModel) => {
+                const attributes = fieldModel?.attributes || {};
+                return attributes?.key === key;
+            });
+
+            const attributes = match?.attributes || null;
+            if (attributes && typeof attributes === 'object') {
+                fieldMeta = attributes;
+                break;
+            }
+        }
+
+        this._fieldMetaCache.set(key, fieldMeta);
+        return fieldMeta;
+    }
+
+    /**
+     * Resolves the normalised field type for a field id.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {string} Lower-cased Knack field type.
+     */
+    getFieldType(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return '';
+        if (this._fieldTypeCache.has(key)) return this._fieldTypeCache.get(key);
+
+        const fieldMeta = this.getFieldMeta(key);
+        const fieldType = String(fieldMeta?.type || '').trim().toLowerCase();
+        this._fieldTypeCache.set(key, fieldType);
+        return fieldType;
+    }
+
+    /**
+     * Resolves choice labels for a select-style field from Knack object metadata.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {Array<string>} Ordered choice labels from field metadata.
+     */
+    getFieldChoiceOptions(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return [];
+
+        // Return cached non-empty value to preserve performance
+        if (this._fieldChoiceOptionsCache.has(key)) {
+            const cached = this._fieldChoiceOptionsCache.get(key);
+            if (Array.isArray(cached) && cached.length) return cached;
+            // if cached is empty, fall through to rebuild from fresh metadata
+        }
+
+        const fieldMeta = this.getFieldMeta(key);
+        const optionEntries = Array.isArray(fieldMeta?.format?.options) ? fieldMeta.format.options : [];
+
+        // Assume optionEntries is a plain list of primitives
+        const out = [];
+        const seen = new Set();
+        for (const e of optionEntries) {
+            if (e == null) continue;
+            const v = String(e).trim();
+            if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+        }
+        if (out.length) this._fieldChoiceOptionsCache.set(key, out);
+        return out;
+    }
+
+    /**
+     * Resolves a field id from a view-specific field label or name.
+     * @param {string|number} viewId - View id containing the field.
+     * @param {string} fieldLabel - Field label or name.
+     * @returns {string} Matching field id, or an empty string.
+     */
+    getFieldIdFromLabel(viewId, fieldLabel) {
+        const normalizedViewId = this.normalizeViewId(viewId);
+        const normalizedLabel = String(fieldLabel || '').trim().toLowerCase();
+        if (!normalizedViewId || !normalizedLabel) return '';
+
+        const cacheKey = `${normalizedViewId}::${normalizedLabel}`;
+        if (this._fieldIdByViewLabelCache.has(cacheKey)) {
+            return this._fieldIdByViewLabelCache.get(cacheKey);
+        }
+
+        const viewObject = this.getViewObject(normalizedViewId);
+        const fields = Array.isArray(viewObject?.fields) ? viewObject.fields : [];
+        const match = fields.find((field) => {
+            const fieldName = String(field?.name || '').trim().toLowerCase();
+            const fieldLabelText = String(field?.label || '').trim().toLowerCase();
+            return fieldName === normalizedLabel || fieldLabelText === normalizedLabel;
+        });
+
+        const resolvedFieldId = this.normalizeFieldId(match?.key || '');
+        this._fieldIdByViewLabelCache.set(cacheKey, resolvedFieldId);
+        return resolvedFieldId;
+    }
+}
+
+const knackNavigator = new KnackNavigator();
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: value-resolver
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// KnackValueResolver: V1 lines 799-1787 ported as-is (analysis C03: no signature change). Value coercion and Knack record values go through knackValueResolver.
+/**
+ * Knack field value resolver for display/raw/typed/API output modes.
+ * Handles per-field-type normalization using Knack object metadata.
+ */
+class KnackValueResolver {
+    /**
+     * Creates a value resolver backed by a navigator.
+     * @param {KnackNavigator} navigator - Metadata navigator instance.
+     */
+    constructor(navigator) {
+        this.navigator = navigator;
+    }
+
+    /**
+     * Normalises a field id for value resolution.
+     * @param {string|number} fieldId - Field id with or without the `field_` prefix.
+     * @returns {string} Normalised field id.
+     */
+    normalizeFieldId(fieldId) {
+        if (this.navigator?.normalizeFieldId) {
+            return this.navigator.normalizeFieldId(fieldId);
+        }
+
+        const value = String(fieldId ?? '').trim().toLowerCase();
+        if (!value) return '';
+        if (/^field_\d+$/.test(value)) return value;
+        if (/^\d+$/.test(value)) return `field_${value}`;
+        return '';
+    }
+
+    /**
+     * Returns field metadata for a field id.
+     * @param {string|number} fieldKey - Field id to resolve.
+     * @returns {Object|null} Field metadata.
+     */
+    getFieldMeta(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return null;
+        return this.navigator?.getFieldMeta ? this.navigator.getFieldMeta(key) : null;
+    }
+
+    /**
+     * Returns the Knack field type for a field id.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {string} Lower-cased field type.
+     */
+    getFieldType(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return '';
+        return this.navigator?.getFieldType ? this.navigator.getFieldType(key) : '';
+    }
+
+    /**
+     * Returns the expected read/write shape for a field based on Knack metadata.
+     * Write payloads always use the non-raw field key.
+     * @param {string|number} fieldKey - Field key with or without `field_` prefix.
+     * @returns {Object|null} Shape metadata for the field, or null when the field key is invalid.
+     * @example
+     * const shape = knackValueResolver.getFieldShape('field_6374');
+     * console.log(shape.write.key); // field_6374
+     */
+    getFieldShape(fieldKey) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!key) return null;
+
+        const fieldType = this.getFieldType(key) || 'unknown';
+        return {
+            fieldKey: key,
+            rawKey: `${key}_raw`,
+            fieldType,
+            readOnly: this.isReadOnlyFieldType(fieldType),
+            read: {
+                displayKey: key,
+                displayShape: this.getDisplayShapeForType(fieldType),
+                rawKey: `${key}_raw`,
+                rawShape: this.getRawShapeForType(fieldType)
+            },
+            write: {
+                key,
+                usesRawKey: false,
+                supported: !this.isReadOnlyFieldType(fieldType),
+                valueShape: this.getWriteShapeForType(fieldType)
+            }
+        };
+    }
+
+    /**
+     * Describes the actual read/write values present on a record for a field.
+     * This is useful when copying Knack data into a POST/PUT payload without guessing at field shapes.
+     * @param {Object} record - Knack record returned by the API.
+     * @param {string|number} fieldKey - Field key with or without `field_` prefix.
+     * @param {Object} [options] - Optional settings.
+     * @param {boolean} [options.preferRaw=true] - Whether typed resolution should prefer `_raw` values.
+     * @returns {Object|null} Field shape and current values, or null when the field key is invalid.
+     * @example
+     * const fieldInfo = knackValueResolver.describeFieldValue(record, 'field_7587');
+     * console.log(fieldInfo.write.value); // structured value safe to use under field_7587
+     */
+    describeFieldValue(record, fieldKey, { preferRaw = true } = {}) {
+        const definition = this.getFieldShape(fieldKey);
+        if (!definition) return null;
+
+        const rawValue = record?.[definition.rawKey];
+        const displayValue = record?.[definition.fieldKey];
+        const typedValue = this.toTypedValue({
+            rawValue,
+            displayValue,
+            fieldType: definition.fieldType,
+            preferRaw
+        });
+        const requestValue = this.toRequestValue({
+            rawValue,
+            displayValue,
+            fieldType: definition.fieldType
+        });
+
+        return {
+            ...definition,
+            read: {
+                ...definition.read,
+                displayValue,
+                displayValueRuntimeShape: this.describeValueShape(displayValue),
+                rawValue,
+                rawValueRuntimeShape: this.describeValueShape(rawValue),
+                typedValue,
+                typedValueRuntimeShape: this.describeValueShape(typedValue)
+            },
+            write: {
+                ...definition.write,
+                value: requestValue,
+                runtimeShape: this.describeValueShape(requestValue)
+            }
+        };
+    }
+
+    /**
+     * Returns a consistent display/raw pair for a field without callers needing to guess at raw shapes.
+     * Useful for UI code that needs a human-readable label plus a stable raw value.
+     * @param {Object} record - Knack record returned by the API.
+     * @param {string|number} fieldKey - Field key with or without `field_` prefix.
+     * @param {Object} [options] - Optional settings.
+     * @param {boolean} [options.preferRaw=true] - Whether typed resolution should prefer `_raw` values.
+     * @returns {{display: string, raw: string}} Display/raw metadata for the field.
+     */
+    getFieldValueMeta(record, fieldKey, { preferRaw = true } = {}) {
+        const fieldInfo = this.describeFieldValue(record, fieldKey, { preferRaw });
+        if (!fieldInfo) {
+            return {
+                display: '',
+                raw: '',
+            };
+        }
+
+        const rawValue = fieldInfo.read.rawValue;
+        const displayValue = fieldInfo.read.displayValue;
+
+        if (Array.isArray(rawValue)) {
+            const refs = rawValue
+                .map((value) => this.toConnectionRef(value))
+                .filter(Boolean);
+
+            if (refs.length) {
+                return {
+                    display: this.toJoinedString(refs.map((ref) => ref.identifier || ref.id)),
+                    raw: this.toJoinedString(refs.map((ref) => ref.id), ','),
+                };
+            }
+
+            const joinedValue = this.toJoinedString(rawValue);
+            return {
+                display: joinedValue,
+                raw: joinedValue,
+            };
+        }
+
+        const connectionRef = this.toConnectionRef(rawValue);
+        if (connectionRef) {
+            return {
+                display: connectionRef.identifier || connectionRef.id,
+                raw: connectionRef.id,
+            };
+        }
+
+        if (rawValue && typeof rawValue === 'object') {
+            const normalizedDisplay = this.toJoinedString(rawValue);
+            const normalizedRaw = this.toStringSafe(rawValue.id ?? rawValue.value ?? normalizedDisplay);
+
+            return {
+                display: normalizedDisplay || normalizedRaw,
+                raw: normalizedRaw || normalizedDisplay,
+            };
+        }
+
+        const normalizedDisplay = this.toStringSafe(displayValue);
+        return {
+            display: normalizedDisplay,
+            raw: rawValue !== undefined && rawValue !== null ? this.toStringSafe(rawValue) : normalizedDisplay,
+        };
+    }
+
+    /**
+     * Resolves a field to a normalised display string suitable for stable text comparisons.
+     * @param {Object} record - Knack record returned by the API.
+     * @param {string|number} fieldKey - Field key with or without `field_` prefix.
+     * @returns {string} Normalised comparable display value.
+     */
+    getComparableFieldDisplay(record, fieldKey) {
+        return this.normalizeComparableText(
+            this.toDisplayString(this.extractResponseFieldValue(record, fieldKey))
+        );
+    }
+
+    /**
+     * Builds a POST/PUT payload using only non-raw field keys and type-aware values.
+     * Source values can come from a full Knack record or a partial object containing field keys.
+     * @param {Object} source - Record or payload-like object.
+     * @param {Array<string|number>} [fieldKeys=[]] - Specific field keys to include. When omitted, all non-raw field keys in source are considered.
+     * @returns {Object} Type-aware payload ready for Knack POST/PUT calls.
+     * @example
+     * const payload = knackValueResolver.buildRequestPayload(record, ['field_6374', 'field_7587']);
+     * // payload uses field_6374 / field_7587 keys, never *_raw keys
+     */
+    buildRequestPayload(source, fieldKeys = []) {
+        if (!source || typeof source !== 'object') return {};
+
+        const keys = Array.isArray(fieldKeys) && fieldKeys.length
+            ? fieldKeys
+            : Object.keys(source).filter((key) => /^field_\d+$/.test(String(key)));
+
+        return keys.reduce((payload, fieldKey) => {
+            const normalizedKey = this.normalizeFieldId(fieldKey);
+            if (!normalizedKey) return payload;
+
+            const requestValue = this.toRequestValue({
+                rawValue: source?.[`${normalizedKey}_raw`],
+                displayValue: source?.[normalizedKey],
+                fieldType: this.getFieldType(normalizedKey)
+            });
+
+            if (requestValue !== undefined) {
+                payload[normalizedKey] = requestValue;
+            }
+
+            return payload;
+        }, {});
+    }
+
+    /**
+     * Resolves a field value in the requested output mode.
+     * @param {Object} record - Knack record object.
+     * @param {string|number} fieldKey - Field id to resolve.
+     * @param {Object} [options={}] - Resolution options.
+     * @returns {*} Resolved field value or fallback.
+     */
+    resolve(record, fieldKey, { mode = 'typed', preferRaw = true, fallback = undefined } = {}) {
+        const key = this.normalizeFieldId(fieldKey);
+        if (!record || !key) return fallback;
+
+        const rawKey = `${key}_raw`;
+        const rawValue = record?.[rawKey];
+        const displayValue = record?.[key];
+        const fieldType = this.getFieldType(key);
+
+        if (mode === 'raw') return rawValue ?? fallback;
+        if (mode === 'display') return displayValue ?? fallback;
+        if (mode === 'api') {
+            const apiValue = this.toApiValue({ rawValue, displayValue, fieldType });
+            return apiValue === undefined ? fallback : apiValue;
+        }
+        if (mode === 'request') {
+            const requestValue = this.toRequestValue({ rawValue, displayValue, fieldType });
+            return requestValue === undefined ? fallback : requestValue;
+        }
+
+        const typedValue = this.toTypedValue({ rawValue, displayValue, fieldType, preferRaw });
+        return typedValue === undefined ? fallback : typedValue;
+    }
+
+    /**
+     * Converts raw/display field values into a typed runtime value.
+     * @param {Object} input - Raw/display value inputs.
+     * @param {*} input.rawValue - `_raw` field value.
+     * @param {*} input.displayValue - Display field value.
+     * @param {string} input.fieldType - Knack field type.
+     * @param {boolean} input.preferRaw - Whether `_raw` values should win when present.
+     * @returns {*} Typed value for runtime use.
+     */
+    toTypedValue({ rawValue, displayValue, fieldType, preferRaw }) {
+        const sourceValue = preferRaw ? (rawValue ?? displayValue) : (displayValue ?? rawValue);
+        if (sourceValue === undefined || sourceValue === null || sourceValue === '') return undefined;
+
+        if (fieldType === 'connection') {
+            const ids = this.toConnectionIds(rawValue ?? sourceValue);
+            return ids.length <= 1 ? (ids[0] ?? '') : ids;
+        }
+
+        if (fieldType === 'multiple_choice') {
+            if (Array.isArray(sourceValue)) {
+                const choiceValues = this.toStringArray(sourceValue);
+                return choiceValues.length <= 1 ? (choiceValues[0] ?? '') : choiceValues;
+            }
+
+            const singleChoiceValue = this.toStringSafe(sourceValue);
+            return singleChoiceValue || undefined;
+        }
+
+        if (Array.isArray(sourceValue)) return this.toStringArray(sourceValue);
+        return sourceValue;
+    }
+
+    /**
+     * Converts raw/display field values into an API-friendly primitive or array.
+     * @param {Object} input - Raw/display value inputs.
+     * @param {*} input.rawValue - `_raw` field value.
+     * @param {*} input.displayValue - Display field value.
+     * @param {string} input.fieldType - Knack field type.
+     * @returns {*} API-ready value, or undefined when no write should occur.
+     */
+    toApiValue({ rawValue, displayValue, fieldType }) {
+        const displayString = typeof displayValue === 'string' ? displayValue.trim() : '';
+
+        if (fieldType === 'connection') {
+            const ids = this.toConnectionIds(rawValue);
+            if (!ids.length) return undefined;
+            return ids.length === 1 ? ids[0] : ids;
+        }
+
+        if (fieldType === 'multiple_choice') {
+            const sourceValue = rawValue ?? displayValue;
+            if (Array.isArray(sourceValue)) {
+                const values = this.toStringArray(sourceValue);
+                return values.length ? values : undefined;
+            }
+
+            const singleChoiceValue = this.toStringSafe(sourceValue);
+            return singleChoiceValue || undefined;
+        }
+
+        const base = rawValue !== undefined ? rawValue : displayValue;
+        if (base === undefined || base === null) return undefined;
+        if (typeof base === 'string') {
+            const trimmed = base.trim();
+            return trimmed ? trimmed : undefined;
+        }
+        if (typeof base === 'number') return String(base);
+        if (typeof base === 'boolean') return base ? 'true' : 'false';
+        return undefined;
+    }
+
+    /**
+     * Normalizes a field value into the non-raw value shape expected for Knack POST/PUT payloads.
+     * @param {Object} input - Source values and field metadata.
+     * @param {*} input.rawValue - `_raw` field value from a Knack record.
+     * @param {*} input.displayValue - Non-raw/display field value from a Knack record.
+     * @param {string} input.fieldType - Knack field type.
+     * @param {string|number} [input.targetKey] - Field the value will be written to. When given, date/time
+     *   values are formatted in that field's `date_format` / `time_format` instead of the source's display format.
+     * @returns {*} A type-aware request value, or undefined when the field should not be written.
+     */
+    toRequestValue({ rawValue, displayValue, fieldType, targetKey }) {
+        const sourceValue = rawValue !== undefined ? rawValue : displayValue;
+        if (sourceValue === undefined || sourceValue === null || sourceValue === '') {
+            return undefined;
+        }
+
+        if (this.isReadOnlyFieldType(fieldType)) {
+            return undefined;
+        }
+
+        if (fieldType === 'connection') {
+            const ids = this.toConnectionIds(sourceValue);
+            if (!ids.length) return undefined;
+            return Array.isArray(sourceValue) ? ids : (ids[0] ?? undefined);
+        }
+
+        if (fieldType === 'multiple_choice') {
+            if (Array.isArray(sourceValue)) {
+                const values = this.toStringArray(sourceValue);
+                return values.length ? values : undefined;
+            }
+
+            const singleChoiceValue = this.toStringSafe(sourceValue);
+            return singleChoiceValue || undefined;
+        }
+
+        if (fieldType === 'boolean') {
+            return this.toBooleanValue(sourceValue);
+        }
+
+        if (fieldType === 'number' || fieldType === 'currency') {
+            return this.toNumberValue(sourceValue);
+        }
+
+        if (fieldType === 'date_time') {
+            if (targetKey !== undefined && targetKey !== null && targetKey !== '') {
+                const targetFormat = this.getFieldMeta(targetKey)?.format;
+                const formatted = this.toDateTimeRequestValueForFormat(rawValue, targetFormat);
+                if (formatted !== undefined) return formatted;
+            }
+            return this.toDateTimeRequestValue(rawValue, displayValue);
+        }
+
+        if (this.isStructuredFieldType(fieldType)) {
+            const structuredValue = this.toStructuredValue(sourceValue, displayValue);
+            return structuredValue === undefined ? undefined : structuredValue;
+        }
+
+        if (typeof sourceValue === 'string') {
+            const trimmed = sourceValue.trim();
+            return trimmed ? trimmed : undefined;
+        }
+
+        return sourceValue;
+    }
+
+    /**
+     * Normalizes a Knack date/time raw or display value into an API-safe request value.
+     * Prefers formatted time strings and converts Knack raw minute counts when needed.
+     * @param {*} rawValue - `_raw` value from a Knack record.
+     * @param {*} displayValue - Display value from a Knack record.
+     * @returns {string|undefined} Date/time request string when recognized.
+     */
+    toDateTimeRequestValue(rawValue, displayValue) {
+        return this._normalizeDateTimeRequestValue(rawValue)
+            ?? this._normalizeDateTimeRequestValue(displayValue);
+    }
+
+    /**
+     * Formats a Knack date/time `_raw` value in a target field's date/time format.
+     * `_raw.date` is always mm/dd/yyyy whatever the source field displays, but Knack parses a write
+     * in the target field's format, so copying `date_formatted` between fields with different
+     * formats is rejected (day > 12) or silently swaps day and month (day <= 12).
+     * @param {Object} rawValue - Knack date `_raw` object ({date, hours, minutes, am_pm, ...}).
+     * @param {Object} [targetFormat] - Target field's `format` metadata ({date_format, time_format}).
+     * @returns {string|undefined} Formatted request string, or undefined when `rawValue` is not a
+     *   single Knack date object (callers should fall back to toDateTimeRequestValue).
+     * @example
+     * knackValueResolver.toDateTimeRequestValueForFormat(
+     *     { date: '09/23/2026', hours: '2', minutes: '05', am_pm: 'PM' },
+     *     { date_format: 'dd/mm/yyyy', time_format: 'HH:MM military' }
+     * ); // '23/09/2026 14:05'
+     */
+    toDateTimeRequestValueForFormat(rawValue, targetFormat) {
+        if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) return undefined;
+        // Date ranges carry a `to` part that this single-value format can't express.
+        if (rawValue.to) return undefined;
+
+        const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(this.toStringSafe(rawValue.date));
+        if (!match) return undefined;
+        const mm = match[1].padStart(2, '0');
+        const dd = match[2].padStart(2, '0');
+        const yyyy = match[3];
+
+        const dateFormat = this.toStringSafe(targetFormat?.date_format || 'mm/dd/yyyy').toLowerCase();
+        const timeFormat = this.toStringSafe(targetFormat?.time_format).toLowerCase();
+
+        let date = `${mm}/${dd}/${yyyy}`;
+        if (dateFormat.startsWith('dd/')) date = `${dd}/${mm}/${yyyy}`;
+        else if (dateFormat === 'yyyy-mm-dd') date = `${yyyy}-${mm}-${dd}`;
+        else if (dateFormat.includes('ignore')) date = '';
+
+        const hasTime = rawValue.hours !== undefined && rawValue.hours !== null && rawValue.hours !== '';
+        if (timeFormat.includes('ignore') || !hasTime) return date || undefined;
+
+        const rawHours = parseInt(rawValue.hours, 10);
+        if (!Number.isFinite(rawHours)) return date || undefined;
+        const minutes = String(parseInt(rawValue.minutes, 10) || 0).padStart(2, '0');
+        const amPm = this.toStringSafe(rawValue.am_pm).toLowerCase();
+
+        // Knack `_raw.hours` is 12-hour when `am_pm` is present; treat it as 24-hour otherwise.
+        const hours24 = amPm ? (rawHours % 12) + (amPm === 'pm' ? 12 : 0) : rawHours;
+        const time = timeFormat.includes('military')
+            ? `${String(hours24).padStart(2, '0')}:${minutes}`
+            : `${(hours24 % 12) || 12}:${minutes}${hours24 >= 12 ? 'pm' : 'am'}`;
+
+        return date ? `${date} ${time}` : time;
+    }
+
+    /**
+     * Converts a primitive or object-based date/time value into a normalized request string.
+     * @param {*} value - Source date/time value.
+     * @returns {string|undefined} Normalized request value.
+     * @private
+     */
+    _normalizeDateTimeRequestValue(value) {
+        if (value === undefined || value === null || value === '') return undefined;
+
+        if (typeof value === 'number') {
+            return this._normalizeDateTimeTimeSegment(value);
+        }
+
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (!trimmed) return undefined;
+
+            if (/^\d+$/.test(trimmed)) {
+                return this._normalizeDateTimeTimeSegment(trimmed) || trimmed;
+            }
+
+            return trimmed;
+        }
+
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return undefined;
+        }
+
+        if (value.from || value.to) {
+            return this.toDisplayString(value) || undefined;
+        }
+
+        const dateValue = this.toStringSafe(value.date_formatted || value.date || value.iso_date || value.date_time);
+        const timeValue = this._normalizeDateTimeTimeSegment(
+            value.time_formatted
+            || value.time
+            || this._buildTimeFromClockParts(value.hours, value.minutes, value.am_pm)
+            || value.datetime_formatted
+        );
+
+        if (dateValue && timeValue) return `${dateValue} ${timeValue}`.trim();
+        if (dateValue) return dateValue;
+        if (timeValue) return timeValue;
+
+        return this.toDisplayString(value) || undefined;
+    }
+
+    /**
+     * Converts a Knack time fragment into `HH:mm` when possible.
+     * Supports formatted time strings and raw minute counts.
+     * @param {*} value - Time fragment.
+     * @returns {string} Normalized time or an empty string.
+     * @private
+     */
+    _normalizeDateTimeTimeSegment(value) {
+        if (value === undefined || value === null || value === '') return '';
+
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value < 1440) {
+            const hours = Math.floor(value / 60);
+            const minutes = value % 60;
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+        }
+
+        const normalized = this.toStringSafe(value);
+        if (!normalized) return '';
+
+        if (/^\d+$/.test(normalized)) {
+            const totalMinutes = Number(normalized);
+            if (Number.isFinite(totalMinutes) && totalMinutes >= 0 && totalMinutes < 1440) {
+                const hours = Math.floor(totalMinutes / 60);
+                const minutes = totalMinutes % 60;
+                return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+            }
+        }
+
+        const amPmMatch = normalized.match(/^(\d{1,2}):(\d{2})\s*([AP]M)$/i);
+        if (amPmMatch) {
+            return this._buildTimeFromClockParts(amPmMatch[1], amPmMatch[2], amPmMatch[3]);
+        }
+
+        const twentyFourHourMatch = normalized.match(/^(\d{1,2}):(\d{2})$/);
+        if (twentyFourHourMatch) {
+            const hours = Number(twentyFourHourMatch[1]);
+            const minutes = Number(twentyFourHourMatch[2]);
+            if (Number.isFinite(hours) && Number.isFinite(minutes) && hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+                return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+            }
+        }
+
+        return normalized;
+    }
+
+    /**
+     * Builds a 24-hour time string from clock parts.
+     * @param {*} hoursValue - Hour component.
+     * @param {*} minutesValue - Minute component.
+     * @param {*} amPmValue - AM/PM marker.
+     * @returns {string} 24-hour time or an empty string.
+     * @private
+     */
+    _buildTimeFromClockParts(hoursValue, minutesValue, amPmValue) {
+        const hoursText = this.toStringSafe(hoursValue);
+        const minutesText = this.toStringSafe(minutesValue);
+        if (!hoursText && !minutesText) return '';
+
+        let hours = Number(hoursText || '0');
+        const minutes = Number(minutesText || '0');
+        if (!Number.isFinite(hours) || !Number.isFinite(minutes) || minutes < 0 || minutes > 59) {
+            return '';
+        }
+
+        const amPm = this.toStringSafe(amPmValue).toUpperCase();
+        if (amPm === 'PM' && hours < 12) hours += 12;
+        if (amPm === 'AM' && hours === 12) hours = 0;
+        if (hours < 0 || hours > 23) return '';
+
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    }
+
+    /**
+     * Extracts one or more connected record ids from a Knack connection value.
+     * @param {*} value - Connection value in array, object, or primitive form.
+     * @returns {Array<string>} Connected record ids.
+     */
+    toConnectionIds(value) {
+        if (!value) return [];
+        if (Array.isArray(value)) {
+            return value
+                .map((item) => {
+                    if (!item) return '';
+                    if (typeof item === 'object') return String(item.id || '').trim();
+                    return String(item || '').trim();
+                })
+                .filter(Boolean);
+        }
+        if (typeof value === 'object') {
+            const id = String(value.id || '').trim();
+            return id ? [id] : [];
+        }
+        const primitiveId = String(value || '').trim();
+        return primitiveId ? [primitiveId] : [];
+    }
+
+    /**
+     * Returns true when the field type is calculated or otherwise not suitable for direct writes.
+     * @param {string} fieldType - Knack field type.
+     * @returns {boolean} Whether the field should be omitted from POST/PUT payloads.
+     */
+    isReadOnlyFieldType(fieldType) {
+        return ['auto_increment', 'equation', 'concatenation', 'count', 'max', 'min', 'average'].includes(String(fieldType || '').trim().toLowerCase());
+    }
+
+    /**
+     * Returns true when the field uses a structured object value in `_raw` form.
+     * @param {string} fieldType - Knack field type.
+     * @returns {boolean} Whether the request should preserve object-like structure.
+     */
+    isStructuredFieldType(fieldType) {
+        return ['date_time', 'name', 'address', 'phone', 'email', 'file', 'image', 'signature'].includes(String(fieldType || '').trim().toLowerCase());
+    }
+
+    /**
+     * Returns the expected display shape for a field type.
+     * @param {string} fieldType - Knack field type.
+     * @returns {string} Human-readable shape description.
+     */
+    getDisplayShapeForType(fieldType) {
+        return ['connection', 'email', 'phone'].includes(fieldType) ? 'string-html' : 'string';
+    }
+
+    /**
+     * Returns the expected `_raw` shape for a field type.
+     * @param {string} fieldType - Knack field type.
+     * @returns {string} Human-readable shape description.
+     */
+    getRawShapeForType(fieldType) {
+        if (fieldType === 'short_text' || fieldType === 'paragraph_text' || fieldType === 'password') return 'string';
+        if (fieldType === 'link') return 'string|object{url,label}';
+        if (fieldType === 'connection') return 'array<object{id,identifier}>';
+        if (fieldType === 'multiple_choice') return 'string|array<string>';
+        if (fieldType === 'user_roles') return 'string|array<string>';
+        if (fieldType === 'boolean') return 'boolean';
+        if (fieldType === 'number') return 'number';
+        if (fieldType === 'currency') return 'number|string';
+        if (fieldType === 'date_time') return 'object{date,timestamp,iso_timestamp,...}';
+        if (fieldType === 'name') return 'object{first,middle,last,title,full}';
+        if (fieldType === 'email') return 'object{email,label}|string';
+        if (fieldType === 'address') return 'object|string';
+        if (fieldType === 'phone') return 'object{number,formatted,...}|string';
+        if (fieldType === 'signature') return 'object|string';
+        if (fieldType === 'file' || fieldType === 'image') return 'object|string';
+        return 'string|number|boolean';
+    }
+
+    /**
+     * Returns the expected request payload shape for a field type.
+     * @param {string} fieldType - Knack field type.
+     * @returns {string} Human-readable shape description.
+     */
+    getWriteShapeForType(fieldType) {
+        if (this.isReadOnlyFieldType(fieldType)) return 'unsupported';
+        if (fieldType === 'short_text' || fieldType === 'paragraph_text' || fieldType === 'password') return 'string';
+        if (fieldType === 'link') return 'string|object{url,label}';
+        if (fieldType === 'connection') return 'recordId|array<recordId>';
+        if (fieldType === 'multiple_choice') return 'string|array<string>';
+        if (fieldType === 'user_roles') return 'string|array<string>';
+        if (fieldType === 'boolean') return 'boolean';
+        if (fieldType === 'number' || fieldType === 'currency') return 'number';
+        if (fieldType === 'date_time') return 'object|string';
+        if (fieldType === 'name') return 'object{first,middle,last,title}|string';
+        if (fieldType === 'email') return 'object{email,label}|string';
+        if (fieldType === 'address') return 'object|string';
+        if (fieldType === 'phone') return 'object{number,formatted,...}|string';
+        if (fieldType === 'signature') return 'object|string';
+        if (fieldType === 'file' || fieldType === 'image') return 'object|string';
+        return 'string';
+    }
+
+    /**
+     * Returns a simple runtime shape label for a value.
+     * @param {*} value - Value to inspect.
+     * @returns {string} Runtime shape label.
+     */
+    describeValueShape(value) {
+        if (value === undefined) return 'undefined';
+        if (value === null) return 'null';
+        if (Array.isArray(value)) {
+            if (!value.length) return 'array<empty>';
+            const firstShape = this.describeValueShape(value[0]);
+            return `array<${firstShape}>`;
+        }
+        if (typeof value === 'string') return value === '' ? 'empty-string' : 'string';
+        if (typeof value === 'number') return Number.isFinite(value) ? 'number' : 'number-non-finite';
+        if (typeof value === 'boolean') return 'boolean';
+        if (typeof value === 'object') {
+            const keys = Object.keys(value);
+            return keys.length ? `object{${keys.slice(0, 5).join(',')}}` : 'object{}';
+        }
+        return typeof value;
+    }
+
+    /**
+     * Preserves structured raw objects when present, otherwise falls back to a trimmed display string.
+     * @param {*} primaryValue - Usually the `_raw` value.
+     * @param {*} fallbackValue - Usually the non-raw/display value.
+     * @returns {*} Structured or primitive value suitable for request payloads.
+     */
+    toStructuredValue(primaryValue, fallbackValue) {
+        if (primaryValue && typeof primaryValue === 'object') return primaryValue;
+        if (typeof primaryValue === 'string') {
+            const trimmed = primaryValue.trim();
+            if (trimmed) return trimmed;
+        }
+        if (fallbackValue && typeof fallbackValue === 'object') return fallbackValue;
+        if (typeof fallbackValue === 'string') {
+            const trimmed = fallbackValue.trim();
+            return trimmed ? trimmed : undefined;
+        }
+        return fallbackValue === '' ? undefined : fallbackValue;
+    }
+
+    /**
+     * Converts Knack display/raw boolean values into a boolean.
+     * @param {*} value - Raw or display value.
+     * @returns {boolean|undefined} Parsed boolean when recognized.
+     */
+    toBooleanValue(value) {
+        if (typeof value === 'boolean') return value;
+        const normalized = String(value || '').trim().toLowerCase();
+        if (!normalized) return undefined;
+        if (['true', 'yes', '1'].includes(normalized)) return true;
+        if (['false', 'no', '0'].includes(normalized)) return false;
+        return undefined;
+    }
+
+    /**
+     * Converts numeric-like Knack values into finite numbers where possible.
+     * @param {*} value - Raw or display value.
+     * @returns {number|undefined} Parsed number when recognized.
+     */
+    toNumberValue(value) {
+        if (typeof value === 'number') {
+            return Number.isFinite(value) ? value : undefined;
+        }
+
+        const normalized = String(value || '').replace(/,/g, '').replace(/[^0-9.+-]/g, '').trim();
+        if (!normalized) return undefined;
+
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : undefined;
+    }
+
+    /**
+     * Extracts a single connection reference from a Knack connection value.
+     * @param {Array|Object|null|undefined} value - Connection field value
+     * @returns {{id: string, identifier: string}|null} First valid reference or null
+     */
+    toConnectionRef(value) {
+        if (Array.isArray(value)) {
+            const first = value[0];
+            const firstId = String(first?.id || '').trim();
+            if (!firstId) return null;
+            return {
+                id: firstId,
+                identifier: String(first?.identifier || '').trim()
+            };
+        }
+
+        if (value && typeof value === 'object') {
+            const id = String(value.id || '').trim();
+            if (!id) return null;
+            return {
+                id,
+                identifier: String(value.identifier || '').trim()
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * Extracts a field value from a Knack record response.
+     * Checks display key first, then `_raw` key.
+     * @param {Object} recordObj - Knack record object
+     * @param {string|number} fieldKey - Field key (with or without `field_` prefix)
+     * @returns {*} Field value if found, otherwise undefined
+     */
+    extractResponseFieldValue(recordObj, fieldKey) {
+        if (!recordObj || typeof recordObj !== 'object') return undefined;
+
+        const fieldId = this.normalizeFieldId(fieldKey);
+
+        if (!fieldId) return undefined;
+
+        if (Object.prototype.hasOwnProperty.call(recordObj, fieldId)) {
+            return recordObj[fieldId];
+        }
+
+        const rawKey = `${fieldId}_raw`;
+        if (Object.prototype.hasOwnProperty.call(recordObj, rawKey)) {
+            return recordObj[rawKey];
+        }
+
+        return undefined;
+    }
+
+    /**
+     * Converts a value to an array of display strings.
+     * @param {*} value - Value to flatten.
+     * @returns {Array<string>} String values.
+     */
+    toStringArray(value) {
+        if (!value) return [];
+        if (Array.isArray(value)) {
+            return value
+                .map((item) => this.toDisplayString(item))
+                .filter(Boolean);
+        }
+        if (typeof value === 'string' && value.includes(',')) {
+            return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+        }
+        const single = this.toDisplayString(value);
+        return single ? [single] : [];
+    }
+
+    /**
+     * Converts a Knack value into a human-readable string.
+     * @param {*} value - Value to convert.
+     * @param {Set<Object>} [seen=new Set()] - Tracks visited objects to avoid cycles.
+     * @returns {string} Display string.
+     */
+    toDisplayString(value, seen = new Set()) {
+        if (value === undefined || value === null) return '';
+        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+            return this.toStringSafe(value);
+        }
+
+        if (Array.isArray(value)) {
+            return value
+                .map((item) => this.toDisplayString(item, seen))
+                .filter(Boolean)
+                .join(', ');
+        }
+
+        if (typeof value !== 'object') {
+            return this.toStringSafe(value);
+        }
+
+        if (seen.has(value)) return '';
+        seen.add(value);
+
+        const directKeys = [
+            'identifier', 'display', 'label', 'title', 'name', 'full', 'formatted',
+            'date_formatted', 'datetime_formatted', 'time_formatted', 'email',
+            'address', 'number', 'phone', 'filename', 'file_name', 'value', 'id'
+        ];
+        for (const key of directKeys) {
+            const directValue = this.toStringSafe(value?.[key]);
+            if (directValue) return directValue;
+        }
+
+        const nameParts = ['title', 'first', 'middle', 'last']
+            .map((key) => this.toStringSafe(value?.[key]))
+            .filter(Boolean);
+        if (nameParts.length) return nameParts.join(' ');
+
+        const dateValue = this.toStringSafe(value?.date || value?.iso_date || value?.date_time);
+        const timeValue = this.toStringSafe(value?.time);
+        const hourValue = this.toStringSafe(value?.hours);
+        const minuteValue = this.toStringSafe(value?.minutes);
+        const amPmValue = this.toStringSafe(value?.am_pm);
+        const timeParts = [timeValue || [hourValue, minuteValue].filter(Boolean).join(':'), amPmValue]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+        if (dateValue && timeParts) return `${dateValue} ${timeParts}`.trim();
+        if (dateValue) return dateValue;
+        if (timeParts) return timeParts;
+
+        const addressParts = ['street', 'street2', 'city', 'state', 'zip', 'country']
+            .map((key) => this.toStringSafe(value?.[key]))
+            .filter(Boolean);
+        if (addressParts.length) return addressParts.join(', ');
+
+        const fallback = Object.values(value)
+            .map((entry) => this.toDisplayString(entry, seen))
+            .filter(Boolean);
+        return fallback.length ? fallback.join(', ') : '';
+    }
+
+    /**
+     * Safely converts a value to a trimmed string.
+     * @param {*} value - Value to convert.
+     * @returns {string} Trimmed string value.
+     */
+    toStringSafe(value) {
+        if (value === undefined || value === null) return '';
+        try {
+            return String(value).trim();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    /**
+     * Normalises text for stable comparisons by collapsing repeated whitespace.
+     * @param {*} value - Value to normalise.
+     * @returns {string} Comparable text value.
+     */
+    normalizeComparableText(value) {
+        return this.toStringSafe(value).replace(/\s+/g, ' ').trim();
+    }
+
+    /**
+     * Joins a value into a separator-delimited string.
+     * @param {*} value - Value to join.
+     * @param {string} [separator=', '] - Separator to use.
+     * @returns {string} Joined string.
+     */
+    toJoinedString(value, separator = ', ') {
+        return this.toStringArray(value).join(separator);
+    }
+
+    /**
+     * Extracts a human-readable label for a field from a record.
+     * @param {Object} recordObj - Knack record object.
+     * @param {string|number} fieldKey - Field id to inspect.
+     * @returns {string} Field label.
+     */
+    extractFieldLabel(recordObj, fieldKey) {
+        const normalizedKey = this.normalizeFieldId(fieldKey);
+        if (!normalizedKey) return '';
+
+        const rawLabel = this.toJoinedString(recordObj?.[`${normalizedKey}_raw`]);
+        if (rawLabel) return rawLabel;
+
+        return this.toDisplayString(
+            this.extractResponseFieldValue(recordObj, normalizedKey)
+        );
+    }
+
+    /**
+     * Builds a combined label for a record from one or more field ids.
+     * @param {Object} recordObj - Knack record object.
+     * @param {string|number|Array<string|number>} fieldKeys - Field ids to use for the label.
+     * @returns {string} Joined record label.
+     */
+    getRecordLabel(recordObj, fieldKeys) {
+        const keys = Array.isArray(fieldKeys) ? fieldKeys : [fieldKeys];
+
+        if (recordObj && typeof recordObj === 'object' && keys.length) {
+            const seen = new Set();
+            const parts = [];
+
+            for (const value of keys) {
+                const fieldId = this.normalizeFieldId(value);
+                if (!fieldId || seen.has(fieldId)) continue;
+                seen.add(fieldId);
+
+                const label = this.extractFieldLabel(recordObj, fieldId);
+                if (label) parts.push(label);
+            }
+
+            if (parts.length) return parts.join(' - ');
+        }
+
+        return this.toStringSafe(recordObj?.id);
+    }
+}
+
+const knackValueResolver = new KnackValueResolver(knackNavigator);
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 // Section: form-field-utils
@@ -1012,12 +2756,12 @@ function disableCellsByColHead(viewId, colHeadID) {
  * @param {Array<string|number>} fieldIds - Field ids of the columns to hide when empty.
  */
 function hideEmptyGridColumns(viewId, fieldIds) {
-    const normalisedViewId = toViewId(viewId);
+    const normalisedViewId = knackNavigator.normalizeViewId(viewId);
     const view = document.getElementById(normalisedViewId);
     if (!view || !Array.isArray(fieldIds) || !view.querySelector('tbody tr:not(.kn-table-group)')) return;
 
     fieldIds.forEach((fieldId) => {
-        const field = toFieldId(fieldId);
+        const field = knackNavigator.normalizeFieldId(fieldId);
         const cells = field ? Array.from(view.querySelectorAll(`tbody td.${field}`)) : [];
         if (!cells.length || cells.some((cell) => cell.textContent.trim() !== '')) return;
 
@@ -1198,8 +2942,6 @@ function getTableRows(viewId, callback, includeHeader = false, includeGroup = fa
 // Format: TODO(v2-wave-N): globalName  - tests/v2/v2-structure.test.cjs reads these lines.
 
 // Wave 1
-// TODO(v2-wave-1): KnackNavigator
-// TODO(v2-wave-1): knackNavigator
 // TODO(v2-wave-1): createBulkActionStorageAdapter
 // TODO(v2-wave-1): renderVersionIndicator
 // TODO(v2-wave-1): bulkActionResolveElement
@@ -1397,8 +3139,6 @@ function getTableRows(viewId, callback, includeHeader = false, includeGroup = fa
 // TODO(v2-wave-2): getGovBankHolidays
 
 // Wave 3
-// TODO(v2-wave-3): KnackValueResolver
-// TODO(v2-wave-3): knackValueResolver
 // TODO(v2-wave-3): bulkActionUniqueStrings
 // TODO(v2-wave-3): bulkActionResolveRegistryCallback
 // TODO(v2-wave-3): classifyBulkActionFailure

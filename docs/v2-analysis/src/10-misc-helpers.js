@@ -205,12 +205,12 @@ function disableCellsByColHead(viewId, colHeadID) {
  * @param {Array<string|number>} fieldIds - Field ids of the columns to hide when empty.
  */
 function hideEmptyGridColumns(viewId, fieldIds) {
-    const normalisedViewId = toViewId(viewId);
+    const normalisedViewId = knackNavigator.normalizeViewId(viewId);
     const view = document.getElementById(normalisedViewId);
     if (!view || !Array.isArray(fieldIds) || !view.querySelector('tbody tr:not(.kn-table-group)')) return;
 
     fieldIds.forEach((fieldId) => {
-        const field = toFieldId(fieldId);
+        const field = knackNavigator.normalizeFieldId(fieldId);
         const cells = field ? Array.from(view.querySelectorAll(`tbody td.${field}`)) : [];
         if (!cells.length || cells.some((cell) => cell.textContent.trim() !== '')) return;
 

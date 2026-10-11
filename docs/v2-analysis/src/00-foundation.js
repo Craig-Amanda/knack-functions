@@ -37,25 +37,6 @@ function warnDeprecated(oldName, replacement) {
     console.warn(`[knackFunctions] ${oldName} is deprecated; use ${replacement}.`);
 }
 
-/**
- * Normalises a Knack id to its prefixed form: `12` or `'VIEW_12'` become `'view_12'`; anything else becomes `''`.
- * @param {string|number} value - Id with or without the prefix.
- * @param {'view_'|'field_'|'scene_'|'object_'} prefix - Expected prefix.
- * @returns {string}
- */
-function normaliseKnackId(value, prefix) {
-    const text = String(value ?? '').trim().toLowerCase();
-    if (text.startsWith(prefix) && /^\d+$/.test(text.slice(prefix.length))) return text;
-    return /^\d+$/.test(text) ? `${prefix}${text}` : '';
-}
-
-/** @param {string|number} value @returns {string} `view_N` or `''`. */
-const toViewId = (value) => normaliseKnackId(value, 'view_');
-/** @param {string|number} value @returns {string} `field_N` or `''`. */
-const toFieldId = (value) => normaliseKnackId(value, 'field_');
-/** @param {string|number} value @returns {string} `scene_N` or `''`. */
-const toSceneId = (value) => normaliseKnackId(value, 'scene_');
-
 /** @param {*} val @returns {boolean} True for a NodeList. */
 const isNodeList = (val) => val instanceof NodeList;
 /** @param {*} val @returns {boolean} True for a jQuery collection (when jQuery is loaded). */
@@ -134,12 +115,12 @@ function getById(id, { context } = {}) {
  * @returns {HTMLElement|null}
  */
 function getViewRootElement(viewRef) {
-    const directId = (typeof viewRef === 'string' || typeof viewRef === 'number') ? toViewId(viewRef) : '';
+    const directId = (typeof viewRef === 'string' || typeof viewRef === 'number') ? knackNavigator.normalizeViewId(viewRef) : '';
     const element = directId ? null : resolveElement(viewRef);
     const viewRoot = element?.closest('.kn-view, #connection-form-view');
     if (viewRoot instanceof HTMLElement) return viewRoot;
 
-    const viewId = directId || toViewId(viewRef?.key || element?.id);
+    const viewId = directId || knackNavigator.normalizeViewId(viewRef?.key || element?.id);
     if (!viewId) return null;
 
     const rendered = document.getElementById(viewId);
@@ -156,7 +137,7 @@ function getViewRootElement(viewRef) {
  * @returns {HTMLElement|null}
  */
 function getFieldWrapper(fieldId, root = document) {
-    const normalisedFieldId = toFieldId(fieldId);
+    const normalisedFieldId = knackNavigator.normalizeFieldId(fieldId);
     if (!normalisedFieldId) return null;
     const wrapper = (root ?? document).querySelector(`#kn-input-${normalisedFieldId}`);
     return wrapper instanceof HTMLElement ? wrapper : null;
