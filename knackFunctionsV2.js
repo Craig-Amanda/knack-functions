@@ -1092,6 +1092,123 @@ class KnackNavigator {
     }
 
     /**
+     * Gets the Knack application id.
+     * @returns {string|undefined}
+     */
+    getApplicationId() {
+        return globalThis.Knack?.application_id;
+    }
+
+    /**
+     * Gets the logged-in user's API token.
+     * @returns {string|undefined}
+     */
+    getUserToken() {
+        return globalThis.Knack?.getUserToken?.();
+    }
+
+    /**
+     * Gets the logged-in user's attributes (id, name, email...).
+     * @returns {Object} The attributes, or an empty object when nobody is logged in.
+     */
+    getUserAttributes() {
+        return globalThis.Knack?.getUserAttributes?.() || {};
+    }
+
+    /**
+     * Gets the logged-in user's role names.
+     * @returns {Array<string>}
+     */
+    getUserRoleNames() {
+        return globalThis.Knack?.getUserRoleNames?.() || [];
+    }
+
+    /**
+     * Logs the current user out. Throws when Knack is unavailable, so callers decide how to recover.
+     * @returns {void}
+     */
+    logout() {
+        globalThis.Knack.user.destroy();
+    }
+
+    /**
+     * Gets the rendered Knack view (the Backbone view, with `.model`) for a view id.
+     * @param {string|number} viewId - View id to resolve.
+     * @returns {Object|undefined}
+     */
+    getRenderedView(viewId) {
+        const vid = this.normalizeViewId(viewId);
+        return vid ? globalThis.Knack?.views?.[vid] : undefined;
+    }
+
+    /**
+     * Gets the model behind a view: the rendered view's model, else Knack's global model registry.
+     * @param {string|number} viewId - View id to resolve.
+     * @returns {Object|undefined}
+     */
+    getViewModel(viewId) {
+        const vid = this.normalizeViewId(viewId);
+        return vid ? (this.getRenderedView(vid)?.model || globalThis.Knack?.models?.[vid]) : undefined;
+    }
+
+    /**
+     * Gets the current scene's model for a view (`attributes` holds its columns, type and options).
+     * @param {string|number} viewId - View id to resolve.
+     * @returns {Object|undefined}
+     */
+    getSceneViewModel(viewId) {
+        return globalThis.Knack.router.scene_view.model.views._byId[this.normalizeViewId(viewId)];
+    }
+
+    /**
+     * Returns the raw field definitions of a view (not normalised), wherever Knack keeps them for its model.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {Array<Object>}
+     */
+    getViewFieldDefinitions(viewId) {
+        const model = this.getRenderedView(viewId)?.model;
+        return [model?.view?.fields, model?.fields, model?.attributes?.fields].find(Array.isArray) || [];
+    }
+
+    /**
+     * Gets the key of the scene currently displayed.
+     * @returns {string|undefined}
+     */
+    getCurrentSceneKey() {
+        return globalThis.Knack?.router?.current_scene_key;
+    }
+
+    /**
+     * Gets the current scene's hash (e.g. `#home/`).
+     * @returns {string}
+     */
+    getSceneHash() {
+        return globalThis.Knack.getSceneHash();
+    }
+
+    /**
+     * Whether Knack is showing a modal for the current scene.
+     * @returns {boolean}
+     */
+    isModalActive() {
+        return Boolean(globalThis.Knack?.router?.scene_view?.model?.attributes?.modal);
+    }
+
+    /**
+     * Navigates with Knack's router (no page reload).
+     * @param {string} hash - Route without the leading `#`.
+     * @param {{trigger?: boolean, syncVars?: boolean}} [options] - `trigger` runs the route's handlers; `syncVars` refreshes Knack's hash variables.
+     * @returns {boolean} False when the router isn't available, so the caller can fall back to `location.hash`.
+     */
+    navigateToHash(hash, { trigger = false, syncVars = false } = {}) {
+        const { router } = globalThis.Knack || {};
+        if (typeof router?.navigate !== 'function') return false;
+        router.navigate(hash, trigger);
+        if (syncVars) globalThis.Knack.setHashVars?.();
+        return true;
+    }
+
+    /**
      * Gets the logged-in user's name.
      * @returns {string|undefined} The name, or undefined when nobody is logged in.
      */
@@ -4421,7 +4538,7 @@ function buildKnackAssetInfo(assetId, fileName) {
         assetId,
         fileName,
         extension: fileName.match(/\.([^.]+)$/)?.[1].toLowerCase() ?? '',
-        assetUrl: `https://api.knack.com/v1/applications/${Knack.application_id}/download/asset/${assetId}/${encodeURIComponent(fileName)}`,
+        assetUrl: `https://api.knack.com/v1/applications/${knackNavigator.getApplicationId()}/download/asset/${assetId}/${encodeURIComponent(fileName)}`,
     };
 }
 
@@ -4924,7 +5041,7 @@ class KnackAPI {
         }
 
         const opts = options || {};
-        const appId = Knack?.application_id;
+        const appId = knackNavigator.getApplicationId();
         if (!appId) {
             throw new Error('KnackAPI uploadAsset missing Knack application id.');
         }
@@ -5141,19 +5258,7 @@ class KnackAPI {
     _isAssetField(fieldKey = '') {
         if (!fieldKey || typeof fieldKey !== 'string') return false;
 
-        const normalizedKey = typeof knackNavigator?.normalizeFieldId === 'function'
-            ? knackNavigator.normalizeFieldId(fieldKey)
-            : fieldKey;
-        const fromNavigator = typeof knackNavigator?.getFieldType === 'function'
-            ? knackNavigator.getFieldType(normalizedKey)
-            : null;
-        if (fromNavigator === 'file' || fromNavigator === 'image') {
-            return true;
-        }
-
-        const fieldModel = Knack?.objects?.getField?.(normalizedKey);
-        const fieldType = fieldModel?.attributes?.type || null;
-        return fieldType === 'file' || fieldType === 'image';
+        return ['file', 'image'].includes(knackNavigator.getFieldType(fieldKey));
     }
 
     /**
@@ -5948,7 +6053,7 @@ class KnackAPI {
      * @private
      */
     async _refreshRateLimitFromDevServer(sceneId, viewId, options = {}) {
-        const applicationId = String(Knack?.application_id || '').trim();
+        const applicationId = String(knackNavigator.getApplicationId() || '').trim();
         const authToken = String(this._getAuthToken() || '').trim();
         if (!applicationId || !authToken) {
             return false;
@@ -6121,7 +6226,7 @@ class KnackAPI {
      * @private
      */
     _getAuthToken() {
-        return Knack.getUserToken();
+        return knackNavigator.getUserToken();
     }
 
     /**
@@ -6182,7 +6287,7 @@ class KnackAPI {
     _buildHeaders(withAuth = true, { json = true } = {}) {
         const headers = {
             ...(json && { 'Content-Type': 'application/json' }),
-            'X-Knack-Application-ID': Knack.application_id,
+            'X-Knack-Application-ID': knackNavigator.getApplicationId(),
             'X-Knack-REST-API-Key': 'knack'
         };
         const token = withAuth && this._getAuthToken();
@@ -6333,7 +6438,7 @@ class KnackAPI {
     _refreshSingleView(viewId) {
         return new Promise((resolve, reject) => {
             try {
-                const view = Knack.views[viewId];
+                const view = knackNavigator.getRenderedView(viewId);
 
                 if (!view || !view.model || !view.model.view) {
                     this._log('View not found or invalid', viewId);
@@ -7346,7 +7451,7 @@ async function triggerWebhook(webhookURL, data, webhookName = 'Unnamed Webhook',
     try {
         const response = await fetch(webhookURL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', userToken: isSecure ? Knack.getUserToken() : '' },
+            headers: { 'Content-Type': 'application/json', userToken: isSecure ? knackNavigator.getUserToken() : '' },
             body: JSON.stringify(data),
         });
         responseData = response.headers.get('Content-Type')?.includes('application/json') ? await response.json() : await response.text();
@@ -7536,7 +7641,7 @@ function openFileFromBtn(viewId, btnText, filePath, openInNewWindow = false) {
     if (!buttons.length) return console.error(`Button with text "${btnText}" not found in view ${viewId}`);
     buttons.forEach((button) => button.addEventListener('click', (event) => {
         event.preventDefault();
-        if (openInNewWindow) window.open(`https://api.knack.com/v1/applications/${Knack.application_id}/download/asset/${filePath}`, '_blank');
+        if (openInNewWindow) window.open(`https://api.knack.com/v1/applications/${knackNavigator.getApplicationId()}/download/asset/${filePath}`, '_blank');
         else window.location.href = sanitiseURL(window.location.href) + KN_ASSET_PREFIX + filePath;
     }));
 }
@@ -8888,7 +8993,7 @@ function handleModalClosed({ activeViewId = '', closedViewId = '', callback = nu
 function bulkActionCloseModalIfOpen() {
     const modalElement = document.querySelector('.kn-modal');
     const closeButton = document.querySelector('button.close-modal, .close-modal');
-    const modalActive = Boolean(modalElement || closeButton || Knack?.router?.scene_view?.model?.attributes?.modal);
+    const modalActive = Boolean(modalElement || closeButton || knackNavigator.isModalActive());
     if (!modalActive) return Promise.resolve(false);
 
     return new Promise((resolve) => {
@@ -8971,11 +9076,7 @@ function bulkActionRestoreHashState({ path = '', query = '' } = {}) {
     if (window.location.hash === targetHash) return true;
 
     const routerTarget = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
-    if (typeof Knack?.router?.navigate === 'function') {
-        Knack.router.navigate(routerTarget, false);
-        Knack.setHashVars?.();
-        return true;
-    }
+    if (knackNavigator.navigateToHash(routerTarget, { syncVars: true })) return true;
 
     window.location.hash = targetHash;
     return true;
@@ -9033,13 +9134,9 @@ function bulkActionNavigateToSceneSlug(sceneSlug, { recordId = '', params = {} }
     const targetHash = bulkActionBuildHash(sceneSlug, { recordId, params });
     if (!targetHash) return;
 
-    const canUseRouterNavigate = typeof Knack?.router?.navigate === 'function';
     const routerTarget = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
 
-    if (canUseRouterNavigate) {
-        Knack.router.navigate(routerTarget, true);
-        return;
-    }
+    if (knackNavigator.navigateToHash(routerTarget, { trigger: true })) return;
 
     if (window.location.hash === targetHash) return;
 
@@ -12595,15 +12692,7 @@ function showHideViewGroupContent(showHideId, delay, flexOn = false) {
                     // Render signatures if needed
                     const signatureElements = parentView.querySelectorAll('.kn-input-signature');
                     const viewId = parentView.id;
-                    if (
-                        signatureElements.length &&
-                        window.Knack &&
-                        Knack.views &&
-                        Knack.views[viewId] &&
-                        typeof Knack.views[viewId].renderSignatures === 'function'
-                    ) {
-                        Knack.views[viewId].renderSignatures();
-                    }
+                    if (signatureElements.length) knackNavigator.getRenderedView(viewId)?.renderSignatures?.();
 
                     // Adjust colspan for table group cell
                     const tableGroupCell = parentView.querySelector('.kn-table-group td');
@@ -12913,13 +13002,7 @@ function initialiseConditionalRequiredFieldVisibility(viewId, options = {}) {
     } = options;
 
     const getRequiredFieldIds = () => {
-        const normalizedViewId = knackNavigator.normalizeViewId(viewElement.id);
-        const viewModel = normalizedViewId ? Knack?.views?.[normalizedViewId]?.model : null;
-        const fieldDefinitions = Array.isArray(viewModel?.view?.fields)
-            ? viewModel.view.fields
-            : (Array.isArray(viewModel?.fields)
-                ? viewModel.fields
-                : (Array.isArray(viewModel?.attributes?.fields) ? viewModel.attributes.fields : []));
+        const fieldDefinitions = knackNavigator.getViewFieldDefinitions(viewElement.id);
 
         return new Set(fieldDefinitions.filter((fieldDefinition) => fieldDefinition?.required).map((fieldDefinition) => {
             return knackNavigator.normalizeFieldId(
@@ -13626,7 +13709,7 @@ function updateLinksAndAssets(viewId) {
         if (linkEle.classList.contains('ca-link-child')) {
             fullFormURL += `${formName}/${getRecordID()}`;
         } else if (linkEle.classList.contains('ca-link-user')) {
-            fullFormURL += `${formName}/${Knack.getUserAttributes()?.id}`;
+            fullFormURL += `${formName}/${knackNavigator.getUserAttributes().id}`;
         } else {
             fullFormURL += formName;
         }
@@ -13820,7 +13903,7 @@ function idleWatchDogTimeout() {
         setTimeout(() => {
             if (!document.querySelector('.kn-login')) {
                 try {
-                    Knack.user.destroy(); // try again
+                    knackNavigator.logout(); // try again
                 } catch (e) {
                     // last resort: navigate to origin
                     try { window.location.reload(); } catch (e) {}
@@ -13835,7 +13918,7 @@ function idleWatchDogTimeout() {
         clearTimeout(autoLogoutTimeout);
         cleanupUI();
         try {
-            Knack.user.destroy();
+            knackNavigator.logout();
         } catch (e) {
             console.warn('Error calling Knack.user.destroy()', e);
         }
@@ -16468,8 +16551,8 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
     let hasAppliedOnce = false;
 
     const getTargetViewContext = () => {
-        const targetView = Knack?.views?.[targetId];
-        const targetModel = targetView?.model || Knack?.models?.[targetId];
+        const targetView = knackNavigator.getRenderedView(targetId);
+        const targetModel = knackNavigator.getViewModel(targetId);
         const targetType = targetView?.model?.view?.type || targetView?.model?.attributes?.type || '';
         return { targetView, targetModel, targetType };
     };
@@ -16505,7 +16588,7 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
     };
 
     const applyFilterInPlace = (filter, page = 1, rule = null, triggerElement = null) => {
-        const sceneHash = Knack.getSceneHash();
+        const sceneHash = knackNavigator.getSceneHash();
         const query = filter && Array.isArray(filter.rules) && filter.rules.length
             ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
             : `view_${targetViewKey}_page=${page}`;
@@ -16515,8 +16598,7 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
         }
 
         if (config.syncHash) {
-            Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
-            Knack.setHashVars();
+            knackNavigator.navigateToHash(query ? `${sceneHash}?${query}` : sceneHash, { syncVars: true });
         }
 
         try {
@@ -18835,7 +18917,7 @@ class CAQuickToggle extends QuickToggleQueue {
     }
 
     setupViewModel() {
-        this.viewModel = Knack.router.scene_view.model.views._byId[this.viewId];
+        this.viewModel = knackNavigator.getSceneViewModel(this.viewId);
         if (!this.viewModel) return false;
 
         const viewAttr = this.viewModel.attributes;
@@ -18882,9 +18964,8 @@ class CAQuickToggle extends QuickToggleQueue {
 
         cols.forEach(col => {
             if (col.type === 'field' && col.field && col.field.key) {
-                const field = Knack.objects.getField(col.field.key);
-                if (field && !col.connection) { // Field must be local to view's object, not a connected field.
-                    if (field.attributes.type === 'boolean') {
+                if (!col.connection) { // Field must be local to view's object, not a connected field.
+                    if (knackNavigator.getFieldType(col.field.key) === 'boolean') {
                         let fieldHasQt = false;
                         const { key: fieldId } = col.field;
 
@@ -19000,7 +19081,7 @@ class CAQuickToggle extends QuickToggleQueue {
         }
 
         if (correspondingFieldId) {
-            const userAttributes = Knack.getUserAttributes();
+            const userAttributes = knackNavigator.getUserAttributes();
             const userAttribute = isName ? userAttributes.name : userAttributes.id;
             return { [correspondingFieldId]: value === false ? null : userAttribute };
         }
@@ -19081,7 +19162,7 @@ class CAMultiChoiceQuickToggle extends QuickToggleQueue {
      * @returns {boolean} True when the view is a supported type.
      */
     setupViewModel() {
-        this.viewModel = Knack.router.scene_view.model.views._byId[this.viewId];
+        this.viewModel = knackNavigator.getSceneViewModel(this.viewId);
         if (!this.viewModel) return false;
 
         const viewAttr = this.viewModel.attributes;
@@ -19373,7 +19454,7 @@ function createVersionRefreshController(options = {}) {
             return ktl.scenes.isiFrameWnd();
         },
         getCurrentUserId = function () {
-            return knackValueResolver.toStringSafe(Knack?.getUserAttributes?.()?.id);
+            return knackValueResolver.toStringSafe(knackNavigator.getUserAttributes().id);
         },
         normaliseVersion = function (value) {
             return knackValueResolver.toStringSafe(value)
@@ -20792,9 +20873,8 @@ class KnackError {
      */
     _getCurrentSceneId() {
         // Try to get from the Knack object first
-        if (typeof Knack !== 'undefined' && Knack.router && Knack.router.current_scene_key) {
-            return Knack.router.current_scene_key;
-        }
+        const sceneKey = knackNavigator.getCurrentSceneKey();
+        if (sceneKey) return sceneKey;
 
         // Try to get from the DOM
         const sceneElement = document.querySelector('.kn-scene');

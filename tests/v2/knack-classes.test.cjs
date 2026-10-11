@@ -97,3 +97,23 @@ test('navigator user helpers match the V1 isUserRole/isUserName globals', async 
         assert.deepEqual(v2.slice(6), ['Pat', true, false]);
     } finally { await Promise.all([r1.close(), r2.close()]); }
 });
+
+test('navigator wraps the Knack globals that other functions used to reach into', async () => {
+    const r = await realm({ file: V2, names: NAMES, html: HTML, before: BEFORE + `
+Knack.application_id = 'app1'; Knack.getUserToken = () => 'tok'; Knack.getUserAttributes = () => ({ id: 'u1', name: 'Ann' }); Knack.getUserRoleNames = () => ['Admin'];
+Knack.router = { current_scene_key: 'scene_3', scene_view: { model: { attributes: { modal: true }, views: { _byId: { view_5: { attributes: { type: 'table' } } } } } }, navigate: (...a) => (window.__nav = (window.__nav || []).concat([a])) };
+Knack.setHashVars = () => { window.__vars = (window.__vars || 0) + 1; }; Knack.getSceneHash = () => '#home/'; Knack.models = { view_8: { id: 'm8' } };
+Knack.views.view_5.renderSignatures = () => {}; Knack.user = { destroy: () => { window.__out = true; } };` });
+    const out = await r.page.evaluate(() => {
+        const n = knackNavigator; const res = {};
+        res.basics = [n.getApplicationId(), n.getUserToken(), n.getUserAttributes(), n.getUserRoleNames(), n.getCurrentSceneKey(), n.getSceneHash(), n.isModalActive()];
+        res.views = [typeof n.getRenderedView(5)?.renderSignatures, n.getRenderedView('x'), n.getViewModel('view_8'), n.getViewModel(5)?.view?.key, n.getSceneViewModel(5).attributes.type, n.getViewFieldDefinitions(5).length, n.getViewFieldDefinitions('nope')];
+        res.nav = [n.navigateToHash('home/x', { trigger: true, syncVars: true }), window.__nav, window.__vars]; n.logout(); res.out = window.__out;
+        delete Knack.router.navigate; res.noRouter = n.navigateToHash('y');
+        return res;
+    });
+    await r.close();
+    assert.deepEqual(out.basics, ['app1', 'tok', { id: 'u1', name: 'Ann' }, ['Admin'], 'scene_3', '#home/', true]);
+    assert.deepEqual(out.views, ['function', undefined, { id: 'm8' }, 'view_5', 'table', 4, []]);
+    assert.deepEqual(out.nav, [true, [['home/x', true]], 1]); assert.equal(out.out, true); assert.equal(out.noRouter, false);
+});

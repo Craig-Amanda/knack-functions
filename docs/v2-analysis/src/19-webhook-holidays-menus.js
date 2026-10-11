@@ -20,7 +20,7 @@ async function triggerWebhook(webhookURL, data, webhookName = 'Unnamed Webhook',
     try {
         const response = await fetch(webhookURL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', userToken: isSecure ? Knack.getUserToken() : '' },
+            headers: { 'Content-Type': 'application/json', userToken: isSecure ? knackNavigator.getUserToken() : '' },
             body: JSON.stringify(data),
         });
         responseData = response.headers.get('Content-Type')?.includes('application/json') ? await response.json() : await response.text();
@@ -210,7 +210,7 @@ function openFileFromBtn(viewId, btnText, filePath, openInNewWindow = false) {
     if (!buttons.length) return console.error(`Button with text "${btnText}" not found in view ${viewId}`);
     buttons.forEach((button) => button.addEventListener('click', (event) => {
         event.preventDefault();
-        if (openInNewWindow) window.open(`https://api.knack.com/v1/applications/${Knack.application_id}/download/asset/${filePath}`, '_blank');
+        if (openInNewWindow) window.open(`https://api.knack.com/v1/applications/${knackNavigator.getApplicationId()}/download/asset/${filePath}`, '_blank');
         else window.location.href = sanitiseURL(window.location.href) + KN_ASSET_PREFIX + filePath;
     }));
 }

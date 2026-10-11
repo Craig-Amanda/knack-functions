@@ -713,15 +713,7 @@ function showHideViewGroupContent(showHideId, delay, flexOn = false) {
                     // Render signatures if needed
                     const signatureElements = parentView.querySelectorAll('.kn-input-signature');
                     const viewId = parentView.id;
-                    if (
-                        signatureElements.length &&
-                        window.Knack &&
-                        Knack.views &&
-                        Knack.views[viewId] &&
-                        typeof Knack.views[viewId].renderSignatures === 'function'
-                    ) {
-                        Knack.views[viewId].renderSignatures();
-                    }
+                    if (signatureElements.length) knackNavigator.getRenderedView(viewId)?.renderSignatures?.();
 
                     // Adjust colspan for table group cell
                     const tableGroupCell = parentView.querySelector('.kn-table-group td');
@@ -1031,13 +1023,7 @@ function initialiseConditionalRequiredFieldVisibility(viewId, options = {}) {
     } = options;
 
     const getRequiredFieldIds = () => {
-        const normalizedViewId = knackNavigator.normalizeViewId(viewElement.id);
-        const viewModel = normalizedViewId ? Knack?.views?.[normalizedViewId]?.model : null;
-        const fieldDefinitions = Array.isArray(viewModel?.view?.fields)
-            ? viewModel.view.fields
-            : (Array.isArray(viewModel?.fields)
-                ? viewModel.fields
-                : (Array.isArray(viewModel?.attributes?.fields) ? viewModel.attributes.fields : []));
+        const fieldDefinitions = knackNavigator.getViewFieldDefinitions(viewElement.id);
 
         return new Set(fieldDefinitions.filter((fieldDefinition) => fieldDefinition?.required).map((fieldDefinition) => {
             return knackNavigator.normalizeFieldId(
@@ -1744,7 +1730,7 @@ function updateLinksAndAssets(viewId) {
         if (linkEle.classList.contains('ca-link-child')) {
             fullFormURL += `${formName}/${getRecordID()}`;
         } else if (linkEle.classList.contains('ca-link-user')) {
-            fullFormURL += `${formName}/${Knack.getUserAttributes()?.id}`;
+            fullFormURL += `${formName}/${knackNavigator.getUserAttributes().id}`;
         } else {
             fullFormURL += formName;
         }
@@ -1938,7 +1924,7 @@ function idleWatchDogTimeout() {
         setTimeout(() => {
             if (!document.querySelector('.kn-login')) {
                 try {
-                    Knack.user.destroy(); // try again
+                    knackNavigator.logout(); // try again
                 } catch (e) {
                     // last resort: navigate to origin
                     try { window.location.reload(); } catch (e) {}
@@ -1953,7 +1939,7 @@ function idleWatchDogTimeout() {
         clearTimeout(autoLogoutTimeout);
         cleanupUI();
         try {
-            Knack.user.destroy();
+            knackNavigator.logout();
         } catch (e) {
             console.warn('Error calling Knack.user.destroy()', e);
         }

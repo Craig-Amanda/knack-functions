@@ -584,9 +584,8 @@ class KnackError {
      */
     _getCurrentSceneId() {
         // Try to get from the Knack object first
-        if (typeof Knack !== 'undefined' && Knack.router && Knack.router.current_scene_key) {
-            return Knack.router.current_scene_key;
-        }
+        const sceneKey = knackNavigator.getCurrentSceneKey();
+        if (sceneKey) return sceneKey;
 
         // Try to get from the DOM
         const sceneElement = document.querySelector('.kn-scene');

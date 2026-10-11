@@ -252,7 +252,7 @@ class CAQuickToggle extends QuickToggleQueue {
     }
 
     setupViewModel() {
-        this.viewModel = Knack.router.scene_view.model.views._byId[this.viewId];
+        this.viewModel = knackNavigator.getSceneViewModel(this.viewId);
         if (!this.viewModel) return false;
 
         const viewAttr = this.viewModel.attributes;
@@ -299,9 +299,8 @@ class CAQuickToggle extends QuickToggleQueue {
 
         cols.forEach(col => {
             if (col.type === 'field' && col.field && col.field.key) {
-                const field = Knack.objects.getField(col.field.key);
-                if (field && !col.connection) { // Field must be local to view's object, not a connected field.
-                    if (field.attributes.type === 'boolean') {
+                if (!col.connection) { // Field must be local to view's object, not a connected field.
+                    if (knackNavigator.getFieldType(col.field.key) === 'boolean') {
                         let fieldHasQt = false;
                         const { key: fieldId } = col.field;
 
@@ -417,7 +416,7 @@ class CAQuickToggle extends QuickToggleQueue {
         }
 
         if (correspondingFieldId) {
-            const userAttributes = Knack.getUserAttributes();
+            const userAttributes = knackNavigator.getUserAttributes();
             const userAttribute = isName ? userAttributes.name : userAttributes.id;
             return { [correspondingFieldId]: value === false ? null : userAttribute };
         }
@@ -498,7 +497,7 @@ class CAMultiChoiceQuickToggle extends QuickToggleQueue {
      * @returns {boolean} True when the view is a supported type.
      */
     setupViewModel() {
-        this.viewModel = Knack.router.scene_view.model.views._byId[this.viewId];
+        this.viewModel = knackNavigator.getSceneViewModel(this.viewId);
         if (!this.viewModel) return false;
 
         const viewAttr = this.viewModel.attributes;

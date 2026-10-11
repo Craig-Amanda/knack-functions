@@ -158,7 +158,7 @@ function buildKnackAssetInfo(assetId, fileName) {
         assetId,
         fileName,
         extension: fileName.match(/\.([^.]+)$/)?.[1].toLowerCase() ?? '',
-        assetUrl: `https://api.knack.com/v1/applications/${Knack.application_id}/download/asset/${assetId}/${encodeURIComponent(fileName)}`,
+        assetUrl: `https://api.knack.com/v1/applications/${knackNavigator.getApplicationId()}/download/asset/${assetId}/${encodeURIComponent(fileName)}`,
     };
 }
 

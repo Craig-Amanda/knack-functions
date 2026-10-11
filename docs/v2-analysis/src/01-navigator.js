@@ -722,6 +722,123 @@ class KnackNavigator {
     }
 
     /**
+     * Gets the Knack application id.
+     * @returns {string|undefined}
+     */
+    getApplicationId() {
+        return globalThis.Knack?.application_id;
+    }
+
+    /**
+     * Gets the logged-in user's API token.
+     * @returns {string|undefined}
+     */
+    getUserToken() {
+        return globalThis.Knack?.getUserToken?.();
+    }
+
+    /**
+     * Gets the logged-in user's attributes (id, name, email...).
+     * @returns {Object} The attributes, or an empty object when nobody is logged in.
+     */
+    getUserAttributes() {
+        return globalThis.Knack?.getUserAttributes?.() || {};
+    }
+
+    /**
+     * Gets the logged-in user's role names.
+     * @returns {Array<string>}
+     */
+    getUserRoleNames() {
+        return globalThis.Knack?.getUserRoleNames?.() || [];
+    }
+
+    /**
+     * Logs the current user out. Throws when Knack is unavailable, so callers decide how to recover.
+     * @returns {void}
+     */
+    logout() {
+        globalThis.Knack.user.destroy();
+    }
+
+    /**
+     * Gets the rendered Knack view (the Backbone view, with `.model`) for a view id.
+     * @param {string|number} viewId - View id to resolve.
+     * @returns {Object|undefined}
+     */
+    getRenderedView(viewId) {
+        const vid = this.normalizeViewId(viewId);
+        return vid ? globalThis.Knack?.views?.[vid] : undefined;
+    }
+
+    /**
+     * Gets the model behind a view: the rendered view's model, else Knack's global model registry.
+     * @param {string|number} viewId - View id to resolve.
+     * @returns {Object|undefined}
+     */
+    getViewModel(viewId) {
+        const vid = this.normalizeViewId(viewId);
+        return vid ? (this.getRenderedView(vid)?.model || globalThis.Knack?.models?.[vid]) : undefined;
+    }
+
+    /**
+     * Gets the current scene's model for a view (`attributes` holds its columns, type and options).
+     * @param {string|number} viewId - View id to resolve.
+     * @returns {Object|undefined}
+     */
+    getSceneViewModel(viewId) {
+        return globalThis.Knack.router.scene_view.model.views._byId[this.normalizeViewId(viewId)];
+    }
+
+    /**
+     * Returns the raw field definitions of a view (not normalised), wherever Knack keeps them for its model.
+     * @param {string|number} viewId - View id to inspect.
+     * @returns {Array<Object>}
+     */
+    getViewFieldDefinitions(viewId) {
+        const model = this.getRenderedView(viewId)?.model;
+        return [model?.view?.fields, model?.fields, model?.attributes?.fields].find(Array.isArray) || [];
+    }
+
+    /**
+     * Gets the key of the scene currently displayed.
+     * @returns {string|undefined}
+     */
+    getCurrentSceneKey() {
+        return globalThis.Knack?.router?.current_scene_key;
+    }
+
+    /**
+     * Gets the current scene's hash (e.g. `#home/`).
+     * @returns {string}
+     */
+    getSceneHash() {
+        return globalThis.Knack.getSceneHash();
+    }
+
+    /**
+     * Whether Knack is showing a modal for the current scene.
+     * @returns {boolean}
+     */
+    isModalActive() {
+        return Boolean(globalThis.Knack?.router?.scene_view?.model?.attributes?.modal);
+    }
+
+    /**
+     * Navigates with Knack's router (no page reload).
+     * @param {string} hash - Route without the leading `#`.
+     * @param {{trigger?: boolean, syncVars?: boolean}} [options] - `trigger` runs the route's handlers; `syncVars` refreshes Knack's hash variables.
+     * @returns {boolean} False when the router isn't available, so the caller can fall back to `location.hash`.
+     */
+    navigateToHash(hash, { trigger = false, syncVars = false } = {}) {
+        const { router } = globalThis.Knack || {};
+        if (typeof router?.navigate !== 'function') return false;
+        router.navigate(hash, trigger);
+        if (syncVars) globalThis.Knack.setHashVars?.();
+        return true;
+    }
+
+    /**
      * Gets the logged-in user's name.
      * @returns {string|undefined} The name, or undefined when nobody is logged in.
      */

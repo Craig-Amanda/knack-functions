@@ -1071,7 +1071,7 @@ function handleModalClosed({ activeViewId = '', closedViewId = '', callback = nu
 function bulkActionCloseModalIfOpen() {
     const modalElement = document.querySelector('.kn-modal');
     const closeButton = document.querySelector('button.close-modal, .close-modal');
-    const modalActive = Boolean(modalElement || closeButton || Knack?.router?.scene_view?.model?.attributes?.modal);
+    const modalActive = Boolean(modalElement || closeButton || knackNavigator.isModalActive());
     if (!modalActive) return Promise.resolve(false);
 
     return new Promise((resolve) => {
@@ -1154,11 +1154,7 @@ function bulkActionRestoreHashState({ path = '', query = '' } = {}) {
     if (window.location.hash === targetHash) return true;
 
     const routerTarget = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
-    if (typeof Knack?.router?.navigate === 'function') {
-        Knack.router.navigate(routerTarget, false);
-        Knack.setHashVars?.();
-        return true;
-    }
+    if (knackNavigator.navigateToHash(routerTarget, { syncVars: true })) return true;
 
     window.location.hash = targetHash;
     return true;
@@ -1216,13 +1212,9 @@ function bulkActionNavigateToSceneSlug(sceneSlug, { recordId = '', params = {} }
     const targetHash = bulkActionBuildHash(sceneSlug, { recordId, params });
     if (!targetHash) return;
 
-    const canUseRouterNavigate = typeof Knack?.router?.navigate === 'function';
     const routerTarget = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
 
-    if (canUseRouterNavigate) {
-        Knack.router.navigate(routerTarget, true);
-        return;
-    }
+    if (knackNavigator.navigateToHash(routerTarget, { trigger: true })) return;
 
     if (window.location.hash === targetHash) return;
 

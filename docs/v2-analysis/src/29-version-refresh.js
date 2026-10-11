@@ -21,7 +21,7 @@ function createVersionRefreshController(options = {}) {
             return ktl.scenes.isiFrameWnd();
         },
         getCurrentUserId = function () {
-            return knackValueResolver.toStringSafe(Knack?.getUserAttributes?.()?.id);
+            return knackValueResolver.toStringSafe(knackNavigator.getUserAttributes().id);
         },
         normaliseVersion = function (value) {
             return knackValueResolver.toStringSafe(value)

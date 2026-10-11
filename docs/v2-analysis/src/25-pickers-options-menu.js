@@ -796,8 +796,8 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
     let hasAppliedOnce = false;
 
     const getTargetViewContext = () => {
-        const targetView = Knack?.views?.[targetId];
-        const targetModel = targetView?.model || Knack?.models?.[targetId];
+        const targetView = knackNavigator.getRenderedView(targetId);
+        const targetModel = knackNavigator.getViewModel(targetId);
         const targetType = targetView?.model?.view?.type || targetView?.model?.attributes?.type || '';
         return { targetView, targetModel, targetType };
     };
@@ -833,7 +833,7 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
     };
 
     const applyFilterInPlace = (filter, page = 1, rule = null, triggerElement = null) => {
-        const sceneHash = Knack.getSceneHash();
+        const sceneHash = knackNavigator.getSceneHash();
         const query = filter && Array.isArray(filter.rules) && filter.rules.length
             ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
             : `view_${targetViewKey}_page=${page}`;
@@ -843,8 +843,7 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
         }
 
         if (config.syncHash) {
-            Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
-            Knack.setHashVars();
+            knackNavigator.navigateToHash(query ? `${sceneHash}?${query}` : sceneHash, { syncVars: true });
         }
 
         try {

@@ -326,7 +326,7 @@ class KnackAPI {
         }
 
         const opts = options || {};
-        const appId = Knack?.application_id;
+        const appId = knackNavigator.getApplicationId();
         if (!appId) {
             throw new Error('KnackAPI uploadAsset missing Knack application id.');
         }
@@ -543,19 +543,7 @@ class KnackAPI {
     _isAssetField(fieldKey = '') {
         if (!fieldKey || typeof fieldKey !== 'string') return false;
 
-        const normalizedKey = typeof knackNavigator?.normalizeFieldId === 'function'
-            ? knackNavigator.normalizeFieldId(fieldKey)
-            : fieldKey;
-        const fromNavigator = typeof knackNavigator?.getFieldType === 'function'
-            ? knackNavigator.getFieldType(normalizedKey)
-            : null;
-        if (fromNavigator === 'file' || fromNavigator === 'image') {
-            return true;
-        }
-
-        const fieldModel = Knack?.objects?.getField?.(normalizedKey);
-        const fieldType = fieldModel?.attributes?.type || null;
-        return fieldType === 'file' || fieldType === 'image';
+        return ['file', 'image'].includes(knackNavigator.getFieldType(fieldKey));
     }
 
     /**
@@ -1350,7 +1338,7 @@ class KnackAPI {
      * @private
      */
     async _refreshRateLimitFromDevServer(sceneId, viewId, options = {}) {
-        const applicationId = String(Knack?.application_id || '').trim();
+        const applicationId = String(knackNavigator.getApplicationId() || '').trim();
         const authToken = String(this._getAuthToken() || '').trim();
         if (!applicationId || !authToken) {
             return false;
@@ -1523,7 +1511,7 @@ class KnackAPI {
      * @private
      */
     _getAuthToken() {
-        return Knack.getUserToken();
+        return knackNavigator.getUserToken();
     }
 
     /**
@@ -1584,7 +1572,7 @@ class KnackAPI {
     _buildHeaders(withAuth = true, { json = true } = {}) {
         const headers = {
             ...(json && { 'Content-Type': 'application/json' }),
-            'X-Knack-Application-ID': Knack.application_id,
+            'X-Knack-Application-ID': knackNavigator.getApplicationId(),
             'X-Knack-REST-API-Key': 'knack'
         };
         const token = withAuth && this._getAuthToken();
@@ -1735,7 +1723,7 @@ class KnackAPI {
     _refreshSingleView(viewId) {
         return new Promise((resolve, reject) => {
             try {
-                const view = Knack.views[viewId];
+                const view = knackNavigator.getRenderedView(viewId);
 
                 if (!view || !view.model || !view.model.view) {
                     this._log('View not found or invalid', viewId);
