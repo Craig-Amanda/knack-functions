@@ -76,3 +76,23 @@ test('V2 keeps the V1 parameter list for every function it declares under a V1 n
     }
     assert.deepEqual(changed, [], 'parameter lists that changed without a documented exception');
 });
+
+test('non-shim V2 code never calls a function it has itself deprecated', () => {
+    const source = fs.readFileSync(V2_PATH, 'utf8');
+    const deprecated = [...source.matchAll(/warnDeprecated\('([A-Za-z_$][\w$]*)'/g)].map((m) => m[1]);
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'script', locations: true });
+    const shimNames = new Set(deprecated);
+    const offenders = [];
+    const visit = (node, insideShim) => {
+        if (!node || typeof node.type !== 'string') return;
+        const name = (node.type === 'FunctionDeclaration' && node.id?.name) || (node.type === 'VariableDeclarator' && node.id?.name);
+        const nowInside = insideShim || (name && shimNames.has(name));
+        if (!nowInside && node.type === 'CallExpression' && node.callee.type === 'Identifier' && shimNames.has(node.callee.name)) offenders.push(`${node.callee.name} called at line ${node.loc.start.line}`);
+        for (const value of Object.values(node)) {
+            if (Array.isArray(value)) value.forEach((child) => visit(child, nowInside));
+            else if (value && typeof value.type === 'string') visit(value, nowInside);
+        }
+    };
+    visit(ast, false);
+    assert.deepEqual(offenders, [], 'deprecated shims called from non-shim code');
+});

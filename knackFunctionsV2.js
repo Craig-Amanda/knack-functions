@@ -12131,6 +12131,3067 @@ if (typeof globalThis !== 'undefined') {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: leftovers
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Leftover helpers ported as-is (V1 already native; jQuery only where Knack forces it: pickers, Chosen, Knack events). Analyses C11, C12, C16, C18, C19, C21, C22, C24, C25.
+
+/**
+ * Renders or removes a lightweight floating version indicator.
+ * Callers provide the already-normalised text plus any app-specific id or class names.
+ * @param {string} text - Version text to display. Empty text removes the indicator.
+ * @param {Object} [options={}] - Rendering options.
+ * @returns {void}
+ */
+function renderVersionIndicator(text, options = {}) {
+    const {
+        indicatorId = 'kf-version-indicator',
+        className = 'kf-version-indicator',
+        container = document.body,
+    } = options;
+
+    if (!(container instanceof HTMLElement)) {
+        return;
+    }
+
+    const versionText = knackValueResolver.toStringSafe(text);
+    let versionElement = document.getElementById(String(indicatorId || '').trim());
+
+    if (!versionText) {
+        if (versionElement instanceof HTMLElement) {
+            versionElement.remove();
+        }
+        return;
+    }
+
+    if (!(versionElement instanceof HTMLElement)) {
+        versionElement = document.createElement('div');
+        versionElement.id = String(indicatorId || '').trim() || 'kf-version-indicator';
+        container.appendChild(versionElement);
+    }
+
+    versionElement.className = String(className || '').trim() || 'kf-version-indicator';
+    versionElement.textContent = versionText;
+}
+
+/**
+ * Adds event listeners to an element (or selector) for input-related events.
+ *
+ * Rules:
+ * - Uses native addEventListener for normal fields
+ * - Uses jQuery only for:
+ *   - Chosen change events
+ *   - jQuery UI datepicker calendar selections (onSelect)
+ *   - jQuery timepicker selections (onSelect)
+ *
+ * @param {HTMLElement|NodeList|Array<HTMLElement>|string} target - Element, collection, or selector
+ * @param {Function} callback - Function(event, element) to call on event
+ * @param {Object} [options] - Optional settings
+ * @param {string|string[]} [options.events='change'] - Event(s) to listen for
+ * @param {string|null} [options.delegate=null] - Selector for event delegation
+ * @param {boolean} [options.runOnInit=false] - If true, runs callback once per matched element
+ * @returns {HTMLElement[]} List of elements that were wired (or matched for init)
+ */
+function addInputEventListener(target, callback, options = {}) {
+    const {
+        events = 'change',
+        delegate = null,
+        runOnInit = false
+    } = options;
+
+    const eventList = Array.isArray(events) ? events : [events];
+    const wired = [];
+
+    const hasJq = () => !!(window.jQuery && window.jQuery.fn);
+    const jq = () => window.jQuery;
+
+    const isChosenSelect = (el) => {
+        if (!el || el.tagName !== 'SELECT') return false;
+
+        const cls = el.classList;
+        if (cls && (cls.contains('chosen-select') || cls.contains('chzn-select'))) return true;
+
+        // Chosen typically inserts a sibling container after the <select>
+        const next = el.nextElementSibling;
+        if (next && next.classList && (next.classList.contains('chosen-container') || next.classList.contains('chzn-container'))) return true;
+
+        return false;
+    };
+
+    const isDatepickerInput = (el) => {
+        // jQuery UI datepicker adds 'hasDatepicker' class to the input it is attached to
+        return !!(el && el.classList && el.classList.contains('hasDatepicker'));
+    };
+
+    const isTimepickerInput = (el) => {
+        // jQuery timepicker commonly marks attached input with ui-timepicker-input
+        return !!(el && el.classList && el.classList.contains('ui-timepicker-input'));
+    };
+
+    const getInputLikeElements = (root) => {
+        if (!root) return [];
+        const tag = (root.tagName || '').toUpperCase();
+        if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return [root];
+        return Array.from(root.querySelectorAll('input, select, textarea'));
+    };
+
+    const runInitFor = (elements) => {
+        if (!runOnInit) return;
+        elements.forEach((el) => {
+            try { callback(null, el); } catch (_) {}
+        });
+    };
+
+    const addNative = (el, type, handler) => {
+        el.addEventListener(type, handler, false);
+    };
+
+    const addChosenJqDirect = (selectEl) => {
+        if (!hasJq()) return false;
+        try {
+            const j = jq();
+            j(selectEl)
+                .off('change.ktl_chosen')
+                .on('change.ktl_chosen', function (e) {
+                    callback(e, selectEl);
+                });
+            return true;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const addChosenJqDelegated = (rootEl) => {
+        if (!hasJq() || !delegate) return false;
+        try {
+            const j = jq();
+            j(rootEl).off('change.ktl_delegate_chosen');
+            j(rootEl).on(
+                'change.ktl_delegate_chosen',
+                `${delegate} select.chosen-select, ${delegate} select.chzn-select, ${delegate}.chosen-select, ${delegate}.chzn-select`,
+                function (e) {
+                    callback(e, this);
+                }
+            );
+            return true;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const wireDatepickerOnSelect = (inputEl) => {
+        if (!hasJq()) return;
+        const j = jq();
+
+        if (typeof j.fn.datepicker !== 'function') return;
+        if (!isDatepickerInput(inputEl)) return;
+
+        try {
+            const inputJq = j(inputEl);
+            let existingOnSelect = null;
+
+            try {
+                existingOnSelect = inputJq.datepicker('option', 'onSelect');
+            } catch (_) {
+                existingOnSelect = null;
+            }
+
+            inputJq.datepicker('option', 'onSelect', function (dateText, inst) {
+                if (typeof existingOnSelect === 'function') {
+                    try { existingOnSelect.call(this, dateText, inst); } catch (_) {}
+                }
+
+                const syntheticEvent = {
+                    type: 'datepicker',
+                    dateText: dateText,
+                    target: inputEl
+                };
+
+                try { callback(syntheticEvent, inputEl); } catch (_) {}
+            });
+        } catch (_) {
+            // Non-critical enhancement: ignore
+        }
+    };
+
+    const wireTimepickerOnSelect = (inputEl) => {
+        if (!hasJq()) return;
+        const j = jq();
+
+        if (typeof j.fn.timepicker !== 'function') return;
+        if (!isTimepickerInput(inputEl)) return;
+
+        try {
+            const inputJq = j(inputEl);
+            let existingOnSelect = null;
+
+            try {
+                existingOnSelect = inputJq.timepicker('option', 'onSelect');
+            } catch (_) {
+                existingOnSelect = null;
+            }
+
+            inputJq.timepicker('option', 'onSelect', function (timeText, inst) {
+                if (typeof existingOnSelect === 'function') {
+                    try { existingOnSelect.call(this, timeText, inst); } catch (_) {}
+                }
+
+                if (typeof timeText === 'string') {
+                    inputEl.value = timeText;
+                }
+
+                const syntheticEvent = {
+                    type: 'timepicker',
+                    timeText: timeText,
+                    target: inputEl
+                };
+
+                window.setTimeout(function () {
+                    try { callback(syntheticEvent, inputEl); } catch (_) {}
+                }, 0);
+            });
+        } catch (_) {
+            // Non-critical enhancement: ignore
+        }
+    };
+
+    const wireTimepickerEvents = (inputEl) => {
+        if (!hasJq()) return;
+        if (!inputEl || inputEl.tagName !== 'INPUT') return;
+
+        try {
+            const j = jq();
+            const inputJq = j(inputEl);
+
+            inputJq
+                .off('changeTime.ktl_timepicker selectTime.ktl_timepicker')
+                .on('changeTime.ktl_timepicker selectTime.ktl_timepicker', function (e) {
+                    try { callback(e, inputEl); } catch (_) {}
+                });
+        } catch (_) {
+            // Non-critical enhancement: ignore
+        }
+    };
+
+    const attachToRoot = (rootEl) => {
+        if (!(rootEl instanceof Element)) return;
+
+        // Delegated mode
+        if (delegate) {
+            const delegateMatches = Array.from(rootEl.querySelectorAll(delegate));
+
+            const includesChosen = delegateMatches.some((m) => {
+                if (!m) return false;
+                if (isChosenSelect(m)) return true;
+                return !!m.querySelector && (!!m.querySelector('select.chosen-select') || !!m.querySelector('select.chzn-select'));
+            });
+
+            if (includesChosen && addChosenJqDelegated(rootEl)) {
+                wired.push(rootEl);
+            } else {
+                eventList.forEach((type) => {
+                    addNative(rootEl, type, function (e) {
+                        const hit = (e.target && e.target.closest) ? e.target.closest(delegate) : null;
+                        if (!hit) return;
+                        if (!rootEl.contains(hit)) return;
+                        try { callback(e, hit); } catch (_) {}
+                    });
+                });
+                wired.push(rootEl);
+            }
+
+            runInitFor(delegateMatches);
+            return;
+        }
+
+        // Non-delegated
+        const fields = getInputLikeElements(rootEl);
+        if (!fields.length) return;
+
+        fields.forEach((fieldEl) => {
+            wireDatepickerOnSelect(fieldEl);
+            wireTimepickerOnSelect(fieldEl);
+            wireTimepickerEvents(fieldEl);
+
+            if (isChosenSelect(fieldEl)) {
+                if (addChosenJqDirect(fieldEl)) {
+                    wired.push(fieldEl);
+                    return;
+                }
+            }
+
+            eventList.forEach((type) => {
+                addNative(fieldEl, type, function (e) {
+                    try { callback(e, fieldEl); } catch (_) {}
+                });
+            });
+
+            wired.push(fieldEl);
+        });
+
+        runInitFor(fields);
+    };
+
+    resolveElements(target).forEach(attachToRoot);
+
+    return wired;
+}
+
+/**
+ * Waits for an element that matches the selector and optionally contains specific text to appear in the DOM
+ * @param {Object} options - Configuration options
+ * @param {string} options.selector - CSS selector to wait for
+ * @param {function|string|Object} [options.textCondition=null] - Optional text content to match or custom condition callback
+ *                                                If object: {text: string, exact: boolean}
+ * @param {string} [options.returnType='element'] - Type of return: 'element', 'elements', 'empty' for just success
+ * @param {number} [options.timeout=10000] - Maximum time to wait in milliseconds
+ * @returns {Promise<Element|Element[]|boolean>} - Resolves with the element(s) or true, rejects on timeout
+ */
+async function waitSelector({
+    selector,
+    textCondition = null,
+    returnType = 'element',
+    timeout = 10000
+}) {
+    return new Promise((resolve, reject) => {
+        // Declare observer variable at the top of the function scope
+        let observer = null;
+        let timeoutId = null;
+
+        // Check if element already exists
+        const checkForElement = () => {
+            let result = null;
+            // Process text condition to determine matching function
+            let textMatch = null;
+            let isExactMatch = false;
+
+            if (textCondition) {
+                if (typeof textCondition === 'string') {
+                    textMatch = textCondition;
+                    isExactMatch = false; // Default to includes for backward compatibility
+                } else if (typeof textCondition === 'object' && textCondition !== null) {
+                    textMatch = textCondition.text;
+                    isExactMatch = !!textCondition.exact;
+                }
+            }
+
+            // Function to check if element's text content matches condition
+            const matchesText = (el) => {
+                if (!textMatch) return true;
+                const content = el.textContent.trim();
+                return isExactMatch ? content === textMatch : content.includes(textMatch);
+            };
+
+            if (returnType === 'elements') {
+                result = document.querySelectorAll(selector);
+                if (result.length > 0) {
+                    // Filter by text content if needed
+                    if (textMatch) {
+                        result = Array.from(result).filter(matchesText);
+                        if (result.length === 0) return; // No matches, keep waiting
+                    }
+
+                    if (!textCondition || typeof textCondition === 'string' ||
+                        typeof textCondition === 'object' || textCondition(result)) {
+                        if (observer) observer.disconnect();
+                        clearTimeout(timeoutId);
+                        resolve(result);
+                    }
+                }
+            } else {
+                if (textMatch) {
+                    // Find elements that match both selector and text content
+                    const elements = document.querySelectorAll(selector);
+                    for (const el of elements) {
+                        if (matchesText(el)) {
+                            result = el;
+                            break;
+                        }
+                    }
+                } else {
+                    result = document.querySelector(selector);
+                }
+
+                if (result) {
+                    if (!textCondition || typeof textCondition === 'string' ||
+                        typeof textCondition === 'object' || textCondition(result)) {
+                        if (observer) observer.disconnect();
+                        clearTimeout(timeoutId);
+                        resolve(returnType === 'empty' ? true : result);
+                    }
+                }
+            }
+        };
+
+        // Check immediately in case the element already exists
+        checkForElement();
+
+        // Set up a timeout to reject the promise if the element doesn't appear
+        timeoutId = setTimeout(() => {
+            if (observer) observer.disconnect();
+            let textInfo = '';
+            if (textCondition) {
+                if (typeof textCondition === 'string') {
+                    textInfo = ` with text: ${textCondition}`;
+                } else if (typeof textCondition === 'object' && textCondition.text) {
+                    textInfo = ` with ${textCondition.exact ? 'exact ' : ''}text: ${textCondition.text}`;
+                }
+            }
+            reject(new Error(`Timeout waiting for selector: ${selector}${textInfo} after ${timeout}ms`));
+        }, timeout);
+
+        // Use MutationObserver to watch for DOM changes
+        observer = new MutationObserver((mutations, obs) => {
+            checkForElement();
+        });
+
+        // Start observing
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true
+        });
+    });
+}
+
+/**
+ * Read date/time values from a Knack datetime wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @returns {{date: string, time: string}}
+ */
+function getDateTimeParts(fieldWrap) {
+    if (!fieldWrap) return { date: '', time: '' };
+    const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
+    const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+    const hoursSelect = fieldWrap.querySelector('select[name="hours"]');
+    const minutesSelect = fieldWrap.querySelector('select[name="minutes"]');
+    const amPmSelect = fieldWrap.querySelector('select[name="am_pm"]');
+    const dateValue = dateInput ? String(dateInput.value || '').trim() : '';
+
+    if (timeInput) {
+        return {
+            date: dateValue,
+            time: String(timeInput.value || '').trim().replace(/\s+/g, ''),
+        };
+    }
+
+    if (hoursSelect instanceof HTMLSelectElement && minutesSelect instanceof HTMLSelectElement) {
+        const hours = String(hoursSelect.value || '').trim();
+        const minutes = String(minutesSelect.value || '').trim();
+        const amPm = amPmSelect instanceof HTMLSelectElement ? String(amPmSelect.value || '').trim().toLowerCase() : '';
+        return {
+            date: dateValue,
+            time: hours && minutes ? `${hours}:${minutes}${amPm}` : '',
+        };
+    }
+
+    return {
+        date: dateValue,
+        time: '',
+    };
+}
+
+/**
+ * Write date/time values to a Knack datetime wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @param {{date?: string, time?: string}} [parts]
+ * @param {{emitEvents?: boolean}} [options]
+ * @returns {void}
+ */
+function setDateTimeParts(fieldWrap, parts = {}, options = {}) {
+    if (!fieldWrap) return;
+    const emitEvents = options.emitEvents !== false;
+    const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
+    const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+
+    if (dateInput) {
+        dateInput.value = parts.date || '';
+        if (emitEvents) {
+            dateInput.dispatchEvent(new Event('input', { bubbles: true }));
+            dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+
+    if (timeInput) {
+        timeInput.value = parts.time || '';
+        if (emitEvents) {
+            timeInput.dispatchEvent(new Event('input', { bubbles: true }));
+            timeInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+}
+
+/**
+ * Read from/to values from a Knack calendar from/to control wrapper.
+ * @param {HTMLElement|null} fieldWrap
+ * @returns {{from: {date: string, time: string}, to: {date: string, time: string}}}
+ */
+function getCalendarFromToParts(fieldWrap) {
+    if (!fieldWrap) {
+        return {
+            from: { date: '', time: '' },
+            to: { date: '', time: '' },
+        };
+    }
+
+    const fromDateInput = fieldWrap.querySelector('.kn-datetime input[name="date"]');
+    const fromTimeInput = fieldWrap.querySelector('.kn-datetime input[name="time"]');
+    const toDateInput = fieldWrap.querySelector('.kn-datetime input[name="to_date"], .kn-datetime input[id$="-to"]:not([id*="-time-"])');
+    const toTimeInput = fieldWrap.querySelector('.kn-datetime input[name="to_time"], .kn-datetime input[id$="-time-to"]');
+
+    return {
+        from: {
+            date: fromDateInput ? fromDateInput.value : '',
+            time: fromTimeInput ? fromTimeInput.value : '',
+        },
+        to: {
+            date: toDateInput ? toDateInput.value : '',
+            time: toTimeInput ? toTimeInput.value : '',
+        },
+    };
+}
+
+/**
+ * Write from/to values to a Knack calendar from/to control wrapper.
+ * @param {HTMLElement|null} fieldWrap - #kn-input-field_123
+ * @param {{from?: {date?: string, time?: string}, to?: {date?: string, time?: string}}} [parts]
+ * @param {{emitEvents?: boolean}} [options]
+ * @returns {void}
+ */
+function setCalendarFromToParts(fieldWrap, parts = {}, options = {}) {
+    if (!fieldWrap) return;
+    const emitEvents = options.emitEvents !== false;
+
+    const fromDateInput = fieldWrap.querySelector('.kn-datetime input[name="date"]');
+    const fromTimeInput = fieldWrap.querySelector('.kn-datetime input[name="time"]');
+    const toDateInput = fieldWrap.querySelector('.kn-datetime input[name="to_date"], .kn-datetime input[id$="-to"]:not([id*="-time-"])');
+    const toTimeInput = fieldWrap.querySelector('.kn-datetime input[name="to_time"], .kn-datetime input[id$="-time-to"]');
+
+    const setAndTrigger = (input, value) => {
+        if (!input) return;
+        input.value = value || '';
+        if (emitEvents) {
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    };
+
+    setAndTrigger(fromDateInput, parts.from?.date);
+    setAndTrigger(fromTimeInput, parts.from?.time);
+    setAndTrigger(toDateInput, parts.to?.date);
+    setAndTrigger(toTimeInput, parts.to?.time);
+}
+
+/**
+ * Parse UK date/time parts into a Date.
+ * Accepts date as dd/mm/yyyy and time as either HH:mm or h:mmam/pm.
+ * @param {{date?: string, time?: string}} parts
+ * @returns {Date|null}
+ */
+function parseDateTimeParts(parts) {
+    const dateText = String(parts?.date || '').trim();
+    const timeText = String(parts?.time || '').trim();
+    const dateMatch = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!dateMatch) return null;
+
+    const day = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]);
+    const year = Number(dateMatch[3]);
+
+    let hours = 0;
+    let minutes = 0;
+    if (timeText) {
+        const ampmMatch = timeText.match(/^(\d{1,2}):(\d{2})\s*([ap]m)$/i);
+        const twentyFourMatch = timeText.match(/^(\d{1,2}):(\d{2})$/);
+        if (ampmMatch) {
+            hours = Number(ampmMatch[1]) % 12;
+            minutes = Number(ampmMatch[2]);
+            if (ampmMatch[3].toLowerCase() === 'pm') hours += 12;
+        } else if (twentyFourMatch) {
+            hours = Number(twentyFourMatch[1]);
+            minutes = Number(twentyFourMatch[2]);
+        } else {
+            return null;
+        }
+    }
+
+    return new Date(year, month - 1, day, hours, minutes, 0, 0);
+}
+
+/**
+ * Parse a Knack from/to date-time wrapper into local start and end dates.
+ * Supports both single and range layouts that expose one or two date/time inputs.
+ * @param {HTMLElement|null} fieldWrap
+ * @returns {{startDate: Date|null, endDate: Date|null}} Parsed inclusive range.
+ * Example return with times:
+ * { startDate: new Date(2026, 6, 24, 10, 0, 0, 0), endDate: new Date(2026, 6, 27, 23, 30, 0, 0) }
+ * Example return with date-only values:
+ * { startDate: new Date(2026, 6, 24, 0, 0, 0, 0), endDate: new Date(2026, 6, 27, 23, 59, 59, 999) }
+ */
+function parseFromToDate(fieldWrap) {
+    if (!(fieldWrap instanceof HTMLElement)) {
+        return { startDate: null, endDate: null };
+    }
+
+    const dateInputs = Array.from(fieldWrap.querySelectorAll('input.knack-date'));
+    const timeInputs = Array.from(fieldWrap.querySelectorAll('input.kn-time'));
+    const fromDateText = String(dateInputs?.[0]?.value || '').trim();
+    const hasExplicitToDateInput = dateInputs.length > 1;
+    const toDateText = hasExplicitToDateInput
+        ? String(dateInputs?.[1]?.value || '').trim()
+        : String(dateInputs?.[0]?.value || '').trim();
+    const fromTimeText = String(timeInputs?.[0]?.value || '').trim();
+    const toTimeText = String(timeInputs?.[1]?.value || '').trim();
+
+    if (!fromDateText || !toDateText) {
+        return { startDate: null, endDate: null };
+    }
+
+    if (hasExplicitToDateInput && !String(dateInputs?.[1]?.value || '').trim()) {
+        return { startDate: null, endDate: null };
+    }
+
+    const parseBoundaryDate = function (value, endOfDay = false) {
+        const parsedDate = parseDateObject(value);
+        if (!(parsedDate instanceof Date) || Number.isNaN(parsedDate.getTime())) {
+            return null;
+        }
+
+        return endOfDay
+            ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate(), 23, 59, 59, 999)
+            : new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate(), 0, 0, 0, 0);
+    };
+
+    const parsedStartDate = parseDateTimeParts({ date: fromDateText, time: fromTimeText }) || parseBoundaryDate(fromDateText, false);
+    const parsedEndDate = toTimeText
+        ? parseDateTimeParts({ date: toDateText, time: toTimeText }) || parseBoundaryDate(toDateText, true)
+        : parseBoundaryDate(toDateText, true);
+
+    if (!(parsedStartDate instanceof Date) || Number.isNaN(parsedStartDate.getTime()) || !(parsedEndDate instanceof Date) || Number.isNaN(parsedEndDate.getTime())) {
+        return { startDate: null, endDate: null };
+    }
+
+    if (parsedStartDate.getTime() > parsedEndDate.getTime()) {
+        return { startDate: parsedEndDate, endDate: parsedStartDate };
+    }
+
+    return {
+        startDate: parsedStartDate,
+        endDate: parsedEndDate,
+    };
+}
+
+function showHideViewGroupContent(showHideId, delay, flexOn = false) {
+    const button = document.getElementById(showHideId);
+    const arrow = document.getElementById(`arrow_${showHideId}`);
+    const hiddenSection = document.querySelector(`.${showHideId}`);
+    const shrinkLink = document.getElementById(`shrink-link_${showHideId}`);
+
+    if (!button || !arrow || !hiddenSection) return;
+
+    // Helper to get computed paddings/margins
+    function getBoxSpacing(elem) {
+        const style = window.getComputedStyle(elem);
+        return {
+            paddingTop: style.paddingTop,
+            paddingBottom: style.paddingBottom,
+            marginTop: style.marginTop,
+            marginBottom: style.marginBottom
+        };
+    }
+
+    // Animate height, padding, and margin for smooth slide
+    function slideToggle(elem, duration = 600, displayType = 'block') {
+        const isHidden = window.getComputedStyle(elem).display === 'none';
+        const spacing = getBoxSpacing(elem);
+
+        if (isHidden) {
+            elem.style.removeProperty('display');
+            let display = window.getComputedStyle(elem).display;
+            if (display === 'none') display = displayType;
+            elem.style.display = display;
+            elem.style.overflow = 'hidden';
+            elem.style.height = '0px';
+            elem.style.paddingTop = '0px';
+            elem.style.paddingBottom = '0px';
+            elem.style.marginTop = '13px';
+            elem.style.marginBottom = '0px';
+            elem.offsetHeight; // force reflow
+
+            requestAnimationFrame(() => {
+                elem.style.transition = [
+                    `height ${duration}ms cubic-bezier(0.33,0,0.2,1)`,
+                    `padding-top ${duration}ms cubic-bezier(0.33,0,0.2,1)`,
+                    `padding-bottom ${duration}ms cubic-bezier(0.33,0,0.2,1)`,
+                    `margin-top ${duration}ms cubic-bezier(0.33,0,0.2,1)`,
+                    `margin-bottom ${duration}ms cubic-bezier(0.33,0,0.2,1)`
+                ].join(', ');
+                elem.style.height = elem.scrollHeight + 'px';
+                elem.style.paddingTop = spacing.paddingTop;
+                elem.style.paddingBottom = spacing.paddingBottom;
+                elem.style.marginTop = spacing.marginTop;
+                elem.style.marginBottom = spacing.marginBottom;
+            });
+
+            setTimeout(() => {
+                elem.style.transition = '';
+                elem.style.height = 'auto';
+                elem.style.overflow = '';
+                elem.style.paddingTop = '';
+                elem.style.paddingBottom = '';
+                elem.style.marginTop = '13px';
+                elem.style.marginBottom = '';
+
+                // --- BEGIN: Inserted signature/table group logic ---
+                // Find the parent view element (with id starting with "view_")
+                let parentView = elem.closest('[id^="view_"]');
+                if (parentView) {
+                    // Render signatures if needed
+                    const signatureElements = parentView.querySelectorAll('.kn-input-signature');
+                    const viewId = parentView.id;
+                    if (
+                        signatureElements.length &&
+                        window.Knack &&
+                        Knack.views &&
+                        Knack.views[viewId] &&
+                        typeof Knack.views[viewId].renderSignatures === 'function'
+                    ) {
+                        Knack.views[viewId].renderSignatures();
+                    }
+
+                    // Adjust colspan for table group cell
+                    const tableGroupCell = parentView.querySelector('.kn-table-group td');
+                    const visibleThs = parentView.querySelectorAll('th:not([style*="display: none"])');
+                    if (tableGroupCell && visibleThs.length) {
+                        const numOfVisibleColumns = visibleThs.length;
+                        const currentColspan = parseInt(tableGroupCell.getAttribute('colspan'), 10);
+                        if (currentColspan !== numOfVisibleColumns) {
+                            tableGroupCell.setAttribute('colspan', numOfVisibleColumns);
+                        }
+                    }
+                }
+            }, duration);
+        } else {
+            elem.style.height = elem.scrollHeight + 'px';
+            elem.style.overflow = 'hidden';
+            elem.offsetHeight; // force reflow
+
+            requestAnimationFrame(() => {
+                elem.style.transition = [
+                    `height ${duration}ms cubic-bezier(0.33,0,0.2,1)`,
+                    `padding-top ${duration}ms cubic-bezier(0.33,0,0.2,1)`,
+                    `padding-bottom ${duration}ms cubic-bezier(0.33,0,0.2,1)`,
+                    `margin-top ${duration}ms cubic-bezier(0.33,0,0.2,1)`,
+                    `margin-bottom ${duration}ms cubic-bezier(0.33,0,0.2,1)`
+                ].join(', ');
+                elem.style.height = '0px';
+                elem.style.paddingTop = '0px';
+                elem.style.paddingBottom = '0px';
+                elem.style.marginTop = '13px';
+                elem.style.marginBottom = '0px';
+            });
+
+            setTimeout(() => {
+                elem.style.display = 'none';
+                elem.style.transition = '';
+                elem.style.height = '';
+                elem.style.overflow = '';
+                elem.style.paddingTop = '';
+                elem.style.paddingBottom = '';
+                elem.style.marginTop = '13px';
+                elem.style.marginBottom = '';
+            }, duration);
+        }
+    }
+
+    function slideUp(elem, duration = 400) {
+        if (window.getComputedStyle(elem).display === 'none') return;
+        elem.style.height = elem.scrollHeight + 'px';
+        elem.style.overflow = 'hidden';
+        elem.offsetHeight; // force reflow
+
+        requestAnimationFrame(() => {
+            elem.style.transition = `height ${duration}ms cubic-bezier(0.33,0,0.2,1)`;
+            elem.style.height = '0px';
+        });
+
+        setTimeout(() => {
+            elem.style.display = 'none';
+            elem.style.transition = '';
+            elem.style.height = '';
+            elem.style.overflow = '';
+        }, duration);
+    }
+
+    button.onclick = function () {
+        slideToggle(hiddenSection, delay, flexOn ? 'flex' : 'block');
+        arrow.classList.toggle('ktlDown');
+        arrow.classList.toggle('ktlUp');
+        button.classList.toggle('ktlActive');
+        if (flexOn && window.getComputedStyle(hiddenSection).display !== 'none') {
+            hiddenSection.style.display = 'flex';
+        }
+    };
+
+    if (shrinkLink) {
+        shrinkLink.onclick = function () {
+            slideUp(hiddenSection, delay);
+            arrow.classList.toggle('ktlDown');
+            arrow.classList.toggle('ktlUp');
+            button.classList.remove('ktlActive');
+        };
+    }
+}
+
+/**
+ * Adds checkboxes to a table view and handles select/unselect all functionality.
+ * Optionally invokes a callback when checkboxes change.
+ *
+ * @param {string} viewId - The ID of the view.
+ * @param {function} [onCheckedChange] - Optional callback invoked on changes.
+ * @param {boolean} [addHeaderCheckbox=true] - Whether to add a select-all checkbox to the header.
+ *   Signature: ({ type: 'row'|'header', checked: boolean, row?: HTMLTableRowElement,
+ *                 viewId: string, checkedCount: number, totalCount: number, headerChecked: boolean, event: Event }) => void
+ * @example
+ * addCheckboxes('view_1234', ({ type, checked, checkedCount }) => console.log(type, checked, checkedCount));
+ */
+function addCheckboxes(viewId, onCheckedChange, addHeaderCheckbox = true) {
+    const viewElement = document.getElementById(viewId);
+    if (!viewElement) return;
+
+    const table = viewElement.querySelector('table.kn-table');
+    if (!table) return;
+
+    const headerRow = table.querySelector('thead tr');
+    const bodyRows = table.querySelectorAll('tbody tr:not(.kn-tr-nodata)');
+
+    // Always ensure a placeholder header cell exists for alignment
+    let headerCheckboxTh = headerRow.querySelector('th.header-checkbox-th');
+    if (!headerCheckboxTh) {
+        headerCheckboxTh = document.createElement('th');
+        headerCheckboxTh.className = 'header-checkbox-th';
+    }
+    // Ensure placeholder is first column
+    if (headerRow.firstChild !== headerCheckboxTh) {
+        headerRow.insertBefore(headerCheckboxTh, headerRow.firstChild);
+    }
+
+    // Conditionally add/remove the select-all checkbox input
+    let headerCheckbox = null;
+    if (addHeaderCheckbox) {
+        headerCheckbox = headerCheckboxTh.querySelector('input[type="checkbox"]');
+        if (!headerCheckbox) {
+            headerCheckbox = document.createElement('input');
+            headerCheckbox.type = 'checkbox';
+            headerCheckbox.className = 'header-checkbox';
+            headerCheckboxTh.appendChild(headerCheckbox);
+        }
+    } else {
+        const existingHeaderCb = headerCheckboxTh.querySelector('input[type="checkbox"]');
+        if (existingHeaderCb) existingHeaderCb.remove();
+    }
+
+    // Add row checkboxes if not already present
+    bodyRows.forEach(row => {
+        let checkboxTd = row.querySelector('td.row-checkbox-td');
+        if (!checkboxTd) {
+            checkboxTd = document.createElement('td');
+            checkboxTd.className = 'row-checkbox-td';
+            checkboxTd.style.maxWidth = '32px';
+            const rowCheckbox = document.createElement('input');
+            rowCheckbox.type = 'checkbox';
+            rowCheckbox.className = 'row-checkbox';
+            checkboxTd.appendChild(rowCheckbox);
+            row.insertBefore(checkboxTd, row.firstChild);
+
+            addInputEventListener(rowCheckbox, function (e) {
+                const allChecked = Array.from(table.querySelectorAll(`tbody tr:not(.kn-tr-nodata) ${INPUT_CHECKBOX_SELECTOR}`))
+                    .every(cb => cb.checked);
+                if (headerCheckbox) headerCheckbox.checked = allChecked;
+
+                // Invoke callback for row checkbox change
+                if (typeof onCheckedChange === 'function') {
+                    const checkedCount = table.querySelectorAll('tbody tr:not(.kn-tr-nodata) input[type="checkbox"].row-checkbox:checked').length;
+                    onCheckedChange({
+                        type: 'row',
+                        checked: rowCheckbox.checked,
+                        row,
+                        viewId,
+                        checkedCount,
+                        totalCount: bodyRows.length,
+                        headerChecked: !!headerCheckbox?.checked,
+                        event: e || null
+                    });
+                }
+            }, { events: 'change' });
+        }
+    });
+
+    if (headerCheckbox) {
+        addInputEventListener(headerCheckbox, function (e) {
+            const isChecked = headerCheckbox.checked;
+            bodyRows.forEach(row => {
+                const cb = row.querySelector(`td.row-checkbox-td ${INPUT_CHECKBOX_SELECTOR}`);
+                if (cb) cb.checked = isChecked;
+            });
+
+            // Invoke callback for header checkbox change (after rows updated)
+            if (typeof onCheckedChange === 'function') {
+                const checkedCount = isChecked
+                    ? bodyRows.length
+                    : 0;
+                onCheckedChange({
+                    type: 'header',
+                    checked: isChecked,
+                    viewId,
+                    checkedCount,
+                    totalCount: bodyRows.length,
+                    headerChecked: !!headerCheckbox.checked,
+                    event: e || null
+                });
+            }
+        }, { events: 'change' });
+    }
+}
+
+/**
+ * Adds a checkbox to each table header cell in a Knack view (does not add to rows).
+ * Only adds a checkbox if the header cell has a class starting with "field_".
+ * Ensures the checkbox is the first child and inline with the header text.
+ * Optionally accepts a callback that receives an array of field IDs for checked headers.
+ * Uses addInputEventListener for event handling.
+ * @param {string} viewId - The ID of the view containing the table.
+ * @param {function} [onCheckedChange] - Optional callback: (checkedFieldIds: string[]) => void
+ * @example
+ * addCheckboxesToHeaders('view_1234', checkedIds => { console.log(checkedIds); });
+ */
+function addCheckboxesToHeaders(viewId, onCheckedChange) {
+    const viewElement = document.getElementById(viewId);
+    if (!viewElement) return;
+
+    const table = viewElement.querySelector('table.kn-table');
+    if (!table) return;
+
+    const headerRow = table.querySelector('thead tr');
+    if (!headerRow) return;
+
+    Array.from(headerRow.children).forEach(th => {
+        // Only add checkbox if th has a class starting with "field_"
+        const fieldClass = Array.from(th.classList).find(cls => cls.startsWith('field_'));
+        if (!fieldClass) return;
+
+        // Wrap existing content in a flex container if not already
+        let flexWrap = th.querySelector('.header-flex-wrap');
+        if (!flexWrap) {
+            flexWrap = document.createElement('span');
+            flexWrap.className = 'header-flex-wrap';
+            flexWrap.style.display = 'inline-flex';
+            flexWrap.style.alignItems = 'center';
+            flexWrap.style.gap = '4px';
+
+            // Move all th children into the flexWrap
+            while (th.firstChild) {
+                flexWrap.appendChild(th.firstChild);
+            }
+            th.appendChild(flexWrap);
+        }
+
+        // Add checkbox if not already present
+        if (!flexWrap.querySelector(INPUT_CHECKBOX_SELECTOR)) {
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'header-checkbox';
+            checkbox.style.verticalAlign = 'middle';
+            checkbox.style.marginRight = '6px';
+            flexWrap.insertBefore(checkbox, flexWrap.firstChild);
+        } else {
+            // Ensure checkbox is first and styled
+            const existing = flexWrap.querySelector(INPUT_CHECKBOX_SELECTOR);
+            if (existing !== flexWrap.firstChild) {
+                flexWrap.insertBefore(existing, flexWrap.firstChild);
+            }
+            existing.style.verticalAlign = 'middle';
+            existing.style.marginRight = '6px';
+        }
+    });
+
+    // If a callback is provided, set up listeners for all header checkboxes
+    if (typeof onCheckedChange === 'function') {
+        const headerCheckboxes = headerRow.querySelectorAll(`${INPUT_CHECKBOX_SELECTOR}.header-checkbox`);
+        addInputEventListener(headerCheckboxes, function () {
+            const checkedFieldIds = Array.from(headerCheckboxes)
+                .filter(cb => cb.checked)
+                .map(cb => {
+                    const th = cb.closest('th');
+                    if (!th) return null;
+                    const fieldClass = Array.from(th.classList).find(cls => cls.startsWith('field_'));
+                    return fieldClass ? fieldClass.replace('field_', '') : null;
+                })
+                .filter(Boolean);
+            onCheckedChange(checkedFieldIds);
+        }, { events: 'change' });
+    }
+}
+
+/**
+ * Wire a form so a controlling input can temporarily hide empty required fields.
+ * Required fields are detected from Knack view metadata and rendered required markers.
+ * @param {string} viewId - Knack view id.
+ * @param {Object} [options={}] - Visibility configuration.
+ * @param {string|number} options.controllerFieldId - Field id for the controlling input.
+ * @param {Function} [options.isEnabled] - Optional predicate returning whether hiding is active.
+ * @param {Function} [options.fieldHasValue] - Optional predicate `(fieldWrap, context) => boolean`.
+ * @param {Function} [options.resolveVisibilityTarget] - Optional target resolver `(fieldWrap, context) => HTMLElement`.
+ * @param {Array<string|number>} [options.excludeFieldIds=[]] - Additional field ids to exclude.
+ * @param {string|string[]} [options.events=['change','input']] - Events that should recalculate visibility.
+ * @param {string} [options.delegate='input, select, textarea'] - Delegated selector for input changes.
+ * @param {string} [options.submitNamespace='conditionalRequiredFieldVisibility'] - Namespace for the submit handler.
+ * @returns {{viewElement: HTMLElement, formElement: HTMLFormElement, apply: Function}|null}
+ */
+function initialiseConditionalRequiredFieldVisibility(viewId, options = {}) {
+    const viewElement = getById(viewId);
+    const formElement = viewElement?.querySelector('form');
+    if (!(viewElement instanceof HTMLElement) || !(formElement instanceof HTMLFormElement)) {
+        return null;
+    }
+
+    const {
+        controllerFieldId,
+        isEnabled,
+        fieldHasValue,
+        resolveVisibilityTarget,
+        excludeFieldIds = [],
+        events = ['change', 'input'],
+        delegate = 'input, select, textarea',
+        submitNamespace = 'conditionalRequiredFieldVisibility',
+    } = options;
+
+    const getRequiredFieldIds = () => {
+        const normalizedViewId = knackNavigator.normalizeViewId(viewElement.id);
+        const viewModel = normalizedViewId ? Knack?.views?.[normalizedViewId]?.model : null;
+        const fieldDefinitions = Array.isArray(viewModel?.view?.fields)
+            ? viewModel.view.fields
+            : (Array.isArray(viewModel?.fields)
+                ? viewModel.fields
+                : (Array.isArray(viewModel?.attributes?.fields) ? viewModel.attributes.fields : []));
+
+        return new Set(fieldDefinitions.filter((fieldDefinition) => fieldDefinition?.required).map((fieldDefinition) => {
+            return knackNavigator.normalizeFieldId(
+                fieldDefinition?.key
+                || fieldDefinition?.id
+                || fieldDefinition?.field_key
+                || ''
+            );
+        }).filter(Boolean));
+    };
+
+    const hasVisibleInputValue = (fieldWrap) => {
+        if (!(fieldWrap instanceof HTMLElement)) {
+            return false;
+        }
+
+        const dateInput = fieldWrap.querySelector('.kn-datetime input[name="date"], input.knack-date-input, input[name="date"]');
+        const timeInput = fieldWrap.querySelector('.kn-datetime input[name="time"], input.kn-time-input, input[name="time"]');
+        const hoursSelect = fieldWrap.querySelector('select[name="hours"]');
+        const minutesSelect = fieldWrap.querySelector('select[name="minutes"]');
+        if (dateInput || timeInput || hoursSelect || minutesSelect) {
+            return Boolean(getDateTimeParts(fieldWrap).date);
+        }
+
+        if (fieldWrap.querySelector('input[type="checkbox"]:checked, input[type="radio"]:checked')) {
+            return true;
+        }
+
+        const fileInput = fieldWrap.querySelector('input[type="file"]');
+        if (fileInput?.files?.length) {
+            return true;
+        }
+
+        const typedInput = Array.from(fieldWrap.querySelectorAll('textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), select'))
+            .find(function (inputElement) {
+                return elementHasMeaningfulValue(inputElement);
+            });
+
+        return Boolean(typedInput);
+    };
+
+    const getRequiredFieldWraps = (controllerFieldWrap) => {
+        const requiredFieldIds = getRequiredFieldIds();
+        const excludedIds = new Set([controllerFieldId, ...(Array.isArray(excludeFieldIds) ? excludeFieldIds : [excludeFieldIds])]
+            .map((fieldId) => knackNavigator.normalizeFieldId(fieldId))
+            .filter(Boolean));
+
+        return Array.from(viewElement.querySelectorAll('[id^="kn-input-field_"]')).filter((fieldWrap) => {
+            if (!(fieldWrap instanceof HTMLElement) || fieldWrap === controllerFieldWrap) return false;
+            if (fieldWrap.closest('.is-hidden, [hidden]')) return false;
+
+            const fieldId = knackNavigator.normalizeFieldId(fieldWrap.id.replace(/^kn-input-/, ''));
+            if (fieldId && excludedIds.has(fieldId)) return false;
+
+            return Boolean(
+                fieldWrap.querySelector('.kn-label .kn-required')
+                || fieldWrap.querySelector('[required], [aria-required="true"]')
+                || (fieldId ? requiredFieldIds.has(fieldId) : false)
+                || fieldWrap.querySelector('input[required], select[required], textarea[required]')
+            );
+        });
+    };
+
+    const resolveTarget = (fieldWrap, context) => {
+        if (typeof resolveVisibilityTarget === 'function') {
+            return resolveVisibilityTarget(fieldWrap, context);
+        }
+
+        return fieldWrap.closest('.kn-input') || fieldWrap;
+    };
+
+    const hideField = (fieldWrap, context) => {
+        const target = resolveTarget(fieldWrap, context);
+        if (!(target instanceof HTMLElement) || target.dataset.conditionalRequiredHidden === 'true') return;
+
+        target.dataset.conditionalRequiredHidden = 'true';
+        target.dataset.conditionalRequiredPreviousDisplay = target.style.display || '';
+        setVisibility(target, false);
+
+        fieldWrap.querySelectorAll('input, select, textarea, button').forEach((controlElement) => {
+            controlElement.dataset.conditionalRequiredWasDisabled = controlElement.disabled ? 'true' : 'false';
+            controlElement.disabled = true;
+        });
+    };
+
+    const restoreField = (fieldWrap, context) => {
+        const target = resolveTarget(fieldWrap, context);
+        if (!(target instanceof HTMLElement) || target.dataset.conditionalRequiredHidden !== 'true') return;
+
+        const previousDisplay = target.dataset.conditionalRequiredPreviousDisplay || '';
+        delete target.dataset.conditionalRequiredHidden;
+        delete target.dataset.conditionalRequiredPreviousDisplay;
+        target.style.display = previousDisplay;
+
+        fieldWrap.querySelectorAll('input, select, textarea, button').forEach((controlElement) => {
+            const wasDisabled = controlElement.dataset.conditionalRequiredWasDisabled === 'true';
+            controlElement.disabled = wasDisabled;
+            delete controlElement.dataset.conditionalRequiredWasDisabled;
+        });
+    };
+
+    const apply = () => {
+        const controllerFieldWrap = controllerFieldId == null
+            ? null
+            : knackNavigator.getFieldWrapper(viewElement, controllerFieldId);
+        if (controllerFieldId != null && !controllerFieldWrap) {
+            return [];
+        }
+
+        const context = { viewElement, formElement, controllerFieldWrap, controllerFieldId };
+        const visibilityEnabled = typeof isEnabled === 'function'
+            ? Boolean(isEnabled(context))
+            : (controllerFieldId != null && getFormFieldCheckboxValues(controllerFieldId, viewElement).length > 0);
+        const requiredFieldWraps = getRequiredFieldWraps(controllerFieldWrap);
+
+        requiredFieldWraps.forEach((fieldWrap) => {
+            const hasValue = typeof fieldHasValue === 'function'
+                ? Boolean(fieldHasValue(fieldWrap, context))
+                : hasVisibleInputValue(fieldWrap);
+
+            if (visibilityEnabled && !hasValue) {
+                hideField(fieldWrap, context);
+                return;
+            }
+
+            restoreField(fieldWrap, context);
+        });
+
+        return requiredFieldWraps;
+    };
+
+    apply();
+
+    addInputEventListener(formElement, apply, {
+        events,
+        delegate,
+    });
+
+    if (typeof window.jQuery === 'function') {
+        window.jQuery(formElement)
+            .off(`submit.${submitNamespace}`)
+            .on(`submit.${submitNamespace}`, function () {
+                apply();
+            });
+    }
+
+    return {
+        viewElement,
+        formElement,
+        apply,
+    };
+}
+
+/**
+ * Show/hide message based on radio button values.
+ * Supports three modes:
+ * 1. "all": All fields must match their value(s) to show message.
+ * 2. "any": Any field matches its value(s) to show message.
+ * 3. "map": Each field must match its specific value (field-value mapping).
+ * Accepts either positional arguments (for backward compatibility) or a single options object.
+ *
+ * @param {number|number[]|object|object} fieldIds - Field ID(s) or {fieldId: valueToMatch, ...} for "map" mode, or options object.
+ * @param {string|string[]|object} [valuesToMatch] - Value(s) to match, or {fieldId: valueToMatch, ...} for "map" mode.
+ * @param {string} [selector] - CSS selector for the message element to show/hide.
+ * @param {Function} [callback] - Optional callback function to execute on change.
+ * @param {Object} [params] - Optional parameters to pass to the callback.
+ * @param {'all'|'any'|'map'} [mode='any'] - Matching mode: "all", "any", or "map".
+ *
+ * @example
+ * // Show if both radios are "Yes"
+ * showHideMsgBasedOnRadios([123, 456], "Yes", "#msg", null, null, "all");
+ *
+ * // Show if either radio is "Yes"
+ * showHideMsgBasedOnRadios([123, 456], "Yes", "#msg", null, null, "any");
+ *
+ * // Show if field 123 is "Yes" and field 456 is "No"
+ * showHideMsgBasedOnRadios({123: "Yes", 456: "No"}, null, "#msg", null, null, "map");
+ *
+ * // New: Pass options object
+ * showHideMsgBasedOnRadios({
+ *   fieldIDs: [123, 456],
+ *   valuesToMatch: "Yes",
+ *   selector: "#msg",
+ *   callback: null,
+ *   params: null,
+ *   mode: "all"
+ * });
+ */
+function showHideMsgBasedOnRadios(fieldIds, valuesToMatch, selector, callback, params, mode = 'any') {
+    // Support options object as first param
+    let opts;
+    if (typeof fieldIds === 'object' && fieldIds !== null && (
+        fieldIds.hasOwnProperty('fieldIds') || fieldIds.hasOwnProperty('selector') || fieldIds.hasOwnProperty('mode')
+    )) {
+        opts = Object.assign({
+            fieldIds: null,
+            valuesToMatch: null,
+            selector: null,
+            callback: null,
+            params: null,
+            mode: 'any'
+        }, fieldIds);
+    } else {
+        opts = { fieldIds, valuesToMatch, selector, callback, params, mode };
+    }
+
+    let fieldIdArr, matchValuesArr;
+
+    // Enforce canonical parameter name 'fieldIds'. If legacy keys are used, error and exit.
+    if (opts.fieldIDs || opts.fieldID) {
+        console.error('[showHideMsgBasedOnRadios] Deprecated parameter "fieldIDs"/"fieldID" used; please pass "fieldIds" only.');
+        return;
+    }
+
+    let isMapMode = opts.mode === 'map' || (typeof opts.fieldIds === 'object' && !Array.isArray(opts.fieldIds));
+
+    // Validate required parameters
+    if (!opts.fieldIds) {
+        console.error('[showHideMsgBasedOnRadios] Missing required parameter "fieldIds". Example: showHideMsgBasedOnRadios([123], "Yes", "#msg")');
+        return;
+    }
+    if (!opts.selector) {
+        console.error('[showHideMsgBasedOnRadios] Missing required parameter "selector". Example: showHideMsgBasedOnRadios([123], "Yes", "#msg")');
+        return;
+    }
+
+    // Get the target message element
+    const messageElement = document.querySelector(opts.selector);
+    if (!messageElement) {
+        console.error(`Message element not found: ${opts.selector}`);
+        return;
+    }
+
+    // Handler for radio change
+    const handleRadioChange = () => {
+        let showMessage = false;
+
+        if (isMapMode) {
+            // "map" mode: fieldIds is an object {fieldId: valueToMatch, ...}
+            showMessage = Object.entries(opts.fieldIds).every(([fid, val]) => {
+                const checkedRadio = document.querySelector(`#kn-input-field_${fid} input[type="radio"]:checked`);
+                return checkedRadio && checkedRadio.value === val;
+            });
+        } else {
+            // "all"/"any" mode: fieldIds and valuesToMatch are arrays
+            fieldIdArr = Array.isArray(opts.fieldIds) ? opts.fieldIds : [opts.fieldIds];
+            matchValuesArr = Array.isArray(opts.valuesToMatch) ? opts.valuesToMatch : [opts.valuesToMatch];
+
+            const matches = fieldIdArr.map(fid => {
+                const checkedRadio = document.querySelector(`#kn-input-field_${fid} ${INPUT_RADIO_CHECKED_SELECTOR}`);
+                return checkedRadio && matchValuesArr.includes(checkedRadio.value);
+            });
+
+            if (opts.mode === 'all') {
+                showMessage = matches.every(Boolean);
+            } else { // "any" (default)
+                showMessage = matches.some(Boolean);
+            }
+        }
+
+        toggleMessage(showMessage, opts.selector);
+
+        if (opts.callback && typeof opts.callback === 'function') {
+            opts.callback(showMessage, opts.params);
+        }
+    };
+
+    // Attach listeners to all relevant radio buttons
+    if (isMapMode) {
+        Object.keys(opts.fieldIds).forEach(fid => {
+            const radios = document.querySelectorAll(`#kn-input-field_${fid} input[type="radio"]`);
+            radios.forEach(radio => {
+                addInputEventListener(radio, handleRadioChange, { runOnInit: true });
+            });
+        });
+    } else {
+        fieldIdArr = Array.isArray(opts.fieldIds) ? opts.fieldIds : [opts.fieldIds];
+        fieldIdArr.forEach(fid => {
+            const radios = document.querySelectorAll(`#kn-input-field_${fid} input[type="radio"]`);
+            radios.forEach(radio => {
+                addInputEventListener(radio, handleRadioChange, { runOnInit: true });
+            });
+        });
+    }
+}
+
+/**
+ * Display a notification on a specified element and return the notification element.
+ * @param {Object} options - Configuration options for the notification
+ * @param {HTMLElement|string} options.target - The element to attach the notification to (DOM element or selector)
+ * @param {array|string} options.message - Text of notification (can be a string or an array of strings)
+ * @param {string} [options.backgroundColor='#4CAF50'] - Background color of the notification
+ * @param {string} [options.className=''] - CSS classes to apply to the notification
+ * @param {number} [options.delay=2000] - Time in milliseconds before the notification disappears (0 for no auto-removal)
+ * @param {number} [options.fadeTime=500] - Time in milliseconds for fade transition
+ * @param {Object} [options.styles={}] - Additional CSS styles to apply to notification
+ * @param {Function} [options.onShow=null] - Callback function when notification is shown
+ * @param {Function} [options.onHide=null] - Callback function when notification is hidden
+ * @returns {HTMLElement} - The created notification element
+ */
+function showNotification(options) {
+    // Default options
+    const defaults = {
+        target: null,
+        message: '',
+        backgroundColor: '',
+        className: '',
+        delay: 2000,
+        fadeTime: 500,
+        styles: {},
+        onShow: null,
+        onHide: null
+    };
+
+    // Merge provided options with defaults
+    const settings = { ...defaults, ...options };
+
+    // Handle different input types for target
+    const targetElement = typeof settings.target === 'string'
+        ? document.querySelector(settings.target)
+        : settings.target;
+
+    if (!targetElement) {
+        console.error('Target element not found:', settings.target);
+        return null;
+    }
+
+    // Store the original z-index
+    const originalZIndex = getComputedStyle(targetElement).zIndex;
+
+    // Ensure target can be positioned properly
+    if (originalZIndex === 'auto' || originalZIndex === '0') {
+        targetElement.style.position = targetElement.style.position || 'relative';
+        targetElement.style.zIndex = '1';
+    }
+
+    // Create notification element
+    const notification = document.createElement('div');
+
+    const baseClass = 'custom-notification';
+    // Split className string(s) into individual class tokens
+    let customClasses = [];
+    if (Array.isArray(settings.className)) {
+        customClasses = settings.className.flatMap(cls => cls.split(' '));
+    } else if (typeof settings.className === 'string' && settings.className.trim()) {
+        customClasses = settings.className.trim().split(/\s+/);
+    }
+    notification.classList.add(baseClass, ...customClasses);
+
+    // set content and text styles
+    const textStyleKeys = ['color', 'fontWeight', 'fontSize', 'lineHeight', 'textAlign'];
+    const messages = Array.isArray(settings.message) ? settings.message : [settings.message];
+    messages.forEach(msg => {
+        const p = document.createElement('p');
+        p.innerHTML = msg;
+
+        textStyleKeys.forEach(key => {
+            if (settings.styles?.[key]) {
+                p.style[key] = settings.styles[key];
+            }
+        });
+        notification.appendChild(p);
+    });
+
+    // Set base styles
+    const baseStyles = {
+        backgroundColor: settings.backgroundColor,
+        opacity: '1',
+        transition: `opacity ${settings.fadeTime}ms ease`,
+    };
+
+    // Apply base styles
+    Object.assign(notification.style, baseStyles);
+
+    // Apply custom styles
+    Object.assign(notification.style, settings.styles);
+
+    // Append notification to target
+    targetElement.appendChild(notification);
+
+    // Call onShow callback if provided
+    if (typeof settings.onShow === 'function') {
+        settings.onShow(notification);
+    }
+
+    // Set timeout to fade out and remove notification
+    if (settings.delay > 0) {
+        setTimeout(() => {
+            notification.style.opacity = '0';
+
+            // Remove element after fade effect completes
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.parentNode.removeChild(notification);
+
+                    // Reset target z-index to original value if we changed it
+                    if (originalZIndex === 'auto' || originalZIndex === '0') {
+                        targetElement.style.zIndex = originalZIndex;
+                    }
+
+                    // Call onHide callback if provided
+                    if (typeof settings.onHide === 'function') {
+                        settings.onHide();
+                    }
+                }
+            }, settings.fadeTime);
+        }, settings.delay);
+    }
+
+    return notification;
+}
+
+/**
+ * Changes an input field to a range slider with labels and synchronizes values
+ * @param {string} viewId - The ID of the view containing the input fields
+ * @param {string|Element} sliderFieldSelector - Selector or element for the slider field
+ * @param {string|Element} resultFieldSelector - Selector or element for the result display field
+ * @param {object} attributes - Object with slider attributes
+ * @param {number} attributes.min - Minimum value for the slider
+ * @param {number} attributes.max - Maximum value for the slider
+ * @param {number} attributes.step - Step value for the slider
+ * @param {number} attributes.value - Initial value for the slider
+ * @param {string} [attributes.minLabel] - Label for minimum value (optional)
+ * @param {string} [attributes.maxLabel] - Label for maximum value (optional)
+ * @param {string} [attributes.class] - Class to add to slider field & class-result (optional)
+ */
+function changeToSlider(viewId, sliderFieldSelector, resultFieldSelector, attributes = {}) {
+    // Full selectors with viewId included
+    const fullSliderSelector = typeof sliderFieldSelector === 'string'
+        ? `#${viewId} ${sliderFieldSelector}`
+        : sliderFieldSelector;
+
+    const fullResultSelector = typeof resultFieldSelector === 'string'
+        ? `#${viewId} ${resultFieldSelector}`
+        : resultFieldSelector;
+
+    // Get elements from selectors or use provided elements
+    const sliderField = typeof fullSliderSelector === 'string'
+        ? document.querySelector(fullSliderSelector)
+        : fullSliderSelector;
+
+    const resultField = typeof fullResultSelector === 'string'
+        ? document.querySelector(fullResultSelector)
+        : fullResultSelector;
+
+    if (!sliderField || !resultField) {
+        console.error(`Slider or result field not found in view ${viewId}`);
+        return;
+    }
+
+    const sliderFieldId = sliderField.id;
+    const resultFieldId = resultField.id;
+
+    // Extract labels and optional class, then remove them from the attributes object
+    const minLabel = attributes.minLabel || '';
+    const maxLabel = attributes.maxLabel || '';
+    const extraClass = attributes.class || '';                       // NEW
+
+    // Create a copy without label and class properties so they are not fed into setAttribute
+    const sliderAttributes = { ...attributes };
+    delete sliderAttributes.minLabel;
+    delete sliderAttributes.maxLabel;
+    delete sliderAttributes.class;                                   // NEW
+
+    // Convert input to range slider
+    sliderField.classList.remove('input');
+    sliderField.type = 'range';
+    sliderField.classList.add('slider');
+
+    // Add optional class(es) to slider and mirrored “-result” class to the result field
+    if (extraClass) {                                                // NEW
+        extraClass.split(/\s+/).filter(Boolean).forEach(cls => {
+            document.getElementById(`kn-input-${sliderFieldId}`).classList.add(cls);
+            document.getElementById(`kn-input-${resultFieldId}`).classList.add(`${cls}-result`);
+        });
+    }
+
+    // Set remaining attributes on slider
+    for (const [key, value] of Object.entries(sliderAttributes)) {
+        sliderField.setAttribute(key, value);
+    }
+
+    // Add event listener for slider input
+    sliderField.addEventListener('input', () => {
+        resultField.value = sliderField.value;
+    });
+
+    // Add event listener for result field input
+    resultField.addEventListener('keyup', () => {
+        // Validate if input is in range before setting slider value
+        const numValue = parseFloat(resultField.value);
+        const min = parseFloat(sliderField.min || 0);
+        const max = parseFloat(sliderField.max || 100);
+
+        if (!isNaN(numValue) && numValue >= min && numValue <= max) {
+            sliderField.value = numValue;
+        }
+    });
+
+    // Trigger initial sync
+    resultField.value = sliderField.value;
+
+    // Get the parent control element
+    if (!sliderFieldId) {
+        return; // Can't find control without ID
+    }
+
+    const controlDiv = document.querySelector(`#${viewId} #kn-input-${sliderFieldId} div.control`);
+    if (!controlDiv) {
+        return; // Can't add labels without container
+    }
+
+    // Add min label if provided
+    if (minLabel) {
+        const minLabelElem = document.createElement('label');
+        minLabelElem.className = 'slideLabel';
+        minLabelElem.textContent = minLabel;
+        minLabelElem.style.left = '1px';
+        controlDiv.appendChild(minLabelElem);
+    }
+
+    // Add max label if provided
+    if (maxLabel) {
+        const maxLabelElem = document.createElement('label');
+        maxLabelElem.className = 'slideLabel';
+        maxLabelElem.textContent = maxLabel;
+        maxLabelElem.style.right = '2px';
+        controlDiv.appendChild(maxLabelElem);
+    }
+}
+
+/**
+ * Adds floating scroll-to-top and close controls to the active Knack modal.
+ * Repeated modal render events reuse the existing controls rather than adding duplicates.
+ * @return {void}
+ */
+function addModalNavigationButtons() {
+    const modalBg = Array.from(document.querySelectorAll('[id^="kn-modal-bg-"]')).pop();
+    if (!modalBg || modalBg.querySelector(':scope > .modal-control-buttons')) return;
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'modal-control-buttons';
+    buttonContainer.setAttribute('role', 'group');
+    buttonContainer.setAttribute('aria-label', 'Modal controls');
+
+    const scrollToTopBtn = createButton({
+        html: '<i class="fa fa-arrow-up"></i>',
+        className: 'modalButton success-bkgd scroll-to-top-btn',
+        attributes: {
+            'aria-label': 'Scroll to top of modal',
+            title: 'Scroll to top'
+        },
+        onClick: function() {
+            modalBg.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    });
+
+    const closeModalBtn = createButton({
+        html: '<i class="fa fa-times"></i>',
+        className: 'modalButton warning-bkgd close-modal-btn',
+        attributes: {
+            'aria-label': 'Close modal',
+            title: 'Close'
+        },
+        onClick: function() {
+            modalBg.querySelector('button.close-modal, .close-modal')?.click();
+        }
+    });
+
+    buttonContainer.appendChild(scrollToTopBtn);
+    buttonContainer.appendChild(closeModalBtn);
+    modalBg.appendChild(buttonContainer);
+
+    /** Positions the controls beside the modal without allowing viewport overflow. */
+    const updatePosition = () => {
+        if (!modalBg.isConnected) {
+            window.removeEventListener('resize', updatePosition);
+            window.visualViewport?.removeEventListener('resize', updatePosition);
+            return;
+        }
+
+        const modalCard = modalBg.querySelector('.modal-card, .modal-card-body');
+        if (!modalCard) return;
+
+        const viewport = window.visualViewport;
+        const viewportLeft = viewport?.offsetLeft ?? 0;
+        const viewportWidth = viewport?.width ?? window.innerWidth;
+        const viewportEdge = 12;
+        const modalGap = 8;
+        const preferredLeft = modalCard.getBoundingClientRect().right + modalGap;
+        const minimumLeft = viewportLeft + viewportEdge;
+        const maximumLeft = viewportLeft + viewportWidth - buttonContainer.offsetWidth - viewportEdge;
+        buttonContainer.style.left = `${Math.max(minimumLeft, Math.min(preferredLeft, maximumLeft))}px`;
+    };
+
+    /** Updates the controls when the modal crosses the scroll threshold. */
+    const updateVisibility = () => {
+        buttonContainer.classList.toggle('is-visible', modalBg.scrollTop > 100);
+        updatePosition();
+    };
+
+    modalBg.addEventListener('scroll', updateVisibility, { passive: true });
+    window.addEventListener('resize', updatePosition, { passive: true });
+    window.visualViewport?.addEventListener('resize', updatePosition, { passive: true });
+    updateVisibility();
+}
+
+// Supported office, PDF, and image extensions
+const OFFICE_EXTENSIONS = [
+    "docx", "odt", "rtf", "docm", "doc", "dotx", "dotm", "dot",
+    "xlsx", "xls", "ppts", "ppt", "pptx"
+];
+
+const IMAGE_EXTENSIONS = [
+    "png", "jpeg", "jpg", "gif", "bmp", "svg", "webp", "tiff", "ico"
+];
+
+/**
+ * Inserts or replaces asset/file links in a view.
+ * - For .ca-link/.ca-link-child: sets href using ID or assetURLs.
+ * - For .ca-asset/.kn-view-asset: opens Office files in Office Online, PDF in PDF.js, others direct download.
+ * - For images: uses Knack's default behaviour (no viewer link).
+ * @param {string} viewId - The ID of the view containing the links/assets.
+ * @example
+ * updateLinksAndAssets('view_1234');
+ */
+function updateLinksAndAssets(viewId) {
+    const currentURL = sanitiseURL(window.location.href);
+    const viewElement = document.getElementById(viewId);
+    if (!viewElement) {
+        console.error(`View element with ID ${viewId} not found`);
+        return;
+    }
+
+    /**
+     * Returns asset info for a given link or asset element.
+     * @param {HTMLElement} el - The link or asset element.
+     * @param {boolean} isKnViewAsset - True if .kn-view-asset, false if .ca-link.
+     * @returns {object} { assetId, fileName, extension, assetUrl }
+     */
+    function getAssetInfoFromElement(el, isKnViewAsset = false) {
+        let assetId, fileName;
+        if (isKnViewAsset) {
+            assetId = el.getAttribute('data-asset-id');
+            fileName = el.getAttribute('data-file-name');
+        } else {
+            const linkID = el.id;
+            if (!assetURLs[linkID]) return {};
+            const fileParts = assetURLs[linkID].split('/');
+            assetId = fileParts[0];
+            fileName = fileParts[fileParts.length - 1];
+        }
+        return buildKnackAssetInfo(assetId, fileName);
+    }
+
+    /**
+     * Sets the correct href/target/download for a link or asset element.
+     * @param {HTMLElement} el - The link or asset element.
+     * @param {object} info - Asset info object.
+     * @param {boolean} isKnViewAsset - True if .kn-view-asset, false if .ca-link.
+     */
+    function setFileViewerLink(el, info, isKnViewAsset = false) {
+        if (!info.extension) return;
+        if (IMAGE_EXTENSIONS.includes(info.extension)) {
+            // Use Knack's default behaviour for images
+            el.setAttribute('href', `${sanitiseURL(window.location.href)}kn-asset/1542-3553-3690-${info.assetId}/${info.fileName}`);
+        } else if (OFFICE_EXTENSIONS.includes(info.extension)) {
+            el.setAttribute('href', info.assetUrl);
+            el.setAttribute('target', '_blank');
+            el.setAttribute('rel', 'noopener noreferrer');
+        } else if (info.extension === "pdf") {
+            el.setAttribute('href', info.assetUrl);
+            el.setAttribute('target', '_blank');
+            el.setAttribute('rel', 'noopener noreferrer');
+        } else {
+            el.setAttribute('href', info.assetUrl);
+            el.setAttribute('download', info.fileName);
+        }
+        if (isKnViewAsset) {
+            el.textContent = info.fileName;
+        }
+    }
+
+    // Unified handler for both .ca-link/.ca-link-child and .kn-view-asset
+    function processAssetElement(el, isKnViewAsset = false) {
+        const info = getAssetInfoFromElement(el, isKnViewAsset);
+        if (!info.extension) return;
+        setFileViewerLink(el, info, isKnViewAsset);
+    }
+
+    // Handle .ca-link and .ca-link-child
+    viewElement.querySelectorAll('.ca-link, .ca-link-child, .ca-link-user').forEach(linkEle => {
+        const linkID = linkEle.id;
+        let fullFormURL = currentURL;
+
+        if (!linkID) {
+            console.error(`%c Error: ${linkEle.textContent} - Link must have ID to define URL `, 'color: red; font-weight: bold;');
+            return;
+        }
+
+        const isAsset = linkEle.classList.contains('ca-asset');
+        const formName = isAsset ? assetURLs[linkID] : linkID;
+
+        if (linkEle.classList.contains('ca-link-child')) {
+            fullFormURL += `${formName}/${getRecordID()}`;
+        } else if (linkEle.classList.contains('ca-link-user')) {
+            fullFormURL += `${formName}/${Knack.getUserAttributes()?.id}`;
+        } else {
+            fullFormURL += formName;
+        }
+
+        if (isAsset) {
+            processAssetElement(linkEle, false);
+        } else {
+            if (linkEle.getAttribute('target') === '_blank') {
+                linkEle.classList.add('extLink');
+            }
+            linkEle.setAttribute('href', fullFormURL);
+        }
+    });
+
+    // Handle .kn-view-asset (replace with viewer links)
+    viewElement.querySelectorAll('.kn-view-asset').forEach(assetEl => {
+        const info = getAssetInfoFromElement(assetEl, true);
+        if (!info.extension) return;
+        if (IMAGE_EXTENSIONS.includes(info.extension)) return; // Use Knack's default behaviour for images
+
+        const a = document.createElement('a');
+        a.target = "_blank";
+        // Preserve asset identity so other features (e.g. initFileCarousel) can still identify this cell's file.
+        a.setAttribute('data-asset-id', info.assetId);
+        a.setAttribute('data-file-name', info.fileName);
+        setFileViewerLink(a, info, true);
+        assetEl.replaceWith(a);
+    });
+}
+
+/**
+ * Adds KTL-style copy-to-clipboard behaviour for a view while excluding grid headers.
+ * Use the `_copybody` view keyword to enable it. The keyword honours the same
+ * role options as KTL's `_copy` keyword.
+ *
+ * @param {{key?: string}} view - Knack view metadata.
+ * @param {Object} keywords - Parsed KTL keywords for the view.
+ * @returns {void}
+ */
+function copyViewBodyToClipboard(view, keywords) {
+    const keywordName = '_copybody';
+    const viewId = knackNavigator.normalizeViewId(view?.key);
+    if (!viewId || !keywords?.[keywordName]) return;
+
+    const viewType = ktl.views.getViewType(viewId);
+    const selectors = {
+        table: `#${viewId} .kn-table-wrapper tbody`,
+        search: `#${viewId} .kn-table-wrapper tbody`,
+        details: `#${viewId}.kn-details section`,
+        list: `#${viewId}.kn-list .columns`
+    };
+    const contentSelector = selectors[viewType];
+    if (!contentSelector) {
+        console.log('copyViewBodyToClipboard error. Unsupported view type:', viewId);
+        return;
+    }
+
+    const buttonSelector = `#${viewId} .knackCopyBodyButton`;
+    let button = document.querySelector(buttonSelector);
+
+    if (!button) {
+        const keywordOptions = keywords[keywordName][0]?.options;
+        if (keywordOptions && !ktl.core.hasRoleAccess(keywordOptions)) return;
+
+        button = document.createElement('button');
+        button.className = 'kn-button knackCopyBodyButton';
+        button.type = 'button';
+        button.textContent = 'Copy to Clipboard';
+        Object.assign(button.style, {
+            marginBottom: '10px',
+            width: 'fit-content'
+        });
+
+        let buttonContainer = null;
+        if (viewType === 'table' || viewType === 'search') {
+            buttonContainer = document.querySelector(`#${viewId} .table-keyword-search`);
+            if (buttonContainer) {
+                buttonContainer.style.display = 'inline-flex';
+                button.style.marginLeft = '10%';
+                buttonContainer.appendChild(button);
+            }
+        }
+
+        if (!buttonContainer) {
+            buttonContainer = document.querySelector(
+                `#${viewId}.kn-table .kn-records-nav, #${viewId} .kn-list-content, #${viewId} .kn-details section`
+            );
+            if (!buttonContainer) return;
+
+            buttonContainer.style.flexDirection = 'column';
+            button.style.marginLeft = '8px';
+            buttonContainer.prepend(button);
+        }
+
+        button.addEventListener('click', function () {
+            const content = document.querySelector(contentSelector);
+            if (!content) {
+                ktl.core.timedPopup('Unable to copy', 'error', 2000);
+                return;
+            }
+
+            ktl.core.selectElementContents(content);
+            try {
+                const successful = document.execCommand('copy');
+                const message = successful
+                    ? `${viewType.charAt(0).toUpperCase()}${viewType.slice(1)} copied to clipboard`
+                    : 'Error copying to clipboard';
+                ktl.core.timedPopup(message, successful ? 'success' : 'error', 1000);
+            } catch (error) {
+                ktl.core.timedPopup('Unable to copy', 'error', 2000);
+            } finally {
+                ktl.core.selectElementContents();
+            }
+        });
+    }
+
+    const content = document.querySelector(contentSelector);
+    const hasData = Boolean(content) && !content.querySelector('.kn-tr-nodata');
+    button.disabled = !hasData;
+}
+
+function idleWatchDogTimeout() {
+    if (document.querySelector('.kn-login')) return;
+
+    const ID_PREFIX = 'ktl-idle-';
+    const overlayId = ID_PREFIX + 'overlay';
+    const dialogId = ID_PREFIX + 'dialog';
+    const logoutBtnId = ID_PREFIX + 'logout-btn';
+    const stayBtnId = ID_PREFIX + 'stay-btn';
+
+    // Remove any existing overlay/dialog to prevent duplicates
+    document.getElementById(overlayId)?.remove();
+    document.getElementById(dialogId)?.remove();
+
+    // Create the overlay and append it to the body
+    const overlay = document.createElement('div');
+    overlay.id = overlayId;
+    Object.assign(overlay.style, {
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'black',
+        opacity: 0.8,
+        zIndex: 2010, // higher z-index to avoid being covered
+        display: 'block'
+    });
+    document.body.appendChild(overlay);
+
+    // Create the dialog element
+    const dialog = document.createElement('div');
+    dialog.id = dialogId;
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', ID_PREFIX + 'title');
+    dialog.setAttribute('tabindex', '-1');
+    dialog.innerHTML = `
+        <h2 id="${ID_PREFIX}title">Knack Logout</h2>
+        <p>You are about to be logged out. Do you wish to remain logged in?</p>
+        <div class="ktl-dialog-buttons">
+            <button id="${logoutBtnId}" class="kn-button is-secondary">Logout</button>
+            <button id="${stayBtnId}" class="kn-button is-secondary">Stay Logged In</button>
+        </div>
+    `;
+    document.body.appendChild(dialog);
+
+    // Save the element that had focus before opening the dialog
+    const previousActiveElement = document.activeElement;
+    // Move focus to the dialog for accessibility
+    dialog.focus();
+
+    // Internal state to ensure logout is idempotent
+    let autoLogoutTimeout;
+    let logoutInvoked = false;
+
+    function cleanupUI() {
+        overlay.remove();
+        dialog.remove();
+        window.removeEventListener('resize', setDialogWidth);
+        if (previousActiveElement && typeof previousActiveElement.focus === 'function') {
+            previousActiveElement.focus();
+        }
+    }
+
+    function ensureLoggedOutFallback() {
+        // If we are not showing a login view after a short delay, force a reload
+        setTimeout(() => {
+            if (!document.querySelector('.kn-login')) {
+                try {
+                    Knack.user.destroy(); // try again
+                } catch (e) {
+                    // last resort: navigate to origin
+                    try { window.location.reload(); } catch (e) {}
+                }
+            }
+        }, 2000);
+    }
+
+    function performLogout() {
+        if (logoutInvoked) return;
+        logoutInvoked = true;
+        clearTimeout(autoLogoutTimeout);
+        cleanupUI();
+        try {
+            Knack.user.destroy();
+        } catch (e) {
+            console.warn('Error calling Knack.user.destroy()', e);
+        }
+        ensureLoggedOutFallback();
+    }
+
+    // Button event listeners (use addEventListener so we don't clobber any other handlers)
+    document.getElementById(logoutBtnId).addEventListener('click', performLogout);
+    document.getElementById(stayBtnId).addEventListener('click', function () {
+        cleanupUI();
+        try { ktl.scenes.resetIdleWatchdog(); } catch (e) { /* ignore */ }
+    });
+
+    // Responsive dialog width
+    function setDialogWidth() {
+        dialog.style.width = window.innerWidth <= 768 ? '70%' : '25%';
+    }
+
+    setDialogWidth();
+    window.addEventListener('resize', setDialogWidth);
+
+    // Auto logout after a short confirmation period (fixed 1 minute)
+    // Note: `ktl.scenes.getCfg().idleWatchDogDelay` controls the initial inactivity
+    // delay that triggers this dialog. This timeout is only the dialog confirmation
+    // window and must remain short (1 minute).
+    const autoLogoutMinutes = 1;
+    // Auto-logout simply triggers the idempotent performLogout(); the fallback
+    // will ensure the user is returned to the login screen if needed.
+    autoLogoutTimeout = setTimeout(performLogout, Math.max(0, autoLogoutMinutes) * 60 * 1000);
+}
+
+/**
+ * Show a generic confirmation dialog with app-provided content and styling hooks.
+ * @param {Object} [options={}] Dialog options.
+ * @param {string} [options.title='Confirmation'] Dialog title.
+ * @param {string|string[]} [options.message='Are you sure you want to continue?'] Message paragraph(s). HTML is allowed.
+ * @param {string} [options.contentHtml=''] Additional HTML appended after the message block.
+ * @param {Array<{ text: string, className?: string, value?: string, action?: Function, closeOnClick?: boolean }>} [options.buttons=[]] Button definitions.
+ * @param {Object} [options.styling={}] Styling hooks.
+ * @param {string} [options.styling.overlayClass=''] Overlay class name.
+ * @param {string} [options.styling.containerClass=''] Optional inner container class name.
+ * @param {string} [options.styling.dialogClass=''] Dialog class name.
+ * @param {string} [options.styling.titleClass=''] Title class name.
+ * @param {string} [options.styling.messageClass=''] Message class name.
+ * @param {string} [options.styling.contentClass=''] Content wrapper class name.
+ * @param {string} [options.styling.buttonsClass=''] Buttons wrapper class name.
+ * @param {boolean} [options.closeOnOverlay=true] Whether clicking the overlay should close the dialog.
+ * @param {boolean} [options.closeOnEscape=true] Whether pressing Escape should close the dialog.
+ * @returns {Promise<{ value: string, button: Object }|null>} Selected button result, or null when dismissed.
+ */
+function showConfirmationDialog(options = {}) {
+    const defaultButtons = [
+        { text: 'Cancel', className: 'kn-button is-secondary', value: 'cancel' },
+        { text: 'OK', className: 'kn-button is-primary', value: 'confirm' },
+    ];
+    const config = {
+        title: knackValueResolver.toStringSafe(options?.title) || 'Confirmation',
+        message: options?.message ?? 'Are you sure you want to continue?',
+        contentHtml: knackValueResolver.toStringSafe(options?.contentHtml),
+        buttons: Array.isArray(options?.buttons) && options.buttons.length ? options.buttons : defaultButtons,
+        styling: {
+            overlayClass: knackValueResolver.toStringSafe(options?.styling?.overlayClass),
+            containerClass: knackValueResolver.toStringSafe(options?.styling?.containerClass),
+            dialogClass: knackValueResolver.toStringSafe(options?.styling?.dialogClass),
+            titleClass: knackValueResolver.toStringSafe(options?.styling?.titleClass),
+            messageClass: knackValueResolver.toStringSafe(options?.styling?.messageClass),
+            contentClass: knackValueResolver.toStringSafe(options?.styling?.contentClass),
+            buttonsClass: knackValueResolver.toStringSafe(options?.styling?.buttonsClass),
+        },
+        closeOnOverlay: options?.closeOnOverlay !== false,
+        closeOnEscape: options?.closeOnEscape !== false,
+    };
+
+    return new Promise(function (resolve) {
+        const titleId = `knack-confirm-title-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const overlay = document.createElement('div');
+        const dialog = document.createElement('div');
+        const titleEl = document.createElement('h2');
+        const messages = (Array.isArray(config.message) ? config.message : [config.message]).filter(function (messagePart) {
+            return messagePart !== null && messagePart !== undefined && String(messagePart).trim() !== '';
+        });
+        const buttonsWrap = document.createElement('div');
+        const previousActiveElement = document.activeElement;
+        let isClosed = false;
+        const containerClass = config.styling.containerClass;
+
+        overlay.className = config.styling.overlayClass;
+        dialog.className = config.styling.dialogClass;
+        titleEl.className = config.styling.titleClass;
+        titleEl.id = titleId;
+        titleEl.textContent = config.title;
+
+        if (!config.styling.overlayClass) {
+            Object.assign(overlay.style, {
+                position: 'fixed',
+                inset: '0',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '24px',
+                backgroundColor: 'rgba(15, 23, 42, 0.55)',
+                zIndex: '2010',
+                boxSizing: 'border-box',
+            });
+        }
+
+        if (!containerClass) {
+            Object.assign(dialog.style, {
+                width: 'min(100%, 520px)',
+                maxHeight: 'calc(100vh - 48px)',
+                overflowY: 'auto',
+                background: '#ffffff',
+                color: '#1f2937',
+                borderRadius: '12px',
+                boxShadow: '0 20px 55px rgba(15, 23, 42, 0.28)',
+                padding: '24px',
+                boxSizing: 'border-box',
+            });
+        }
+
+        if (!config.styling.titleClass) {
+            Object.assign(titleEl.style, {
+                margin: '0 0 12px',
+                fontSize: '20px',
+                lineHeight: '1.3',
+            });
+        }
+
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-labelledby', titleId);
+        dialog.setAttribute('tabindex', '-1');
+        dialog.appendChild(titleEl);
+
+        messages.forEach(function (messagePart) {
+            const paragraph = document.createElement('p');
+            paragraph.className = config.styling.messageClass;
+            if (!config.styling.messageClass) {
+                Object.assign(paragraph.style, {
+                    margin: '0 0 12px',
+                    lineHeight: '1.5',
+                });
+            }
+            paragraph.innerHTML = String(messagePart);
+            dialog.appendChild(paragraph);
+        });
+
+        if (config.contentHtml) {
+            const contentEl = document.createElement('div');
+            contentEl.className = config.styling.contentClass;
+            if (!config.styling.contentClass) {
+                contentEl.style.marginBottom = '16px';
+            }
+            contentEl.innerHTML = config.contentHtml;
+            dialog.appendChild(contentEl);
+        }
+
+        buttonsWrap.className = config.styling.buttonsClass;
+        if (!config.styling.buttonsClass) {
+            Object.assign(buttonsWrap.style, {
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '8px',
+                flexWrap: 'wrap',
+                marginTop: '20px',
+            });
+        }
+        dialog.appendChild(buttonsWrap);
+
+        function cleanup(result) {
+            if (isClosed) {
+                return;
+            }
+
+            isClosed = true;
+            document.removeEventListener('keydown', handleKeydown);
+            overlay.remove();
+            if (previousActiveElement && typeof previousActiveElement.focus === 'function') {
+                previousActiveElement.focus();
+            }
+            resolve(result);
+        }
+
+        function handleKeydown(event) {
+            if (config.closeOnEscape && event.key === 'Escape') {
+                event.preventDefault();
+                cleanup(null);
+            }
+        }
+
+        config.buttons.forEach(function (buttonConfig, index) {
+            const buttonEl = document.createElement('button');
+            buttonEl.type = 'button';
+            buttonEl.className = knackValueResolver.toStringSafe(buttonConfig?.className || buttonConfig?.class) || 'kn-button';
+            buttonEl.textContent = knackValueResolver.toStringSafe(buttonConfig?.text) || `Option ${index + 1}`;
+            buttonEl.addEventListener('click', function (event) {
+                event.preventDefault();
+                const result = {
+                    value: knackValueResolver.toStringSafe(buttonConfig?.value) || knackValueResolver.toStringSafe(buttonConfig?.text),
+                    button: buttonConfig,
+                };
+
+                if (typeof buttonConfig?.action === 'function') {
+                    buttonConfig.action(result);
+                }
+
+                if (buttonConfig?.closeOnClick === false) {
+                    return;
+                }
+
+                cleanup(result);
+            });
+            buttonsWrap.appendChild(buttonEl);
+        });
+
+        if (config.closeOnOverlay) {
+            overlay.addEventListener('click', function (event) {
+                if (event.target === overlay) {
+                    cleanup(null);
+                }
+            });
+        }
+
+        document.addEventListener('keydown', handleKeydown);
+        if (containerClass) {
+            const container = document.createElement('div');
+            container.className = containerClass;
+            container.appendChild(dialog);
+            overlay.appendChild(container);
+        } else {
+            overlay.appendChild(dialog);
+        }
+        document.body.appendChild(overlay);
+        dialog.focus();
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Section: multi-form
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Multi-form coordinator ported as-is (jQuery only for Knack events). Analysis C17.
+
+/**
+ * Configuration constants for multi-form submission
+ */
+const MULTI_FORM_CONFIG = {
+    TIMEOUTS: {
+        BUTTON_WAIT: 10000,
+        FORM_SUBMIT: 30000,
+        PRE_SUBMIT_DELAY: 200,
+        MODAL_CLOSE_DELAY: 200,
+        OUTCOME_POLL_INTERVAL: 500
+    },
+    SELECTORS: {
+        SUBMIT_BUTTON: 'button[type=submit]',
+        FORM: 'form',
+        SUCCESS_MESSAGE: '.kn-message.success',
+        ERROR_MESSAGE: '.kn-message.is-error',
+        MODAL: '.kn-modal',
+        MODAL_CLOSE: 'button.close-modal'
+    }
+};
+
+/**
+ * Class for managing coordinated submission of multiple Knack forms.
+ * Handles a primary manual form and one or more auto-submit forms that must complete first.
+ *
+ * Features:
+ * - Sequential auto-form submission (not parallel) to handle validation properly
+ * - Validation using ktlNotValid_* class pattern before submission
+ * - Tracks successfully submitted forms to prevent re-submission
+ * - On validation failure: stops process and leaves failing form enabled for user to edit
+ * - User can fix errors and re-submit - already-submitted forms are skipped
+ *
+ * @example
+ * // Basic usage
+ * const coordinator = new MultiFormSubmissionCoordinator({
+ *     manualSubmitViewId: 'view_123',
+ *     autoSubmitViewIds: ['view_456', 'view_789']
+ * });
+ * coordinator.initialize('view_123'); // Call on form render
+ *
+ * @example
+ * // With modal close and custom config
+ * const coordinator = new MultiFormSubmissionCoordinator({
+ *     manualSubmitViewId: 'view_123',
+ *     autoSubmitViewIds: ['view_456'],
+ *     closeModalAfterSubmit: ({ autoSubmitViewIds }) => autoSubmitViewIds.length > 0,
+ *     onAutoFormsComplete: (outcomes) => {
+ *         console.log('Auto forms completed:', outcomes);
+ *     }
+ * });
+ */
+class MultiFormSubmissionCoordinator {
+    /**
+     * @param {Object} config - Configuration object
+     * @param {string} config.manualSubmitViewId - View ID of the manual (primary) form
+     * @param {string[]} config.autoSubmitViewIds - Array of view IDs for auto-submit forms
+     * @param {boolean|Function} [config.closeModalAfterSubmit=false] - Close modal after successful submission, or resolve that decision from submission context
+     * @param {Function} [config.onAutoFormsComplete=null] - Callback after auto forms complete
+     * @param {Function} [config.onBeforeSubmit=null] - Callback before the coordinated submit starts
+     * @param {Function} [config.onSubmissionComplete=null] - Callback after the manual form submits successfully
+     * @param {Function} [config.onSubmissionError=null] - Callback when the coordinated submit fails
+     * @param {Function} [config.onSubmissionSettled=null] - Callback after the coordinated submit finishes, success or failure
+     * @param {Object} [config.timeouts] - Override default timeout values
+     * @param {Object} [config.selectors] - Override default selector strings
+     */
+    constructor(config) {
+        this.manualSubmitViewId = config.manualSubmitViewId;
+        this.autoSubmitViewIds = config.autoSubmitViewIds || [];
+        this.closeModalAfterSubmit = config.closeModalAfterSubmit ?? false;
+        this.onAutoFormsComplete = config.onAutoFormsComplete || null;
+        this.onBeforeSubmit = config.onBeforeSubmit || null;
+        this.onSubmissionComplete = config.onSubmissionComplete || null;
+        this.onSubmissionError = config.onSubmissionError || null;
+        this.onSubmissionSettled = config.onSubmissionSettled || null;
+
+        this.timeouts = { ...MULTI_FORM_CONFIG.TIMEOUTS, ...(config.timeouts || {}) };
+        this.selectors = { ...MULTI_FORM_CONFIG.SELECTORS, ...(config.selectors || {}) };
+
+        /**
+         * Tracks event namespaces for cleanup. Maps event keys to their jQuery namespaces.
+         * Example: Map { 'render-view_123' => 'knack-view-render.view_123.mfc-abc123' }
+         * Used by destroy() to unbind all jQuery events and prevent memory leaks.
+         */
+        this.eventHandlers = new Map();
+        this.isInitialized = false;
+
+        // Track successfully submitted forms to avoid re-submission
+        this.submittedForms = new Set();
+
+        // Unique instance ID for event namespacing to prevent conflicts between multiple coordinators
+        this.instanceId = `mfc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    /**
+     * Initialize the coordinator for a specific rendered view
+     * @param {string} renderedViewId - The view ID that just rendered
+     */
+    initialize(renderedViewId) {
+        if (renderedViewId === this.manualSubmitViewId) {
+            this._attachManualFormHandler();
+        } else if (this.autoSubmitViewIds.includes(renderedViewId)) {
+            this._waitForManualForm();
+        }
+    }
+
+    /**
+     * Return all view ids managed by this coordinator.
+     * @returns {string[]}
+     */
+    getManagedViewIds() {
+        return [this.manualSubmitViewId, ...this.autoSubmitViewIds].filter(Boolean);
+    }
+
+    /**
+     * Determine whether a view id is managed by this coordinator.
+     * @param {string} viewId
+     * @returns {boolean}
+     */
+    isManagedView(viewId) {
+        return this.getManagedViewIds().includes(viewId);
+    }
+
+    /**
+     * Return the currently participating auto-submit view ids.
+     * Hidden or missing auto forms are treated as inactive for this submission.
+     * @returns {string[]}
+     */
+    getActiveAutoSubmitViewIds() {
+        return this.autoSubmitViewIds.filter((viewId) => this._isAutoSubmitViewParticipating(viewId));
+    }
+
+    /**
+     * Generate unique event namespace for jQuery events
+     * @private
+     * @param {string} eventName - Base event name (e.g., 'knack-view-render')
+     * @param {string} viewId - View ID to namespace
+     * @returns {string} Namespaced event string
+     */
+    _getEventNamespace(eventName, viewId) {
+        return `${eventName}.${viewId}.${this.instanceId}`;
+    }
+
+    /**
+     * Determine whether one configured auto-submit view is currently participating.
+     * @private
+     * @param {string} viewId
+     * @returns {boolean}
+     */
+    _isAutoSubmitViewParticipating(viewId) {
+        const viewElement = document.getElementById(viewId);
+        if (!(viewElement instanceof HTMLElement)) return false;
+
+        const computedStyle = window.getComputedStyle(viewElement);
+        if (viewElement.hidden || computedStyle.display === 'none' || computedStyle.visibility === 'hidden') {
+            return false;
+        }
+
+        return !!viewElement.querySelector(this.selectors.FORM);
+    }
+
+    /**
+     * Build the current submission context for callbacks and modal-close policy.
+     * @private
+     * @param {Object} [contextOverrides={}]
+     * @returns {Object}
+     */
+    _createSubmissionContext(contextOverrides = {}) {
+        const activeAutoSubmitViewIds = this.getActiveAutoSubmitViewIds();
+        return {
+            manualSubmitViewId: this.manualSubmitViewId,
+            autoSubmitViewIds: [...this.autoSubmitViewIds],
+            activeAutoSubmitViewIds,
+            hasAutoSubmitForms: this.autoSubmitViewIds.length > 0,
+            hasActiveAutoSubmitForms: activeAutoSubmitViewIds.length > 0,
+            managedViewIds: this.getManagedViewIds(),
+            submittedViewId: this.manualSubmitViewId,
+            coordinator: this,
+            ...contextOverrides,
+        };
+    }
+
+    /**
+     * Check if error is a validation error (not unexpected error)
+     * @private
+     * @param {Error} error - Error to check
+     * @returns {boolean} True if validation error
+     */
+    _isValidationError(error) {
+        return error.message.includes('Form validation failed');
+    }
+
+    /**
+     * Wait for manual form to be available, then attach handler
+     * @private
+     */
+    async _waitForManualForm() {
+        try {
+            await waitSelector({
+                selector: `#${this.manualSubmitViewId} ${this.selectors.SUBMIT_BUTTON}`,
+                timeout: this.timeouts.BUTTON_WAIT
+            });
+            this._attachManualFormHandler();
+        } catch (err) {
+            errorHandler.handleError(err, {
+                manualSubmitViewId: this.manualSubmitViewId,
+                autoSubmitViewIds: this.autoSubmitViewIds
+            }, 'MultiFormCoordinator:WaitForManualForm');
+        }
+    }
+
+    /**
+     * Attach submit handler to manual form
+     * @private
+     */
+    _attachManualFormHandler() {
+        if (this.isInitialized) return;
+
+        this._hideAutoSubmitButtons();
+
+        const manualView = document.getElementById(this.manualSubmitViewId);
+        if (!manualView) {
+            console.error(`[MultiFormCoordinator] Manual submit view "${this.manualSubmitViewId}" not found`);
+            errorHandler.handleError(
+                new Error(`Manual submit view "${this.manualSubmitViewId}" not found`),
+                { manualSubmitViewId: this.manualSubmitViewId },
+                'MultiFormCoordinator'
+            );
+            return;
+        }
+
+        const manualForm = manualView.querySelector(this.selectors.FORM);
+        const manualSubmitBtn = manualView.querySelector(this.selectors.SUBMIT_BUTTON);
+
+        if (!manualForm || !manualSubmitBtn) {
+            console.error(`[MultiFormCoordinator] Form or submit button not found in view "${this.manualSubmitViewId}"`);
+            errorHandler.handleError(
+                new Error(`Form or submit button not found in view "${this.manualSubmitViewId}"`),
+                {
+                    manualSubmitViewId: this.manualSubmitViewId,
+                    formExists: !!manualForm,
+                    buttonExists: !!manualSubmitBtn
+                },
+                'MultiFormCoordinator'
+            );
+            return;
+        }
+
+        this._cleanupPreviousHandler(manualSubmitBtn);
+
+        const clickHandler = async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            await this._handleFormSubmission(manualForm, manualSubmitBtn);
+        };
+
+        const formSubmitHandler = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        };
+
+        manualSubmitBtn._multiSubmitHandler = clickHandler;
+        manualSubmitBtn.addEventListener('click', clickHandler);
+
+        manualForm._multiFormSubmitHandler = formSubmitHandler;
+        manualForm.addEventListener('submit', formSubmitHandler);
+
+        this.isInitialized = true;
+    }
+
+    /**
+     * Hide submit buttons for auto-submit forms
+     * Uses unique namespaced events to prevent duplicates and enable proper cleanup
+     * @private
+     */
+    _hideAutoSubmitButtons() {
+        this.autoSubmitViewIds.forEach(autoViewId => {
+            const renderHandler = () => {
+                const autoSubmitBtn = document.querySelector(`#${autoViewId} ${this.selectors.SUBMIT_BUTTON}`);
+                if (autoSubmitBtn) {
+                    autoSubmitBtn.classList.add(CLASS_HIDDEN);
+                }
+            };
+
+            const eventNamespace = this._getEventNamespace('knack-view-render', autoViewId);
+
+            // Unbind any existing handler first to prevent duplicates
+            $(document).off(eventNamespace);
+            $(document).on(eventNamespace, renderHandler);
+
+            this.eventHandlers.set(`render-${autoViewId}`, eventNamespace);
+
+            // Hide button immediately if already rendered
+            waitSelector({
+                selector: `#${autoViewId} ${this.selectors.SUBMIT_BUTTON}`,
+                timeout: this.timeouts.BUTTON_WAIT
+            })
+                .then(btn => btn && btn.classList.add(CLASS_HIDDEN))
+                .catch(() => {});
+        });
+    }
+
+    /**
+     * Handle the complete form submission workflow
+     * @private
+     */
+    async _handleFormSubmission(manualForm, manualSubmitBtn) {
+        if (this.onBeforeSubmit) {
+            this.onBeforeSubmit(this._createSubmissionContext());
+        }
+
+        manualSubmitBtn.disabled = true;
+        this._setFormInputsDisabled(manualForm, true);
+
+        let outcomes = [];
+        let manualOutcome = null;
+        let modalClosed = false;
+        try {
+            outcomes = await this._submitAutoForms();
+
+            if (this.onAutoFormsComplete) {
+                this.onAutoFormsComplete(outcomes);
+            }
+
+            this._setFormInputsDisabled(manualForm, false);
+            manualSubmitBtn.disabled = false;
+
+            manualOutcome = await this._submitManualForm(manualForm);
+            modalClosed = await this._closeModalAfterSuccessfulSubmit({
+                manualForm,
+                manualOutcome,
+                outcomes,
+            });
+
+            if (this.onSubmissionComplete) {
+                this.onSubmissionComplete(this._createSubmissionContext({
+                    outcomes,
+                    manualOutcome,
+                    modalClosed,
+                }));
+            }
+
+        } catch (err) {
+            if (this.onSubmissionError) {
+                this.onSubmissionError(err, this._createSubmissionContext({
+                    outcomes,
+                    manualOutcome,
+                }));
+            }
+
+            errorHandler.handleError(err, {
+                manualSubmitViewId: this.manualSubmitViewId,
+                autoSubmitViewIds: this.autoSubmitViewIds,
+                outcomes
+            }, 'MultiFormCoordinator:HandleSubmission');
+
+            this._setFormInputsDisabled(manualForm, false);
+            manualSubmitBtn.disabled = false;
+        } finally {
+            if (this.onSubmissionSettled) {
+                this.onSubmissionSettled(this._createSubmissionContext({
+                    outcomes,
+                    manualOutcome,
+                    modalClosed,
+                }));
+            }
+        }
+    }
+
+    /**
+     * Resolve whether the modal should close after a successful coordinated submit.
+     * @private
+     * @param {Object} context
+     * @returns {boolean|Promise<boolean>}
+     */
+    async _shouldCloseModalAfterSubmit(context = {}) {
+        if (typeof this.closeModalAfterSubmit === 'function') {
+            return Boolean(await this.closeModalAfterSubmit(this._createSubmissionContext(context)));
+        }
+
+        return this.closeModalAfterSubmit === true;
+    }
+
+    /**
+     * Close the active modal when configured to do so after a successful manual submit.
+     * @private
+     * @param {Object} context
+     * @returns {Promise<boolean>}
+     */
+    async _closeModalAfterSuccessfulSubmit(context = {}) {
+        const shouldCloseModal = await this._shouldCloseModalAfterSubmit(context);
+        if (!shouldCloseModal) {
+            return false;
+        }
+
+        await new Promise((resolve) => {
+            setTimeout(resolve, this.timeouts.MODAL_CLOSE_DELAY);
+        });
+
+        return bulkActionCloseModalIfOpen();
+    }
+
+    /**
+     * Validate a form by checking for fields with ktlNotValid_* classes
+     * @private
+     * @param {string} viewId - View ID of the form being validated
+     * @param {HTMLFormElement} form - The form element to validate
+     * @returns {Object} Validation result with { isValid, invalidInputs, errorMessage }
+     */
+    _validateForm(viewId, form) {
+        if (!form) {
+            return { isValid: false, invalidInputs: [], errorMessage: `Form not found for ${viewId}` };
+        }
+
+        const allInputs = form.querySelectorAll('input, select, textarea');
+        const invalidInputs = Array.from(allInputs).filter(input =>
+            Array.from(input.classList).some(cls => cls.startsWith('ktlNotValid_'))
+        );
+
+        if (invalidInputs.length === 0) {
+            return { isValid: true, invalidInputs: [], errorMessage: '' };
+        }
+
+        // Build detailed error message with field info
+        const invalidFields = invalidInputs.map(input => {
+            const invalidClasses = Array.from(input.classList)
+                .filter(cls => cls.startsWith('ktlNotValid_'))
+                .join(', ');
+            return `#${input.id || input.name} (${invalidClasses})`;
+        }).join(', ');
+
+        return {
+            isValid: false,
+            invalidInputs,
+            errorMessage: `Form validation failed for ${viewId}. Found ${invalidInputs.length} invalid input(s): ${invalidFields}`
+        };
+    }
+
+    /**
+     * Submit all auto forms sequentially, skipping already-submitted forms
+     * @private
+     * @returns {Promise<Array>} Array of submission outcomes
+     */
+    async _submitAutoForms() {
+        const outcomes = [];
+        const activeAutoSubmitViewIds = this.getActiveAutoSubmitViewIds();
+
+        for (const autoViewId of activeAutoSubmitViewIds) {
+            if (this.submittedForms.has(autoViewId)) {
+                outcomes.push({
+                    success: true,
+                    viewId: autoViewId,
+                    skipped: true,
+                    reason: 'Already submitted'
+                });
+                continue;
+            }
+
+            try {
+                const outcome = await this._submitSingleAutoForm(autoViewId);
+                outcomes.push(outcome);
+
+                if (outcome.success) {
+                    this.submittedForms.add(autoViewId);
+                }
+            } catch (err) {
+                // Validation errors already logged in _submitSingleAutoForm
+                if (!this._isValidationError(err)) {
+                    errorHandler.handleError(err, {
+                        manualSubmitViewId: this.manualSubmitViewId,
+                        autoSubmitViewIds: this.autoSubmitViewIds,
+                        failedViewId: autoViewId,
+                        submittedForms: Array.from(this.submittedForms)
+                    }, 'MultiFormCoordinator:SubmitAutoForms');
+                }
+                throw err;
+            }
+        }
+
+        return outcomes;
+    }
+
+    /**
+     * Submit a single auto form and wait for outcome
+     * @private
+     * @param {string} autoViewId - View ID of the auto form
+     * @returns {Promise<Object>} Submission outcome
+     */
+    async _submitSingleAutoForm(autoViewId) {
+        const autoView = document.getElementById(autoViewId);
+        if (!autoView) throw new Error(`Auto submit view "${autoViewId}" not found`);
+
+        const autoForm = autoView.querySelector(this.selectors.FORM);
+        const autoSubmitBtn = autoView.querySelector(this.selectors.SUBMIT_BUTTON);
+
+        if (!autoForm || !autoSubmitBtn) {
+            throw new Error(`Form or submit button not found in auto view "${autoViewId}"`);
+        }
+
+        try {
+            // Enable form for validation
+            this._setFormInputsDisabled(autoForm, false);
+            autoSubmitBtn.disabled = false;
+
+            // Validate before submitting
+            const validationResult = this._validateForm(autoViewId, autoForm);
+            if (!validationResult.isValid) {
+                console.error(`[MultiFormCoordinator] ${validationResult.errorMessage}`);
+                throw new Error(validationResult.errorMessage);
+            }
+
+            // Submit and wait for outcome
+            const outcomePromise = this._waitForFormSubmitOutcome(autoViewId);
+            autoSubmitBtn.click();
+            const outcome = await outcomePromise;
+
+            // Hide success message and disable form
+            setVisibility(`#${autoViewId} ${this.selectors.SUCCESS_MESSAGE}`, false);
+            this._setFormInputsDisabled(autoForm, true);
+
+            return {
+                success: true,
+                viewId: autoViewId,
+                record: outcome.record || null,
+                timestamp: new Date().toISOString()
+            };
+
+        } catch (autoErr) {
+            // Only log unexpected errors (validation already logged)
+            if (!this._isValidationError(autoErr)) {
+                errorHandler.handleError(autoErr, {
+                    autoViewId,
+                    manualSubmitViewId: this.manualSubmitViewId,
+                    viewExists: !!autoView
+                }, 'MultiFormCoordinator:SubmitSingleAutoForm');
+            }
+            throw autoErr;
+        }
+    }
+
+    /**
+     * Wait for form submission outcome by monitoring DOM for success/error messages
+     * @private
+     * @param {string} viewId - View ID to monitor
+     * @returns {Promise<Object>} Submission result
+     */
+    _waitForFormSubmitOutcome(viewId) {
+        return new Promise((resolve, reject) => {
+            let cleanupDone = false;
+            let timeoutId = null;
+            let pollIntervalId = null;
+            let observer = null;
+            const submitEventNamespace = this._getEventNamespace('knack-form-submit', viewId);
+
+            const cleanup = () => {
+                if (cleanupDone) return;
+                cleanupDone = true;
+                if (timeoutId) clearTimeout(timeoutId);
+                if (pollIntervalId) clearInterval(pollIntervalId);
+                if (observer) observer.disconnect();
+                $(document).off(submitEventNamespace);
+            };
+
+            timeoutId = setTimeout(() => {
+                cleanup();
+                reject(new Error(`Form submission timeout for ${viewId} after ${this.timeouts.FORM_SUBMIT}ms`));
+            }, this.timeouts.FORM_SUBMIT);
+
+            const viewElement = document.getElementById(viewId);
+            if (!viewElement) {
+                cleanup();
+                reject(new Error(`View element not found: ${viewId}`));
+                return;
+            }
+
+            // Treat Knack's form-submit event as the primary success signal.
+            // Some forms submit successfully without leaving a persistent success message in the DOM.
+            $(document).off(submitEventNamespace);
+            $(document).on(submitEventNamespace, (_, view, record) => {
+                cleanup();
+                resolve({
+                    success: true,
+                    record: record || null,
+                    view: view?.key || viewId,
+                    message: 'Form submitted successfully',
+                });
+            });
+
+            const checkOutcome = () => {
+                // Check for success message
+                const successMsg = viewElement.querySelector(this.selectors.SUCCESS_MESSAGE);
+                if (successMsg) {
+                    cleanup();
+                    resolve({
+                        success: true,
+                        record: null,
+                        view: viewId,
+                        message: successMsg.textContent.trim()
+                    });
+                    return true;
+                }
+
+                // Check for error message
+                const errorMsg = viewElement.querySelector(this.selectors.ERROR_MESSAGE);
+                if (errorMsg) {
+                    cleanup();
+                    reject(new Error(`Form submission failed: ${errorMsg.textContent.trim()}`));
+                    return true;
+                }
+
+                // Check for invalid inputs
+                const invalidInputs = viewElement.querySelectorAll('input.invalid, select.invalid, textarea.invalid, [aria-invalid="true"]');
+                if (invalidInputs.length > 0) {
+                    const fieldNames = Array.from(invalidInputs)
+                        .map(inp => {
+                            const label = inp.closest('.kn-input')?.querySelector('.kn-label');
+                            return label ? label.textContent.trim().replace('*', '').trim() : 'Unknown field';
+                        })
+                        .filter((name, index, self) => self.indexOf(name) === index)
+                        .slice(0, 3)
+                        .join(', ');
+
+                    cleanup();
+                    reject(new Error(`Form validation failed: Required fields missing or invalid (${fieldNames})`));
+                    return true;
+                }
+
+                return false;
+            };
+
+            // Monitor for changes with MutationObserver
+            observer = new MutationObserver(checkOutcome);
+            observer.observe(viewElement, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['class', 'style', 'aria-invalid']
+            });
+
+            // Wait until the new submission has started so a previous attempt's
+            // rendered validation message is not mistaken for the new outcome.
+            setTimeout(checkOutcome, this.timeouts.OUTCOME_POLL_INTERVAL);
+
+            // Periodic polling as backup
+            pollIntervalId = setInterval(() => {
+                if (!cleanupDone) checkOutcome();
+            }, this.timeouts.OUTCOME_POLL_INTERVAL);
+
+            this.eventHandlers.set(`submit-${viewId}`, cleanup);
+        });
+    }
+
+    /**
+     * Submit the manual form
+     * @private
+     */
+    async _submitManualForm(manualForm) {
+        return new Promise((resolve, reject) => {
+            setTimeout(async () => {
+                try {
+                    const manualOutcomePromise = this._waitForFormSubmitOutcome(this.manualSubmitViewId);
+                    $(manualForm).submit();
+
+                    const outcome = await manualOutcomePromise;
+
+                    resolve(outcome);
+                } catch (submitErr) {
+                    errorHandler.handleError(submitErr, {
+                        manualSubmitViewId: this.manualSubmitViewId
+                    }, 'MultiFormCoordinator:SubmitManualForm');
+                    reject(submitErr);
+                }
+            }, this.timeouts.PRE_SUBMIT_DELAY);
+        });
+    }
+
+    /**
+     * Enable or disable all form inputs
+     * @private
+     * @param {HTMLFormElement} form - The form element
+     * @param {boolean} disabled - True to disable, false to enable
+     */
+    _setFormInputsDisabled(form, disabled) {
+        if (!form) return;
+        form.querySelectorAll('input, select, textarea, button').forEach(el => {
+            el.disabled = disabled;
+        });
+    }
+
+    /**
+     * Clean up previous event handlers from button and form
+     * @private
+     */
+    _cleanupPreviousHandler(button) {
+        if (button._multiSubmitHandler) {
+            button.removeEventListener('click', button._multiSubmitHandler);
+            delete button._multiSubmitHandler;
+        }
+
+        const form = button.closest('form');
+        if (form && form._multiFormSubmitHandler) {
+            form.removeEventListener('submit', form._multiFormSubmitHandler);
+            delete form._multiFormSubmitHandler;
+        }
+    }
+
+    /**
+     * Clean up all event handlers and resources
+     */
+    destroy() {
+        // Clean up manual form DOM event handlers
+        const manualView = document.getElementById(this.manualSubmitViewId);
+        if (manualView) {
+            const manualForm = manualView.querySelector(this.selectors.FORM);
+            const manualSubmitBtn = manualView.querySelector(this.selectors.SUBMIT_BUTTON);
+
+            if (manualSubmitBtn && manualSubmitBtn._multiSubmitHandler) {
+                manualSubmitBtn.removeEventListener('click', manualSubmitBtn._multiSubmitHandler);
+                delete manualSubmitBtn._multiSubmitHandler;
+            }
+
+            if (manualForm && manualForm._multiFormSubmitHandler) {
+                manualForm.removeEventListener('submit', manualForm._multiFormSubmitHandler);
+                delete manualForm._multiFormSubmitHandler;
+            }
+        }
+
+        // Clean up jQuery event handlers using stored namespaces
+        this.eventHandlers.forEach((eventHandler) => {
+            if (typeof eventHandler === 'function') {
+                eventHandler();
+                return;
+            }
+
+            $(document).off(eventHandler);
+        });
+
+        this.eventHandlers.clear();
+        this.submittedForms.clear();
+        this.isInitialized = false;
+    }
+}
+
+/**
+ * Legacy function wrapper - maintains same API as original function
+ * @deprecated Consider using MultiFormSubmissionCoordinator class directly for better control
+ * @param {string} manualSubmitViewId - The view ID of the manual (main) form.
+ * @param {string[]} autoSubmitViewIds - Array of view IDs for forms to be auto-submitted before the manual form.
+ * @param {string} renderedViewId - The view ID of the form that has just rendered.
+ * @param {boolean|Function} [closeModalAfterSubmit=false] - If true, closes the modal after successful submission, or resolve that decision from submission context.
+ * @returns {MultiFormSubmissionCoordinator} The coordinator instance
+ */
+function setupAutoFormSubmission(manualSubmitViewId, autoSubmitViewIds, renderedViewId, closeModalAfterSubmit = false) {
+    const coordinator = new MultiFormSubmissionCoordinator({
+        manualSubmitViewId,
+        autoSubmitViewIds,
+        closeModalAfterSubmit
+    });
+    coordinator.initialize(renderedViewId);
+    return coordinator;
+}
+
+/**
+ * Selects a connection by record id in a hidden connection field of a form, searching the Chosen list when the
+ * option has not loaded yet. Needs the app global CONNECTION_FIELDS_OBJECT for the search fallback.
+ * @param {string} viewId - Form view id.
+ * @param {string|number} conxFieldIdInput - Connection field id number.
+ * @param {string|null} [connectionId=null] - Record id to select (default: the id in the page URL).
+ * @param {string} connectionObject - Key into CONNECTION_FIELDS_OBJECT for the lookup.
+ * @returns {Promise<void>}
+ */
+async function addConnectionIdToRecord(viewId, conxFieldIdInput, connectionId = null, connectionObject) {
+    const api = getKnackApiClient();
+    const viewRoot = getViewRootElement(viewId);
+    if (!(viewRoot instanceof HTMLElement)) return;
+
+    const connectionField = viewRoot.querySelector(`#kn-input-field_${conxFieldIdInput}`);
+    const select = connectionField?.querySelector('select');
+    const conxId = connectionId || getRecordID();
+    connectionField?.classList.add(CLASS_HIDDEN);
+    const setConnectionId = (id) => {
+        select.value = id;
+        refreshChosen(select);
+    };
+
+    await ktl.core.waitSelector(`#kn-input-field_${conxFieldIdInput} select option`, 20000);
+    if (select.options.length > 1) return setConnectionId(conxId);
+
+    const { sceneIdAPI, viewIdAPI, clientPKField } = CONNECTION_FIELDS_OBJECT[connectionObject];
+    try {
+        const response = await api.getRecord(sceneIdAPI, viewIdAPI, connectionId);
+        const optionText = response[`${clientPKField}_raw`];
+        const searchInput = connectionField.querySelector('.chzn-search input');
+        if (searchInput) {
+            searchInput.focus();
+            searchInput.value = optionText;
+            fireEvent(searchInput, 'input');
+        }
+
+        // Poll for the filtered option (not awaited: the caller was never held up for it).
+        const startedAt = Date.now();
+        const timer = setInterval(() => {
+            const option = Array.from(select.options).find((candidate) => candidate.textContent === optionText);
+            if (option) {
+                setConnectionId(option.value);
+                searchInput?.blur();
+            } else if (Date.now() - startedAt < 10000) return;
+            else console.log(`Timeout: Could not find item "${optionText}" in the dropdown.`);
+            clearInterval(timer);
+        }, 500);
+    } catch (error) {
+        console.error('Error fetching data from API:', error);
+    }
+}
+
+/**
+ * `_btnurl` keyword: makes links (or menu items) with given text navigate to a child page of the current URL.
+ * Params: `linkText, pageUrl, isChildPage?, urlPart?`. For tables the record id comes from the row's `td.field_6087`.
+ * V1 threw a ReferenceError for users without role access (it used a variable before declaring it); V2 removes the links.
+ * @param {{key: string}} view - Knack view.
+ * @param {Object} keywords - Parsed view keywords.
+ */
+function buttonToUrl({ key: viewId }, keywords) {
+    const keyword = '_btnurl';
+    if (!keywords[keyword]) return;
+    const viewType = ktl.views.getViewType(viewId);
+    if (['list', 'form'].includes(viewType)) return;
+    const view = document.getElementById(viewId);
+
+    ktl.core.getKeywordsByType(viewId, keyword).forEach(({ options, params: paramGroups }) => {
+        if (!paramGroups.length) return console.error('Button URL Params Error - No parameter groups found.');
+        paramGroups.forEach((params) => {
+            if (params.length < 2) return console.error('Button URL Params Error - Insufficient parameters found.');
+            const [linkText, pageUrl, isChildPageParam, urlPartParam] = params;
+            const findLinks = (root) => Array.from(root?.querySelectorAll(viewType === 'menu' ? 'li' : 'a') ?? [])
+                .filter((element) => element.textContent.replace('*', '').trim() === linkText);
+            if (!ktl.core.hasRoleAccess(options)) return removeElement(findLinks(view));
+
+            const currentUrl = sanitiseURL(window.location.href);
+            const bindLinks = (links, targetUrl) => {
+                if (!links.length) return console.error(`buttonURL Error - Button with text "${linkText}" not found.`);
+                links.forEach((link) => bindClick(link, 'buttonToUrl', (event) => {
+                    event.preventDefault();
+                    window.location.href = targetUrl;
+                }));
+            };
+
+            if (['table', 'search'].includes(viewType)) {
+                getTableRowElements(viewId, (_index, row) => {
+                    const knackId = row.querySelector('td.field_6087')?.textContent.trim() ?? '';
+                    bindLinks(findLinks(row), `${currentUrl}${pageUrl}/${knackId}/`);
+                });
+            } else {
+                const targetUrl = isChildPageParam !== 'false'
+                    ? `${currentUrl}${pageUrl}/${getRecordID(urlPartParam || null)}/`
+                    : `${currentUrl}${pageUrl}/`;
+                bindLinks(findLinks(view), targetUrl);
+            }
+        });
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 // Compatibility shims (deprecated names kept for existing callers; remove in V3)
 // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -12317,16 +15378,6 @@ function fileViewer(extension, url) {
 
 // Format: TODO(v2-wave-N): globalName  - tests/v2/v2-structure.test.cjs reads these lines.
 
-// Wave 1
-// TODO(v2-wave-1): renderVersionIndicator
-// TODO(v2-wave-1): showNotification
-// TODO(v2-wave-1): OFFICE_EXTENSIONS
-// TODO(v2-wave-1): IMAGE_EXTENSIONS
-// TODO(v2-wave-1): updateLinksAndAssets
-// TODO(v2-wave-1): copyViewBodyToClipboard
-// TODO(v2-wave-1): idleWatchDogTimeout
-// TODO(v2-wave-1): showConfirmationDialog
-
 // Wave 2
 // TODO(v2-wave-2): QuillEditor
 // TODO(v2-wave-2): initializeQuillIcons
@@ -12337,30 +15388,11 @@ function fileViewer(extension, url) {
 // TODO(v2-wave-2): gridTruncationCells
 // TODO(v2-wave-2): truncateColumnsInGrid
 // TODO(v2-wave-2): renderGridTruncation
-// TODO(v2-wave-2): addInputEventListener
 // TODO(v2-wave-2): attachTimePicker
 // TODO(v2-wave-2): enhanceDateTimePicker
-// TODO(v2-wave-2): waitSelector
 // TODO(v2-wave-2): updateOptions
 // TODO(v2-wave-2): applyMenuLinkFilters
 // TODO(v2-wave-2): renderInteractiveTable
-// TODO(v2-wave-2): getDateTimeParts
-// TODO(v2-wave-2): setDateTimeParts
-// TODO(v2-wave-2): getCalendarFromToParts
-// TODO(v2-wave-2): setCalendarFromToParts
-// TODO(v2-wave-2): parseDateTimeParts
-// TODO(v2-wave-2): parseFromToDate
-// TODO(v2-wave-2): MULTI_FORM_CONFIG
-// TODO(v2-wave-2): MultiFormSubmissionCoordinator
-// TODO(v2-wave-2): setupAutoFormSubmission
-// TODO(v2-wave-2): addConnectionIdToRecord
-// TODO(v2-wave-2): showHideViewGroupContent
-// TODO(v2-wave-2): addCheckboxes
-// TODO(v2-wave-2): addCheckboxesToHeaders
-// TODO(v2-wave-2): initialiseConditionalRequiredFieldVisibility
-// TODO(v2-wave-2): showHideMsgBasedOnRadios
-// TODO(v2-wave-2): changeToSlider
-// TODO(v2-wave-2): addModalNavigationButtons
 // TODO(v2-wave-2): fileCarouselState
 // TODO(v2-wave-2): ensureFileCarouselOverlay
 // TODO(v2-wave-2): preloadFileCarouselImage
@@ -12371,7 +15403,6 @@ function fileViewer(extension, url) {
 // TODO(v2-wave-2): openFileCarousel
 // TODO(v2-wave-2): closeFileCarousel
 // TODO(v2-wave-2): initFileCarousel
-// TODO(v2-wave-2): buttonToUrl
 // TODO(v2-wave-2): caQuickToggle
 // TODO(v2-wave-2): caMultiChoiceQuickToggle
 // TODO(v2-wave-2): CAQuickToggle
