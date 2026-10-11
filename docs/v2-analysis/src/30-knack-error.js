@@ -516,9 +516,7 @@ class KnackError {
         };
 
         // If viewId is 'any', capture all events of this type
-        const eventSelector = viewId === 'any' ?
-            `${eventType}.any` :
-            `${eventType}.${viewId}`;
+        const eventSelector = `${eventType}.${viewId}`;
 
         $(document).on(eventSelector, wrappedHandler);
 
@@ -784,8 +782,7 @@ class KnackError {
         if (errorData.errorName === 'NetworkError' || errorData.errorMessage.includes('network')) {
             this.performanceData.networkErrors++;
         } else if (errorData.errorMessage.includes('API') ||
-            errorData.errorSource.includes('API') ||
-            errorData.errorSource.includes('caAPI')) {
+            errorData.errorSource.includes('API')) {
             this.performanceData.apiErrors++;
         } else {
             this.performanceData.javaScriptErrors++;
@@ -855,7 +852,7 @@ class KnackError {
 
         // Add context data in one step if enabled
         if (this.options.captureKnackContext) {
-            Object.assign(errorData, this._captureContextData(additionalInfo));
+            Object.assign(errorData, this._captureContextData());
         }
 
         // Keep a clean copy of additionalInfo
@@ -937,11 +934,10 @@ class KnackError {
 
     /**
      * Captures context data if enabled
-     * @param {Object} additionalInfo - Additional information to log
-     * * @returns {Object} - Context data
+     * @returns {Object} - Context data
      * @private
      * */
-    _captureContextData(additionalInfo) {
+    _captureContextData() {
         const errorData = {};
         // Knack context information if enabled
         if (this.options.captureKnackContext && this.options.separateContextFields) {

@@ -304,6 +304,7 @@ class CAQuickToggle {
         if (!sceneId || !normalizedViewId) {
             ktl.views.autoRefresh();
             console.error('Quick Toggle operation failed: could not resolve scene or view id.', recObj);
+            this.dropFailedToggle(dt);
             return;
         }
 
@@ -333,17 +334,36 @@ class CAQuickToggle {
                                 Knack.hideSpinner();
                                 ktl.views.autoRefresh();
                             })
-                            .catch(() => { })
+                            .catch((error) => {
+                                errorHandler.handleError(error, { function: 'refreshViewArray' }, 'Quick Toggle Refresh');
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            })
                     }, 500);
                 }
             })
             .catch(reason => {
+                this.dropFailedToggle(dt);
                 ktl.views.autoRefresh();
                 const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
                 console.error('Quick Toggle operation failed:', reason);
                 errorHandler.handleError(reason, {function: 'doQuickToggle'}, 'Quick Toggle Error')
                 alert(`Error code KEC_1025 while processing Quick Toggle operation, reason: ${errorMsg}`);
             });
+    }
+
+    /**
+     * Removes a job whose update failed, so the queue keeps moving instead of retrying it forever.
+     * @param {string} dt - Queue key.
+     * @returns {void}
+     */
+    dropFailedToggle(dt) {
+        delete this.quickToggleObj[dt];
+        this.numToProcess = Math.max(0, this.numToProcess - 1);
+        if (!Object.keys(this.quickToggleObj).length) {
+            clearInterval(this.qtScanItv);
+            this.qtScanItv = null;
+        }
     }
 
     showProgress() {
@@ -723,6 +743,7 @@ class CAMultiChoiceQuickToggle {
         if (!sceneId || !normalisedViewId) {
             ktl.views.autoRefresh();
             console.error('Multi-choice quick toggle operation failed: could not resolve scene or view id.', recObj);
+            this.dropFailedToggle(dt);
             return;
         }
 
@@ -753,17 +774,36 @@ class CAMultiChoiceQuickToggle {
                                 Knack.hideSpinner();
                                 ktl.views.autoRefresh();
                             })
-                            .catch(() => { });
+                            .catch((error) => {
+                                errorHandler.handleError(error, { function: 'refreshViewArray' }, 'Multi-choice Quick Toggle Refresh');
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            });
                     }, 500);
                 }
             })
             .catch((reason) => {
+                this.dropFailedToggle(dt);
                 ktl.views.autoRefresh();
                 const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
                 console.error('Multi-choice quick toggle operation failed:', reason);
                 errorHandler.handleError(reason, { function: 'doQuickToggle' }, 'Multi-choice Quick Toggle Error');
                 alert(`Error code KEC_1025 while processing multi-choice quick toggle, reason: ${errorMsg}`);
             });
+    }
+
+    /**
+     * Removes a job whose update failed, so the queue keeps moving instead of retrying it forever.
+     * @param {string} dt - Queue key.
+     * @returns {void}
+     */
+    dropFailedToggle(dt) {
+        delete this.quickToggleObj[dt];
+        this.numToProcess = Math.max(0, this.numToProcess - 1);
+        if (!Object.keys(this.quickToggleObj).length) {
+            clearInterval(this.qtScanItv);
+            this.qtScanItv = null;
+        }
     }
 
     /**

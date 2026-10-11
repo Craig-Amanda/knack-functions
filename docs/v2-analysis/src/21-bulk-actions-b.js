@@ -2201,7 +2201,6 @@ function bulkActionGetBaseCssText() {
  * @returns {void}
  */
 function ensureBulkActionBaseStyles() {
-    if (typeof document === 'undefined') return;
     if (document.getElementById(BULK_ACTION_DEFAULT_CONFIG.constants.styleId)) return;
 
     const style = document.createElement('style');
@@ -2644,7 +2643,6 @@ tr.${KTL_BULK_EDIT_ROW_MARKER_CLASS} {
  * @returns {void}
  */
 function ensureBulkEditSelectionStyles() {
-    if (typeof document === 'undefined') return;
     if (document.getElementById(KTL_BULK_EDIT_SELECTION_STYLE_ID)) return;
 
     const style = document.createElement('style');

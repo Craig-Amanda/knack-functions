@@ -1875,6 +1875,9 @@ function idleWatchDogTimeout() {
     const logoutBtnId = ID_PREFIX + 'logout-btn';
     const stayBtnId = ID_PREFIX + 'stay-btn';
 
+    // A second call replaces the first dialog completely, including its auto-logout timer and resize listener.
+    idleWatchDogTimeout.teardown?.();
+
     // Remove any existing overlay/dialog to prevent duplicates
     document.getElementById(overlayId)?.remove();
     document.getElementById(dialogId)?.remove();
@@ -1980,6 +1983,10 @@ function idleWatchDogTimeout() {
     // Auto-logout simply triggers the idempotent performLogout(); the fallback
     // will ensure the user is returned to the login screen if needed.
     autoLogoutTimeout = setTimeout(performLogout, Math.max(0, autoLogoutMinutes) * 60 * 1000);
+    idleWatchDogTimeout.teardown = () => {
+        clearTimeout(autoLogoutTimeout);
+        window.removeEventListener('resize', setDialogWidth);
+    };
 }
 
 /**

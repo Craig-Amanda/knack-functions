@@ -5044,7 +5044,7 @@ class KnackAPI {
 
         const inferredType = (file?.type || '').startsWith('image/') ? 'image' : 'file';
         const assetType = opts.assetType === 'image' || opts.assetType === 'file' ? opts.assetType : inferredType;
-        const base = String(Knack?.api_dev || '').replace(/\/$/, '');
+        const base = this._getApiBaseUrl().replace(/\/$/, '');
         const url = `${base}/applications/${appId}/assets/${assetType}/upload`;
         const uploadFileName = typeof file?.name === 'string' && file.name.length ? file.name : 'upload.bin';
 
@@ -6274,27 +6274,6 @@ class KnackAPI {
     }
 
     /**
-     * Creates an AbortController with timeout
-     * @param {number} [timeout] - Optional timeout override in milliseconds
-     * @returns {Object} - Object containing controller and signal
-     * @private
-     */
-    _createAbortController(timeout) {
-        const controller = new AbortController();
-        const timeoutMs = timeout ?? this.options.timeout;
-
-        const timeoutId = setTimeout(() => {
-            controller.abort();
-        }, timeoutMs);
-
-        return {
-            controller,
-            signal: controller.signal,
-            clear: () => clearTimeout(timeoutId)
-        };
-    }
-
-    /**
      * Get the authorization token for API requests
      * @returns {string} - Knack authorization token
      * @private
@@ -6321,34 +6300,6 @@ class KnackAPI {
         }
 
         return url;
-    }
-
-    /**
-     * Handles API response and extracts data
-     * @param {Response} response - Fetch API response
-     * @returns {Promise<Object>} - Parsed response data
-     * @throws {Error} If response is not OK
-     * @private
-     */
-    async _handleResponse(response) {
-        if (!response.ok) {
-            const errorBody = await response.json().catch(() => ({ message: "Unknown error" }));
-            throw new Error(`API error ${response.status}: ${this._extractErrorMessage(errorBody) || response.statusText}`);
-        }
-
-        return await response.json();
-    }
-
-    /**
-     * Executes an API request with proper error handling.
-     * @param {string} url - The API URL
-     * @param {Object} options - Fetch options
-     * @param {AbortSignal} signal - AbortController signal
-     * @returns {Promise<Object>} - Response data
-     * @private
-     */
-    async _executeRequest(url, options, signal) {
-        return this._request(url, options, signal ? undefined : this.options.timeout);
     }
 
     /**
@@ -7345,8 +7296,6 @@ class KnackAPI {
         } finally {
             this._toggleSpinner(false);
         }
-
-        throw new Error('Max retries exceeded');
     }
 
     /**
@@ -10263,7 +10212,6 @@ function bulkActionGetBaseCssText() {
  * @returns {void}
  */
 function ensureBulkActionBaseStyles() {
-    if (typeof document === 'undefined') return;
     if (document.getElementById(BULK_ACTION_DEFAULT_CONFIG.constants.styleId)) return;
 
     const style = document.createElement('style');
@@ -10706,7 +10654,6 @@ tr.${KTL_BULK_EDIT_ROW_MARKER_CLASS} {
  * @returns {void}
  */
 function ensureBulkEditSelectionStyles() {
-    if (typeof document === 'undefined') return;
     if (document.getElementById(KTL_BULK_EDIT_SELECTION_STYLE_ID)) return;
 
     const style = document.createElement('style');
@@ -14011,6 +13958,9 @@ function idleWatchDogTimeout() {
     const logoutBtnId = ID_PREFIX + 'logout-btn';
     const stayBtnId = ID_PREFIX + 'stay-btn';
 
+    // A second call replaces the first dialog completely, including its auto-logout timer and resize listener.
+    idleWatchDogTimeout.teardown?.();
+
     // Remove any existing overlay/dialog to prevent duplicates
     document.getElementById(overlayId)?.remove();
     document.getElementById(dialogId)?.remove();
@@ -14116,6 +14066,10 @@ function idleWatchDogTimeout() {
     // Auto-logout simply triggers the idempotent performLogout(); the fallback
     // will ensure the user is returned to the login screen if needed.
     autoLogoutTimeout = setTimeout(performLogout, Math.max(0, autoLogoutMinutes) * 60 * 1000);
+    idleWatchDogTimeout.teardown = () => {
+        clearTimeout(autoLogoutTimeout);
+        window.removeEventListener('resize', setDialogWidth);
+    };
 }
 
 /**
@@ -18675,6 +18629,10 @@ function openFileCarousel(items, startIndex, triggerElement, options = {}) {
     if (!Array.isArray(items) || !items.length) return;
     const overlay = ensureFileCarouselOverlay();
 
+    // Re-opening while open replaces the previous keydown handler (otherwise every arrow key would move twice).
+    const wasOpen = Boolean(fileCarouselState);
+    if (wasOpen) document.removeEventListener('keydown', fileCarouselState.keydownHandler);
+
     const onKeydown = (event) => {
         if (event.key === 'Escape') closeFileCarousel();
         else if (event.key === 'ArrowLeft') navigateFileCarousel(-1);
@@ -18693,7 +18651,7 @@ function openFileCarousel(items, startIndex, triggerElement, options = {}) {
     window.addEventListener('popstate', onFileCarouselPopState);
     // One history entry per open (not per Prev/Next) so a single Back press closes the overlay
     // instead of navigating the underlying page away while it stays open on top.
-    history.pushState({ kfnFileCarouselOpen: true }, '', location.href);
+    if (!wasOpen) history.pushState({ kfnFileCarouselOpen: true }, '', location.href);
 
     document.body.style.overflow = 'hidden';
     overlay.classList.add('is-open');
@@ -18707,23 +18665,25 @@ function openFileCarousel(items, startIndex, triggerElement, options = {}) {
  * @returns {void}
  */
 function closeFileCarousel(options = {}) {
-    const overlay = document.getElementById('kfnFileCarousel');
-    if (!overlay || !fileCarouselState) return;
-
-    overlay.classList.remove('is-open');
-    overlay.querySelector('.kfn-file-carousel__stage').innerHTML = '';
-    document.body.style.overflow = '';
-    document.removeEventListener('keydown', fileCarouselState.keydownHandler);
-    window.removeEventListener('popstate', onFileCarouselPopState);
-
-    const { triggerElement } = fileCarouselState;
+    if (!fileCarouselState) return;
+    const { triggerElement, keydownHandler } = fileCarouselState;
     fileCarouselState = null;
+    document.removeEventListener('keydown', keydownHandler);
+    window.removeEventListener('popstate', onFileCarouselPopState);
+    document.body.style.overflow = '';
+
+    // Tear the state down first so a consumer-removed overlay cannot leave the listeners behind.
+    const overlay = document.getElementById('kfnFileCarousel');
+    if (overlay) {
+        overlay.classList.remove('is-open');
+        overlay.querySelector('.kfn-file-carousel__stage').innerHTML = '';
+    }
 
     // Closed via the X/backdrop/Escape rather than Back: pop the history entry we pushed on open
     // so it doesn't sit there as a stale extra step next time the user presses Back.
     if (!options.viaPopState) history.back();
 
-    if (triggerElement && typeof triggerElement.focus === 'function') triggerElement.focus();
+    if (typeof triggerElement?.focus === 'function') triggerElement.focus();
 }
 
 /**
@@ -19128,6 +19088,7 @@ class CAQuickToggle {
         if (!sceneId || !normalizedViewId) {
             ktl.views.autoRefresh();
             console.error('Quick Toggle operation failed: could not resolve scene or view id.', recObj);
+            this.dropFailedToggle(dt);
             return;
         }
 
@@ -19157,17 +19118,36 @@ class CAQuickToggle {
                                 Knack.hideSpinner();
                                 ktl.views.autoRefresh();
                             })
-                            .catch(() => { })
+                            .catch((error) => {
+                                errorHandler.handleError(error, { function: 'refreshViewArray' }, 'Quick Toggle Refresh');
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            })
                     }, 500);
                 }
             })
             .catch(reason => {
+                this.dropFailedToggle(dt);
                 ktl.views.autoRefresh();
                 const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
                 console.error('Quick Toggle operation failed:', reason);
                 errorHandler.handleError(reason, {function: 'doQuickToggle'}, 'Quick Toggle Error')
                 alert(`Error code KEC_1025 while processing Quick Toggle operation, reason: ${errorMsg}`);
             });
+    }
+
+    /**
+     * Removes a job whose update failed, so the queue keeps moving instead of retrying it forever.
+     * @param {string} dt - Queue key.
+     * @returns {void}
+     */
+    dropFailedToggle(dt) {
+        delete this.quickToggleObj[dt];
+        this.numToProcess = Math.max(0, this.numToProcess - 1);
+        if (!Object.keys(this.quickToggleObj).length) {
+            clearInterval(this.qtScanItv);
+            this.qtScanItv = null;
+        }
     }
 
     showProgress() {
@@ -19547,6 +19527,7 @@ class CAMultiChoiceQuickToggle {
         if (!sceneId || !normalisedViewId) {
             ktl.views.autoRefresh();
             console.error('Multi-choice quick toggle operation failed: could not resolve scene or view id.', recObj);
+            this.dropFailedToggle(dt);
             return;
         }
 
@@ -19577,17 +19558,36 @@ class CAMultiChoiceQuickToggle {
                                 Knack.hideSpinner();
                                 ktl.views.autoRefresh();
                             })
-                            .catch(() => { });
+                            .catch((error) => {
+                                errorHandler.handleError(error, { function: 'refreshViewArray' }, 'Multi-choice Quick Toggle Refresh');
+                                Knack.hideSpinner();
+                                ktl.views.autoRefresh();
+                            });
                     }, 500);
                 }
             })
             .catch((reason) => {
+                this.dropFailedToggle(dt);
                 ktl.views.autoRefresh();
                 const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
                 console.error('Multi-choice quick toggle operation failed:', reason);
                 errorHandler.handleError(reason, { function: 'doQuickToggle' }, 'Multi-choice Quick Toggle Error');
                 alert(`Error code KEC_1025 while processing multi-choice quick toggle, reason: ${errorMsg}`);
             });
+    }
+
+    /**
+     * Removes a job whose update failed, so the queue keeps moving instead of retrying it forever.
+     * @param {string} dt - Queue key.
+     * @returns {void}
+     */
+    dropFailedToggle(dt) {
+        delete this.quickToggleObj[dt];
+        this.numToProcess = Math.max(0, this.numToProcess - 1);
+        if (!Object.keys(this.quickToggleObj).length) {
+            clearInterval(this.qtScanItv);
+            this.qtScanItv = null;
+        }
     }
 
     /**
@@ -20995,9 +20995,7 @@ class KnackError {
         };
 
         // If viewId is 'any', capture all events of this type
-        const eventSelector = viewId === 'any' ?
-            `${eventType}.any` :
-            `${eventType}.${viewId}`;
+        const eventSelector = `${eventType}.${viewId}`;
 
         $(document).on(eventSelector, wrappedHandler);
 
@@ -21263,8 +21261,7 @@ class KnackError {
         if (errorData.errorName === 'NetworkError' || errorData.errorMessage.includes('network')) {
             this.performanceData.networkErrors++;
         } else if (errorData.errorMessage.includes('API') ||
-            errorData.errorSource.includes('API') ||
-            errorData.errorSource.includes('caAPI')) {
+            errorData.errorSource.includes('API')) {
             this.performanceData.apiErrors++;
         } else {
             this.performanceData.javaScriptErrors++;
@@ -21334,7 +21331,7 @@ class KnackError {
 
         // Add context data in one step if enabled
         if (this.options.captureKnackContext) {
-            Object.assign(errorData, this._captureContextData(additionalInfo));
+            Object.assign(errorData, this._captureContextData());
         }
 
         // Keep a clean copy of additionalInfo
@@ -21416,11 +21413,10 @@ class KnackError {
 
     /**
      * Captures context data if enabled
-     * @param {Object} additionalInfo - Additional information to log
-     * * @returns {Object} - Context data
+     * @returns {Object} - Context data
      * @private
      * */
-    _captureContextData(additionalInfo) {
+    _captureContextData() {
         const errorData = {};
         // Knack context information if enabled
         if (this.options.captureKnackContext && this.options.separateContextFields) {

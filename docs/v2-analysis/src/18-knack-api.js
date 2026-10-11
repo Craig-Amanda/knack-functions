@@ -446,7 +446,7 @@ class KnackAPI {
 
         const inferredType = (file?.type || '').startsWith('image/') ? 'image' : 'file';
         const assetType = opts.assetType === 'image' || opts.assetType === 'file' ? opts.assetType : inferredType;
-        const base = String(Knack?.api_dev || '').replace(/\/$/, '');
+        const base = this._getApiBaseUrl().replace(/\/$/, '');
         const url = `${base}/applications/${appId}/assets/${assetType}/upload`;
         const uploadFileName = typeof file?.name === 'string' && file.name.length ? file.name : 'upload.bin';
 
@@ -1676,27 +1676,6 @@ class KnackAPI {
     }
 
     /**
-     * Creates an AbortController with timeout
-     * @param {number} [timeout] - Optional timeout override in milliseconds
-     * @returns {Object} - Object containing controller and signal
-     * @private
-     */
-    _createAbortController(timeout) {
-        const controller = new AbortController();
-        const timeoutMs = timeout ?? this.options.timeout;
-
-        const timeoutId = setTimeout(() => {
-            controller.abort();
-        }, timeoutMs);
-
-        return {
-            controller,
-            signal: controller.signal,
-            clear: () => clearTimeout(timeoutId)
-        };
-    }
-
-    /**
      * Get the authorization token for API requests
      * @returns {string} - Knack authorization token
      * @private
@@ -1723,34 +1702,6 @@ class KnackAPI {
         }
 
         return url;
-    }
-
-    /**
-     * Handles API response and extracts data
-     * @param {Response} response - Fetch API response
-     * @returns {Promise<Object>} - Parsed response data
-     * @throws {Error} If response is not OK
-     * @private
-     */
-    async _handleResponse(response) {
-        if (!response.ok) {
-            const errorBody = await response.json().catch(() => ({ message: "Unknown error" }));
-            throw new Error(`API error ${response.status}: ${this._extractErrorMessage(errorBody) || response.statusText}`);
-        }
-
-        return await response.json();
-    }
-
-    /**
-     * Executes an API request with proper error handling.
-     * @param {string} url - The API URL
-     * @param {Object} options - Fetch options
-     * @param {AbortSignal} signal - AbortController signal
-     * @returns {Promise<Object>} - Response data
-     * @private
-     */
-    async _executeRequest(url, options, signal) {
-        return this._request(url, options, signal ? undefined : this.options.timeout);
     }
 
     /**
@@ -2747,8 +2698,6 @@ class KnackAPI {
         } finally {
             this._toggleSpinner(false);
         }
-
-        throw new Error('Max retries exceeded');
     }
 
     /**

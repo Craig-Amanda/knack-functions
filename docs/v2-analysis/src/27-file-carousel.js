@@ -254,6 +254,10 @@ function openFileCarousel(items, startIndex, triggerElement, options = {}) {
     if (!Array.isArray(items) || !items.length) return;
     const overlay = ensureFileCarouselOverlay();
 
+    // Re-opening while open replaces the previous keydown handler (otherwise every arrow key would move twice).
+    const wasOpen = Boolean(fileCarouselState);
+    if (wasOpen) document.removeEventListener('keydown', fileCarouselState.keydownHandler);
+
     const onKeydown = (event) => {
         if (event.key === 'Escape') closeFileCarousel();
         else if (event.key === 'ArrowLeft') navigateFileCarousel(-1);
@@ -272,7 +276,7 @@ function openFileCarousel(items, startIndex, triggerElement, options = {}) {
     window.addEventListener('popstate', onFileCarouselPopState);
     // One history entry per open (not per Prev/Next) so a single Back press closes the overlay
     // instead of navigating the underlying page away while it stays open on top.
-    history.pushState({ kfnFileCarouselOpen: true }, '', location.href);
+    if (!wasOpen) history.pushState({ kfnFileCarouselOpen: true }, '', location.href);
 
     document.body.style.overflow = 'hidden';
     overlay.classList.add('is-open');
@@ -286,23 +290,25 @@ function openFileCarousel(items, startIndex, triggerElement, options = {}) {
  * @returns {void}
  */
 function closeFileCarousel(options = {}) {
-    const overlay = document.getElementById('kfnFileCarousel');
-    if (!overlay || !fileCarouselState) return;
-
-    overlay.classList.remove('is-open');
-    overlay.querySelector('.kfn-file-carousel__stage').innerHTML = '';
-    document.body.style.overflow = '';
-    document.removeEventListener('keydown', fileCarouselState.keydownHandler);
-    window.removeEventListener('popstate', onFileCarouselPopState);
-
-    const { triggerElement } = fileCarouselState;
+    if (!fileCarouselState) return;
+    const { triggerElement, keydownHandler } = fileCarouselState;
     fileCarouselState = null;
+    document.removeEventListener('keydown', keydownHandler);
+    window.removeEventListener('popstate', onFileCarouselPopState);
+    document.body.style.overflow = '';
+
+    // Tear the state down first so a consumer-removed overlay cannot leave the listeners behind.
+    const overlay = document.getElementById('kfnFileCarousel');
+    if (overlay) {
+        overlay.classList.remove('is-open');
+        overlay.querySelector('.kfn-file-carousel__stage').innerHTML = '';
+    }
 
     // Closed via the X/backdrop/Escape rather than Back: pop the history entry we pushed on open
     // so it doesn't sit there as a stale extra step next time the user presses Back.
     if (!options.viaPopState) history.back();
 
-    if (triggerElement && typeof triggerElement.focus === 'function') triggerElement.focus();
+    if (typeof triggerElement?.focus === 'function') triggerElement.focus();
 }
 
 /**
