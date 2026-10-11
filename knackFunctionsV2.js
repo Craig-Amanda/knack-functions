@@ -15276,14 +15276,14 @@ const QuillModal = {
             fields.innerHTML = `
                 <label>
                     Link URL:
-                    <input type="url" id="ql-link-url" placeholder="https://example.com" value="${url}" required>
+                    <input type="url" id="ql-link-url" placeholder="https://example.com" value="${escapeHtml(url)}" required>
                     <small>
                         If you omit https:// it will be added automatically.
                     </small>
                 </label>
                 <label>
                     Link Text:
-                    <input type="text" id="ql-link-label" placeholder="Link text" value="${label}" required>
+                    <input type="text" id="ql-link-label" placeholder="Link text" value="${escapeHtml(label)}" required>
                 </label>
             `;
             unlinkBtn.style.display = '';
@@ -15292,7 +15292,7 @@ const QuillModal = {
             fields.innerHTML = `
                 <label>
                     Image URL:
-                    <input type="url" id="ql-image-url" placeholder="https://example.com/image.jpg" value="${url}" required>
+                    <input type="url" id="ql-image-url" placeholder="https://example.com/image.jpg" value="${escapeHtml(url)}" required>
                 </label>
             `;
             unlinkBtn.style.display = 'none';
@@ -15348,7 +15348,7 @@ function createQuillModules() {
             handlers: {
                 image: function () {
                     const quill = this.quill;
-                    let savedRange = quill.getSelection();
+                    const savedRange = quill.getSelection(true); // `true` focuses the editor, so a range always exists.
 
                     QuillModal.show({
                         type: 'image',
@@ -15496,14 +15496,14 @@ function replaceKnackRichTextWithQuillEditor(viewId, options = {}) {
                     modules: options.modules || quillModules,
                     readOnly: options.readOnly || false,
                     onChange: (content) => {
-                        const isEmpty = !content || content.replace(/<[^>]+>/g, '').trim() === '';                        textarea.value = isEmpty ? '' : content;
+                        const isEmpty = !content || (!/<img\b/i.test(content) && content.replace(/<[^>]+>/g, '').trim() === '');
+                        textarea.value = isEmpty ? '' : content;
                         if (knackEditor) {
                             knackEditor.innerHTML = isEmpty ? '' : content;
                         }
                         // Trigger events to notify Knack
                         textarea.dispatchEvent(new Event('input', { bubbles: true }));
                         textarea.dispatchEvent(new Event('change', { bubbles: true }));
-                        textarea.blur();
                     }
                 })
             );
@@ -15521,11 +15521,8 @@ function replaceKnackRichTextWithQuillEditor(viewId, options = {}) {
             console.error("Failed to load QuillEditor, reverting to Knack Redactor editor:", err);
 
             // Revert to original editor
-            const revertContainer = container.querySelectorAll ? container : document;
-            revertContainer.querySelectorAll('.redactor-editor')
-                .forEach(editor => editor.classList.remove(CLASS_HIDDEN));
-            revertContainer.querySelectorAll('.my-react-editor')
-                .forEach(div => div.remove());
+            knackEditor.classList.remove(CLASS_HIDDEN);
+            reactDiv.remove();
         }
     });
 
