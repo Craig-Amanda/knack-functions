@@ -4,6 +4,12 @@
  * Handles per-field-type normalization using Knack object metadata.
  */
 class KnackValueResolver {
+    /** Field types Knack computes, so they cannot be written. */
+    static READ_ONLY_FIELD_TYPES = new Set(['auto_increment', 'equation', 'concatenation', 'count', 'max', 'min', 'average']);
+
+    /** Field types whose values are objects rather than strings. */
+    static STRUCTURED_FIELD_TYPES = new Set(['date_time', 'name', 'address', 'phone', 'email', 'file', 'image', 'signature']);
+
     /**
      * Creates a value resolver backed by a navigator.
      * @param {KnackNavigator} navigator - Metadata navigator instance.
@@ -318,8 +324,6 @@ class KnackValueResolver {
      * @returns {*} API-ready value, or undefined when no write should occur.
      */
     toApiValue({ rawValue, displayValue, fieldType }) {
-        const displayString = typeof displayValue === 'string' ? displayValue.trim() : '';
-
         if (fieldType === 'connection') {
             const ids = this.toConnectionIds(rawValue);
             if (!ids.length) return undefined;
@@ -402,8 +406,7 @@ class KnackValueResolver {
         }
 
         if (this.isStructuredFieldType(fieldType)) {
-            const structuredValue = this.toStructuredValue(sourceValue, displayValue);
-            return structuredValue === undefined ? undefined : structuredValue;
+            return this.toStructuredValue(sourceValue, displayValue);
         }
 
         if (typeof sourceValue === 'string') {
@@ -603,21 +606,9 @@ class KnackValueResolver {
      */
     toConnectionIds(value) {
         if (!value) return [];
-        if (Array.isArray(value)) {
-            return value
-                .map((item) => {
-                    if (!item) return '';
-                    if (typeof item === 'object') return String(item.id || '').trim();
-                    return String(item || '').trim();
-                })
-                .filter(Boolean);
-        }
-        if (typeof value === 'object') {
-            const id = String(value.id || '').trim();
-            return id ? [id] : [];
-        }
-        const primitiveId = String(value || '').trim();
-        return primitiveId ? [primitiveId] : [];
+        return (Array.isArray(value) ? value : [value])
+            .map((item) => String((item && typeof item === 'object' ? item.id : item) || '').trim())
+            .filter(Boolean);
     }
 
     /**
@@ -626,7 +617,7 @@ class KnackValueResolver {
      * @returns {boolean} Whether the field should be omitted from POST/PUT payloads.
      */
     isReadOnlyFieldType(fieldType) {
-        return ['auto_increment', 'equation', 'concatenation', 'count', 'max', 'min', 'average'].includes(String(fieldType || '').trim().toLowerCase());
+        return KnackValueResolver.READ_ONLY_FIELD_TYPES.has(String(fieldType || '').trim().toLowerCase());
     }
 
     /**
@@ -635,7 +626,7 @@ class KnackValueResolver {
      * @returns {boolean} Whether the request should preserve object-like structure.
      */
     isStructuredFieldType(fieldType) {
-        return ['date_time', 'name', 'address', 'phone', 'email', 'file', 'image', 'signature'].includes(String(fieldType || '').trim().toLowerCase());
+        return KnackValueResolver.STRUCTURED_FIELD_TYPES.has(String(fieldType || '').trim().toLowerCase());
     }
 
     /**
@@ -775,26 +766,10 @@ class KnackValueResolver {
      * @returns {{id: string, identifier: string}|null} First valid reference or null
      */
     toConnectionRef(value) {
-        if (Array.isArray(value)) {
-            const first = value[0];
-            const firstId = String(first?.id || '').trim();
-            if (!firstId) return null;
-            return {
-                id: firstId,
-                identifier: String(first?.identifier || '').trim()
-            };
-        }
-
-        if (value && typeof value === 'object') {
-            const id = String(value.id || '').trim();
-            if (!id) return null;
-            return {
-                id,
-                identifier: String(value.identifier || '').trim()
-            };
-        }
-
-        return null;
+        const item = Array.isArray(value) ? value[0] : value;
+        if (!item || typeof item !== 'object') return null;
+        const id = String(item.id || '').trim();
+        return id ? { id, identifier: String(item.identifier || '').trim() } : null;
     }
 
     /**
@@ -927,7 +902,7 @@ class KnackValueResolver {
      * @returns {string} Comparable text value.
      */
     normalizeComparableText(value) {
-        return this.toStringSafe(value).replace(/\s+/g, ' ').trim();
+        return this.toStringSafe(value).replace(/\s+/g, ' ');
     }
 
     /**

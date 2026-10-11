@@ -386,7 +386,6 @@ class KnackNavigator {
         this._viewColumnIndexCache = new Map();
         this._viewColumnSelectorCache = new Map();
         this._fieldMetaCache = new Map();
-        this._fieldTypeCache = new Map();
         this._fieldChoiceOptionsCache = new Map();
     }
 
@@ -397,14 +396,9 @@ class KnackNavigator {
      * @returns {string} Normalised id, or an empty string.
      */
     normalizePrefixedId(value, prefix) {
-        const normalizedValue = String(value ?? '').trim().toLowerCase();
-        if (!normalizedValue) return '';
-
-        if (new RegExp(`^${prefix}\\d+$`, 'i').test(normalizedValue)) {
-            return normalizedValue;
-        }
-
-        return /^\d+$/.test(normalizedValue) ? `${prefix}${normalizedValue}` : '';
+        const text = String(value ?? '').trim().toLowerCase();
+        const digits = text.startsWith(prefix) ? text.slice(prefix.length) : text;
+        return /^\d+$/.test(digits) ? `${prefix}${digits}` : '';
     }
 
     /**
@@ -431,12 +425,7 @@ class KnackNavigator {
      * @returns {Object} Field map with normalised field ids.
      */
     normalizeFieldMap(fieldMap = {}) {
-        return Object.fromEntries(
-            Object.entries(fieldMap || {}).map(([fieldKey, fieldValue]) => [
-                fieldKey,
-                this.normalizeFieldId(fieldValue),
-            ])
-        );
+        return this.#mapValues(fieldMap, (fieldValue) => this.normalizeFieldId(fieldValue));
     }
 
     /**
@@ -445,12 +434,7 @@ class KnackNavigator {
      * @returns {Object} Field map with normalised raw field ids.
      */
     normalizeRawFieldMap(fieldMap = {}) {
-        return Object.fromEntries(
-            Object.entries(fieldMap || {}).map(([fieldKey, fieldValue]) => [
-                fieldKey,
-                this.normalizeRawFieldId(fieldValue),
-            ])
-        );
+        return this.#mapValues(fieldMap, (fieldValue) => this.normalizeRawFieldId(fieldValue));
     }
 
     /**
@@ -459,17 +443,19 @@ class KnackNavigator {
      * @returns {Object} View map with normalised view ids (string or array).
      */
     normaliseViewMap(viewMap = {}) {
-        return Object.fromEntries(
-            Object.entries(viewMap || {}).map(([key, value]) => {
-                if (Array.isArray(value)) {
-                    const normalized = value.map((v) => this.normalizeViewId(v)).filter(Boolean);
-                    // Return a single string (first normalized id) or empty string
-                    return [key, normalized[0] || ''];
-                }
+        // Arrays collapse to their first valid id.
+        return this.#mapValues(viewMap, (value) => (Array.isArray(value) ? value : [value])
+            .map((item) => this.normalizeViewId(item)).find(Boolean) ?? '');
+    }
 
-                return [key, this.normalizeViewId(value) || ''];
-            })
-        );
+    /**
+     * Maps every value of a plain object, keeping the keys.
+     * @param {Object} map - Source map (null/undefined become an empty map).
+     * @param {Function} mapper - Receives each value.
+     * @returns {Object}
+     */
+    #mapValues(map, mapper) {
+        return Object.fromEntries(Object.entries(map || {}).map(([key, value]) => [key, mapper(value)]));
     }
 
     /**
@@ -479,10 +465,7 @@ class KnackNavigator {
      * @returns {Element|null} Field wrapper element.
      */
     getFieldWrapper(viewRoot, fieldId) {
-        if (!(viewRoot instanceof Element)) return null;
-        const normalizedFieldId = this.normalizeFieldId(fieldId);
-        if (!normalizedFieldId) return null;
-        return viewRoot.querySelector(`#kn-input-${normalizedFieldId}`);
+        return viewRoot instanceof Element ? getFieldWrapper(fieldId, viewRoot) : null;
     }
 
     /**
@@ -514,25 +497,15 @@ class KnackNavigator {
         if (!vid) return null;
         if (this._viewCache.has(vid)) return this._viewCache.get(vid);
 
-        const direct = Knack?.views?.[vid]?.model?.view;
-        if (direct) {
-            this._viewCache.set(vid, direct);
-            return direct;
-        }
+        const found = globalThis.Knack?.views?.[vid]?.model?.view
+            || (globalThis.Knack?.scenes?.models || [])
+                .flatMap((scene) => scene?.views?.models || [])
+                .find((viewModel) => viewModel?.attributes?.key === vid)?.attributes;
 
-        const scenes = Knack?.scenes?.models || [];
-        for (const scene of scenes) {
-            const views = scene?.views?.models || [];
-            for (const viewModel of views) {
-                if (viewModel?.attributes?.key === vid) {
-                    this._viewCache.set(vid, viewModel.attributes);
-                    return viewModel.attributes;
-                }
-            }
-        }
-
-        this._viewCache.set(vid, null);
-        return null;
+        // Only hits are cached: a view asked for before it renders must still be found once it has.
+        if (!found) return null;
+        this._viewCache.set(vid, found);
+        return found;
     }
 
     /**
@@ -735,10 +708,10 @@ class KnackNavigator {
 
         const columns = this.getViewColumns(normalizedViewId);
         const column = this.getViewColumn(normalizedViewId, columnRef);
-        const columnIndex = column ? columns.findIndex((candidate) => candidate === column) + 1 : 0;
+        const columnIndex = column ? columns.indexOf(column) + 1 : 0;
 
-        this._viewColumnIndexCache.set(cacheKey, columnIndex > 0 ? columnIndex : 0);
-        return columnIndex > 0 ? columnIndex : 0;
+        this._viewColumnIndexCache.set(cacheKey, columnIndex);
+        return columnIndex;
     }
 
     /**
@@ -752,10 +725,8 @@ class KnackNavigator {
         const normalizedViewId = this.normalizeViewId(viewId);
         if (!normalizedViewId || !columnRef) return 0;
 
-        const viewElement = typeof document !== 'undefined'
-            ? document.getElementById(normalizedViewId)
-            : null;
-        if (!(viewElement instanceof HTMLElement)) return 0;
+        const viewElement = document.getElementById(normalizedViewId);
+        if (!viewElement) return 0;
 
         const headerCells = Array.from(viewElement.querySelectorAll('thead tr:last-child > th'));
         if (!headerCells.length) return 0;
@@ -765,8 +736,6 @@ class KnackNavigator {
         const resolvedHeader = this.normalizeViewColumnHeader(resolvedColumn?.header || columnRef);
 
         const matchingIndex = headerCells.findIndex((headerCell) => {
-            if (!(headerCell instanceof HTMLElement)) return false;
-
             const headerFieldKey = this.normalizeFieldId(headerCell.getAttribute('data-field-key') || '');
             if (resolvedFieldId && headerFieldKey && headerFieldKey === resolvedFieldId) {
                 return true;
@@ -1059,14 +1028,7 @@ class KnackNavigator {
      * @returns {string} Lower-cased Knack field type.
      */
     getFieldType(fieldKey) {
-        const key = this.normalizeFieldId(fieldKey);
-        if (!key) return '';
-        if (this._fieldTypeCache.has(key)) return this._fieldTypeCache.get(key);
-
-        const fieldMeta = this.getFieldMeta(key);
-        const fieldType = String(fieldMeta?.type || '').trim().toLowerCase();
-        this._fieldTypeCache.set(key, fieldType);
-        return fieldType;
+        return String(this.getFieldMeta(fieldKey)?.type || '').trim().toLowerCase();
     }
 
     /**
@@ -1142,6 +1104,12 @@ const knackNavigator = new KnackNavigator();
  * Handles per-field-type normalization using Knack object metadata.
  */
 class KnackValueResolver {
+    /** Field types Knack computes, so they cannot be written. */
+    static READ_ONLY_FIELD_TYPES = new Set(['auto_increment', 'equation', 'concatenation', 'count', 'max', 'min', 'average']);
+
+    /** Field types whose values are objects rather than strings. */
+    static STRUCTURED_FIELD_TYPES = new Set(['date_time', 'name', 'address', 'phone', 'email', 'file', 'image', 'signature']);
+
     /**
      * Creates a value resolver backed by a navigator.
      * @param {KnackNavigator} navigator - Metadata navigator instance.
@@ -1456,8 +1424,6 @@ class KnackValueResolver {
      * @returns {*} API-ready value, or undefined when no write should occur.
      */
     toApiValue({ rawValue, displayValue, fieldType }) {
-        const displayString = typeof displayValue === 'string' ? displayValue.trim() : '';
-
         if (fieldType === 'connection') {
             const ids = this.toConnectionIds(rawValue);
             if (!ids.length) return undefined;
@@ -1540,8 +1506,7 @@ class KnackValueResolver {
         }
 
         if (this.isStructuredFieldType(fieldType)) {
-            const structuredValue = this.toStructuredValue(sourceValue, displayValue);
-            return structuredValue === undefined ? undefined : structuredValue;
+            return this.toStructuredValue(sourceValue, displayValue);
         }
 
         if (typeof sourceValue === 'string') {
@@ -1741,21 +1706,9 @@ class KnackValueResolver {
      */
     toConnectionIds(value) {
         if (!value) return [];
-        if (Array.isArray(value)) {
-            return value
-                .map((item) => {
-                    if (!item) return '';
-                    if (typeof item === 'object') return String(item.id || '').trim();
-                    return String(item || '').trim();
-                })
-                .filter(Boolean);
-        }
-        if (typeof value === 'object') {
-            const id = String(value.id || '').trim();
-            return id ? [id] : [];
-        }
-        const primitiveId = String(value || '').trim();
-        return primitiveId ? [primitiveId] : [];
+        return (Array.isArray(value) ? value : [value])
+            .map((item) => String((item && typeof item === 'object' ? item.id : item) || '').trim())
+            .filter(Boolean);
     }
 
     /**
@@ -1764,7 +1717,7 @@ class KnackValueResolver {
      * @returns {boolean} Whether the field should be omitted from POST/PUT payloads.
      */
     isReadOnlyFieldType(fieldType) {
-        return ['auto_increment', 'equation', 'concatenation', 'count', 'max', 'min', 'average'].includes(String(fieldType || '').trim().toLowerCase());
+        return KnackValueResolver.READ_ONLY_FIELD_TYPES.has(String(fieldType || '').trim().toLowerCase());
     }
 
     /**
@@ -1773,7 +1726,7 @@ class KnackValueResolver {
      * @returns {boolean} Whether the request should preserve object-like structure.
      */
     isStructuredFieldType(fieldType) {
-        return ['date_time', 'name', 'address', 'phone', 'email', 'file', 'image', 'signature'].includes(String(fieldType || '').trim().toLowerCase());
+        return KnackValueResolver.STRUCTURED_FIELD_TYPES.has(String(fieldType || '').trim().toLowerCase());
     }
 
     /**
@@ -1913,26 +1866,10 @@ class KnackValueResolver {
      * @returns {{id: string, identifier: string}|null} First valid reference or null
      */
     toConnectionRef(value) {
-        if (Array.isArray(value)) {
-            const first = value[0];
-            const firstId = String(first?.id || '').trim();
-            if (!firstId) return null;
-            return {
-                id: firstId,
-                identifier: String(first?.identifier || '').trim()
-            };
-        }
-
-        if (value && typeof value === 'object') {
-            const id = String(value.id || '').trim();
-            if (!id) return null;
-            return {
-                id,
-                identifier: String(value.identifier || '').trim()
-            };
-        }
-
-        return null;
+        const item = Array.isArray(value) ? value[0] : value;
+        if (!item || typeof item !== 'object') return null;
+        const id = String(item.id || '').trim();
+        return id ? { id, identifier: String(item.identifier || '').trim() } : null;
     }
 
     /**
@@ -2065,7 +2002,7 @@ class KnackValueResolver {
      * @returns {string} Comparable text value.
      */
     normalizeComparableText(value) {
-        return this.toStringSafe(value).replace(/\s+/g, ' ').trim();
+        return this.toStringSafe(value).replace(/\s+/g, ' ');
     }
 
     /**
