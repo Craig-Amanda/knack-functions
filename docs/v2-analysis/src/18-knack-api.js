@@ -103,68 +103,11 @@ class KnackAPI {
      * @public
      */
     async getAllRecords(sceneId, viewId, options = {}) {
-        const opts = options || {};
-        const rows = Number.isFinite(opts.rows) ? opts.rows : 1000;
-        const pageConcurrency = Number.isFinite(opts.pageConcurrency) && opts.pageConcurrency > 0
-            ? Math.floor(opts.pageConcurrency)
-            : 5;
-        const pageOpts = { filters: opts.filters, sorters: opts.sorters, rows, rawResponse: true, timeout: opts.timeout };
-        const failOnPageError = Boolean(opts.failOnPageError);
-
-        const firstPage = await this.getRecords(sceneId, viewId, { ...pageOpts, page: 1 });
-        const totalPages = Number(firstPage?.total_pages || 0);
-        const totalRecords = Number(firstPage?.total_records || 0);
-        const allRecords = Array.isArray(firstPage?.records) ? [...firstPage.records] : [];
-
-        this._log('Fetching all records', { totalPages, totalRecords });
-
-        if (totalRecords === 0 || totalPages <= 1) {
-            return allRecords;
-        }
-
-        for (let batchStart = 2; batchStart <= totalPages; batchStart += pageConcurrency) {
-            const batchEnd = Math.min(totalPages, batchStart + pageConcurrency - 1);
-            const pageNumbers = [];
-            for (let page = batchStart; page <= batchEnd; page++) pageNumbers.push(page);
-
-            const batchResults = await Promise.allSettled(
-                pageNumbers.map(page => this.getRecords(sceneId, viewId, { ...pageOpts, page }))
-            );
-
-            for (let index = 0; index < batchResults.length; index++) {
-                const result = batchResults[index];
-                const page = pageNumbers[index];
-
-                if (result.status === 'fulfilled') {
-                    const nextPage = result.value;
-                    if (Array.isArray(nextPage?.records)) allRecords.push(...nextPage.records);
-                    continue;
-                }
-
-                this._log('Page fetch failed', {
-                    sceneId,
-                    viewId,
-                    page,
-                    error: result.reason?.message || result.reason
-                }, 'warn');
-
-                if (failOnPageError) {
-                    throw result.reason;
-                }
-            }
-
-            if (typeof opts.onProgress === 'function') {
-                opts.onProgress({
-                    page: batchEnd,
-                    totalPages,
-                    recordsLoaded: allRecords.length,
-                    totalRecords,
-                    percentage: Math.round((batchEnd / totalPages) * 100)
-                });
-            }
-        }
-
-        return allRecords;
+        return this._fetchAllPages(
+            (pageOpts) => this.getRecords(sceneId, viewId, pageOpts),
+            options || {},
+            { fetchingMessage: 'Fetching all records', failedMessage: 'Page fetch failed', logContext: { sceneId, viewId } }
+        );
     }
 
     /**
@@ -220,69 +163,49 @@ class KnackAPI {
      * @public
      */
     async getAllRecordChildren(sceneId, viewId, recordId, parentSceneSlug, options = {}) {
-        const opts = options || {};
-        const rows = Number.isFinite(opts.rows) ? opts.rows : 1000;
-        const pageConcurrency = Number.isFinite(opts.pageConcurrency) && opts.pageConcurrency > 0
-            ? Math.floor(opts.pageConcurrency)
-            : 5;
-        const pageOpts = { filters: opts.filters, sorters: opts.sorters, rows, rawResponse: true, timeout: opts.timeout };
-        const failOnPageError = Boolean(opts.failOnPageError);
+        return this._fetchAllPages(
+            (pageOpts) => this.getRecordChildren(sceneId, viewId, recordId, parentSceneSlug, pageOpts),
+            options || {},
+            { fetchingMessage: 'Fetching all child records', failedMessage: 'Child page fetch failed', logContext: { sceneId, viewId, recordId, parentSceneSlug } }
+        );
+    }
 
-        const firstPage = await this.getRecordChildren(sceneId, viewId, recordId, parentSceneSlug, { ...pageOpts, page: 1 });
+    /**
+     * Fetches every page of a paged view request: page 1 first, then the rest in concurrent batches.
+     * @param {(pageOpts: Object) => Promise<Object>} fetchPage - Fetches one page with `rawResponse: true`.
+     * @param {Object} opts - `rows`, `pageConcurrency`, `filters`, `sorters`, `timeout`, `failOnPageError`, `onProgress`.
+     * @param {{fetchingMessage: string, failedMessage: string, logContext: Object}} labels - Log wording and context.
+     * @returns {Promise<Array>} All records.
+     * @private
+     */
+    async _fetchAllPages(fetchPage, opts, { fetchingMessage, failedMessage, logContext }) {
+        const rows = Number.isFinite(opts.rows) ? opts.rows : 1000;
+        const pageConcurrency = Number.isFinite(opts.pageConcurrency) && opts.pageConcurrency > 0 ? Math.floor(opts.pageConcurrency) : 5;
+        const pageOpts = { filters: opts.filters, sorters: opts.sorters, rows, rawResponse: true, timeout: opts.timeout };
+
+        const firstPage = await fetchPage({ ...pageOpts, page: 1 });
         const totalPages = Number(firstPage?.total_pages || 0);
         const totalRecords = Number(firstPage?.total_records || 0);
         const allRecords = Array.isArray(firstPage?.records) ? [...firstPage.records] : [];
-
-        this._log('Fetching all child records', { totalPages, totalRecords });
-
-        if (totalRecords === 0 || totalPages <= 1) {
-            return allRecords;
-        }
+        this._log(fetchingMessage, { totalPages, totalRecords });
+        if (totalRecords === 0 || totalPages <= 1) return allRecords;
 
         for (let batchStart = 2; batchStart <= totalPages; batchStart += pageConcurrency) {
             const batchEnd = Math.min(totalPages, batchStart + pageConcurrency - 1);
-            const pageNumbers = [];
-            for (let page = batchStart; page <= batchEnd; page++) pageNumbers.push(page);
-
-            const batchResults = await Promise.allSettled(
-                pageNumbers.map(page => this.getRecordChildren(sceneId, viewId, recordId, parentSceneSlug, { ...pageOpts, page }))
-            );
-
-            for (let index = 0; index < batchResults.length; index++) {
-                const result = batchResults[index];
-                const page = pageNumbers[index];
-
+            const pageNumbers = Array.from({ length: batchEnd - batchStart + 1 }, (_, index) => batchStart + index);
+            const results = await Promise.allSettled(pageNumbers.map((page) => fetchPage({ ...pageOpts, page })));
+            results.forEach((result, index) => {
                 if (result.status === 'fulfilled') {
-                    const nextPage = result.value;
-                    if (Array.isArray(nextPage?.records)) allRecords.push(...nextPage.records);
-                    continue;
+                    if (Array.isArray(result.value?.records)) allRecords.push(...result.value.records);
+                    return;
                 }
-
-                this._log('Child page fetch failed', {
-                    sceneId,
-                    viewId,
-                    recordId,
-                    parentSceneSlug,
-                    page,
-                    error: result.reason?.message || result.reason
-                }, 'warn');
-
-                if (failOnPageError) {
-                    throw result.reason;
-                }
-            }
-
+                this._log(failedMessage, { ...logContext, page: pageNumbers[index], error: result.reason?.message || result.reason }, 'warn');
+                if (opts.failOnPageError) throw result.reason;
+            });
             if (typeof opts.onProgress === 'function') {
-                opts.onProgress({
-                    page: batchEnd,
-                    totalPages,
-                    recordsLoaded: allRecords.length,
-                    totalRecords,
-                    percentage: Math.round((batchEnd / totalPages) * 100)
-                });
+                opts.onProgress({ page: batchEnd, totalPages, recordsLoaded: allRecords.length, totalRecords, percentage: Math.round((batchEnd / totalPages) * 100) });
             }
         }
-
         return allRecords;
     }
 
@@ -365,62 +288,26 @@ class KnackAPI {
         const total = payloads.length;
         if (!total) return { total: 0, created: 0, failed: 0, records: [] };
 
-        let created = 0;
-        let failed = 0;
-        let rateLimit429Count = 0;
-        let firstError = null;
-        const failedIndices = [];
         const createdRecords = [];
-        const effectiveRefresh = this._normalizeRefreshViews(options?.refreshViews);
-        const batchOptions = { ...(options || {}) };
-        delete batchOptions.refreshViews;
-        const { opts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
-            rateLimit429Count += 1;
-        });
-
-        try {
-            const batchResult = await this._runBatchWorkers({
-                total,
-                workerCount,
-                staggerMs,
-                continueOnError: opts.continueOnError,
-                execute: async (index) => {
-                    try {
-                        const record = await this.createRecord(sceneId, viewId, payloads[index], requestOptions);
-                        if (opts.requireRecordId && !this._extractRecordId(record)) {
-                            throw new Error(`Create response did not include a record id at index ${index}.`);
-                        }
-                        created += 1;
-                        createdRecords[index] = record;
-                        if (typeof opts.onProgress === 'function') {
-                            opts.onProgress({ created, failed, total, index, record });
-                        }
-                    } catch (error) {
-                        failed += 1;
-                        failedIndices.push(index);
-                        if (typeof opts.onProgress === 'function') {
-                            opts.onProgress({ created, failed, total, index, error });
-                        }
-                        if (!opts.continueOnError) {
-                            throw error;
-                        }
-                    }
+        const { created, failed } = await this._runBatchWrite({
+            operation: 'create',
+            code: 'KNF_1028',
+            target: `${sceneId}/${viewId}`,
+            total,
+            options,
+            successKey: 'created',
+            identify: (index) => ({ index }),
+            failureDetail: (failedIndices) => `at indices: ${failedIndices.join(', ')}`,
+            perform: async (index, requestOptions, opts) => {
+                const record = await this.createRecord(sceneId, viewId, payloads[index], requestOptions);
+                if (opts.requireRecordId && !this._extractRecordId(record)) {
+                    throw new Error(`Create response did not include a record id at index ${index}.`);
                 }
-            });
-            firstError = batchResult.firstError;
-
-            await this._refreshAfterWrite(effectiveRefresh);
-            this._logBatchFailures('KNF_1028', 'create', `${sceneId}/${viewId}`, failedIndices.length, total, `at indices: ${failedIndices.join(', ')}`);
-
-            if (firstError && !opts.continueOnError) {
-                throw firstError;
+                createdRecords[index] = record;
+                return { record };
             }
-
-            return { total, created, failed, records: createdRecords.filter(Boolean) };
-        } finally {
-            const processed = created + failed;
-            this._logBatchSummary('create', `${sceneId}/${viewId}`, processed, total, rateLimit429Count);
-        }
+        });
+        return { total, created, failed, records: createdRecords.filter(Boolean) };
     }
 
     /**
@@ -456,7 +343,7 @@ class KnackAPI {
         return this._enqueueWrite(async () => {
             const result = await this._uploadAssetRequest(url, formData, {
                 timeout: opts.timeout,
-                headers: this._buildUploadHeaders(),
+                headers: this._buildHeaders(true, { json: false }),
                 onProgress: typeof opts.onProgress === 'function'
                     ? ({ loaded, total, percent }) => {
                         opts.onProgress({ loaded, total, percent, file, assetType });
@@ -717,10 +604,10 @@ class KnackAPI {
 
             try {
                 const recordObj = result?.record ?? result;
-                const requestedKeys = Object.keys(recordData || {});
+                const requestedKeys = Object.keys(preparedRecordData || {});
                 const failed = [];
                 for (const key of requestedKeys) {
-                    const sentVal = recordData[key];
+                    const sentVal = preparedRecordData[key]; // What was actually sent (assets are uploaded and replaced first).
                     const gotVal = this._extractResponseValueFromRecord(recordObj, key, sentVal);
 
                     if (gotVal === undefined || !this._valuesEffectivelyEqualForField(key, gotVal, sentVal)) {
@@ -801,58 +688,20 @@ class KnackAPI {
         const total = records.length;
         if (!total) return { total: 0, updated: 0, failed: 0 };
 
-        const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
-        const batchOptions = { ...opts };
-        delete batchOptions.refreshViews;
-        let updated = 0;
-        let failed = 0;
-        let rateLimit429Count = 0;
-        let firstError = null;
-        const failedRecordIds = [];
-        const { opts: batchOpts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
-            rateLimit429Count += 1;
-        });
-
-        try {
-            const batchResult = await this._runBatchWorkers({
-                total,
-                workerCount,
-                staggerMs,
-                continueOnError: batchOpts.continueOnError,
-                execute: async (index) => {
-                    const { id: recordId, data } = records[index];
-                    try {
-                        await this.updateRecord(sceneId, viewId, recordId, data, requestOptions);
-                        updated += 1;
-                        if (typeof batchOpts.onProgress === 'function') {
-                            batchOpts.onProgress({ updated, failed, total, recordId });
-                        }
-                    } catch (error) {
-                        failed += 1;
-                        failedRecordIds.push(recordId);
-                        if (typeof batchOpts.onProgress === 'function') {
-                            batchOpts.onProgress({ updated, failed, total, recordId, error });
-                        }
-                        if (!batchOpts.continueOnError) {
-                            throw error;
-                        }
-                    }
-                }
-            });
-            firstError = batchResult.firstError;
-
-            await this._refreshAfterWrite(effectiveRefresh);
-            this._logBatchFailures('KNF_1029', 'update', `${sceneId}/${viewId}`, failedRecordIds.length, total, `: ${failedRecordIds.join(', ')}`);
-
-            if (firstError && !batchOpts.continueOnError) {
-                throw firstError;
+        const { updated, failed } = await this._runBatchWrite({
+            operation: 'update',
+            code: 'KNF_1029',
+            target: `${sceneId}/${viewId}`,
+            total,
+            options: opts,
+            successKey: 'updated',
+            identify: (index) => ({ recordId: records[index].id }),
+            failureDetail: (failedIds) => `: ${failedIds.join(', ')}`,
+            perform: async (index, requestOptions) => {
+                await this.updateRecord(sceneId, viewId, records[index].id, records[index].data, requestOptions);
             }
-
-            return { total, updated, failed };
-        } finally {
-            const processed = updated + failed;
-            this._logBatchSummary('update', `${sceneId}/${viewId}`, processed, total, rateLimit429Count);
-        }
+        });
+        return { total, updated, failed };
     }
 
 
@@ -951,57 +800,78 @@ class KnackAPI {
         const total = ids.length;
         if (!total) return { total: 0, deleted: 0, failed: 0 };
 
-        let deleted = 0;
-        let failed = 0;
-        let rateLimit429Count = 0;
-        let firstError = null;
-        const failedRecordIds = [];
+        const { deleted, failed } = await this._runBatchWrite({
+            operation: 'delete',
+            code: 'KNF_1030',
+            target: `${sceneId}/${viewId}`,
+            total,
+            options: opts,
+            successKey: 'deleted',
+            identify: (index) => ({ recordId: ids[index] }),
+            failureDetail: (failedIds) => `: ${failedIds.join(', ')}`,
+            perform: async (index, requestOptions) => {
+                await this.deleteRecord(sceneId, viewId, ids[index], requestOptions);
+            }
+        });
+        return { total, deleted, failed };
+    }
+
+    /**
+     * Runs a batch of writes with bounded concurrency, progress callbacks, one refresh at the end, and failure and
+     * summary logging. Shared by createRecords, updateRecords and deleteRecords.
+     * @param {Object} config
+     * @param {string} config.operation - `create`, `update` or `delete` (log wording).
+     * @param {string} config.code - Failure log code.
+     * @param {string} config.target - `scene/view` for the logs.
+     * @param {number} config.total - Number of items.
+     * @param {Object} config.options - Batch options (`refreshViews`, `continueOnError`, `staggerMs`, `onProgress`, ...).
+     * @param {'created'|'updated'|'deleted'} config.successKey - Counter name for successes.
+     * @param {(index: number) => Object} config.identify - Progress fields identifying an item (`{index}` or `{recordId}`).
+     * @param {(failedIds: Array) => string} config.failureDetail - Suffix for the failure log.
+     * @param {(index: number, requestOptions: Object, opts: Object) => Promise<Object|void>} config.perform - Does one write;
+     *   its returned fields are added to the success progress event; throw to mark the item failed.
+     * @returns {Promise<{failed: number}>} Counters keyed by `successKey` and `failed`.
+     * @throws The first error when `continueOnError` is false.
+     * @private
+     */
+    async _runBatchWrite({ operation, code, target, total, options, successKey, identify, failureDetail, perform }) {
         const effectiveRefresh = this._normalizeRefreshViews(options?.refreshViews);
         const batchOptions = { ...(options || {}) };
         delete batchOptions.refreshViews;
-        const { opts: batchOpts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
+
+        const counts = { [successKey]: 0, failed: 0 };
+        const failedIds = [];
+        let rateLimit429Count = 0;
+        const { opts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
             rateLimit429Count += 1;
         });
 
         try {
-            const batchResult = await this._runBatchWorkers({
+            const { firstError } = await this._runBatchWorkers({
                 total,
                 workerCount,
                 staggerMs,
-                continueOnError: batchOpts.continueOnError,
+                continueOnError: opts.continueOnError,
                 execute: async (index) => {
-                    const recordId = ids[index];
+                    const identity = identify(index);
                     try {
-                        await this.deleteRecord(sceneId, viewId, recordId, requestOptions);
-                        deleted += 1;
-                        if (typeof batchOpts.onProgress === 'function') {
-                            batchOpts.onProgress({ deleted, failed, total, recordId });
-                        }
+                        const extra = await perform(index, requestOptions, opts);
+                        counts[successKey] += 1;
+                        if (typeof opts.onProgress === 'function') opts.onProgress({ ...counts, total, ...identity, ...extra });
                     } catch (error) {
-                        failed += 1;
-                        failedRecordIds.push(recordId);
-                        if (typeof batchOpts.onProgress === 'function') {
-                            batchOpts.onProgress({ deleted, failed, total, recordId, error });
-                        }
-                        if (!batchOpts.continueOnError) {
-                            throw error;
-                        }
+                        counts.failed += 1;
+                        failedIds.push(identity.recordId ?? identity.index);
+                        if (typeof opts.onProgress === 'function') opts.onProgress({ ...counts, total, ...identity, error });
+                        if (!opts.continueOnError) throw error;
                     }
                 }
             });
-            firstError = batchResult.firstError;
-
             await this._refreshAfterWrite(effectiveRefresh);
-            this._logBatchFailures('KNF_1030', 'delete', `${sceneId}/${viewId}`, failedRecordIds.length, total, `: ${failedRecordIds.join(', ')}`);
-
-            if (firstError && !batchOpts.continueOnError) {
-                throw firstError;
-            }
-
-            return { total, deleted, failed };
+            this._logBatchFailures(code, operation, target, failedIds.length, total, failureDetail(failedIds));
+            if (firstError && !opts.continueOnError) throw firstError;
+            return counts;
         } finally {
-            const processed = deleted + failed;
-            this._logBatchSummary('delete', `${sceneId}/${viewId}`, processed, total, rateLimit429Count);
+            this._logBatchSummary(operation, target, counts[successKey] + counts.failed, total, rateLimit429Count);
         }
     }
 
@@ -1731,48 +1601,22 @@ class KnackAPI {
     }
 
     /**
-     * Builds headers for API requests
-     * @param {boolean} withAuth - Whether to include authorization header
+     * Builds headers for API requests.
+     * @param {boolean} [withAuth=true] - Whether to include the authorization header.
+     * @param {Object} [options]
+     * @param {boolean} [options.json=true] - Send `Content-Type: application/json`; false for multipart uploads, where
+     *   the browser must set the content type (and boundary) itself.
      * @returns {Object} - Headers object
      * @private
      */
-    _buildHeaders(withAuth = true) {
+    _buildHeaders(withAuth = true, { json = true } = {}) {
         const headers = {
-            'Content-Type': 'application/json',
+            ...(json && { 'Content-Type': 'application/json' }),
             'X-Knack-Application-ID': Knack.application_id,
             'X-Knack-REST-API-Key': 'knack'
         };
-
-        if (withAuth) {
-            const token = this._getAuthToken();
-            if (token) {
-                headers['Authorization'] = token;
-            }
-        }
-
-        return headers;
-    }
-
-    /**
-     * Builds headers for multipart upload requests.
-     * Content-Type is intentionally omitted so the browser can set the proper boundary.
-     * @param {boolean} withAuth - Whether to include authorization header
-     * @returns {Object} Headers object
-     * @private
-     */
-    _buildUploadHeaders(withAuth = true) {
-        const headers = {
-            'X-Knack-Application-ID': Knack.application_id,
-            'X-Knack-REST-API-Key': 'knack'
-        };
-
-        if (withAuth) {
-            const token = this._getAuthToken();
-            if (token) {
-                headers['Authorization'] = token;
-            }
-        }
-
+        const token = withAuth && this._getAuthToken();
+        if (token) headers['Authorization'] = token;
         return headers;
     }
 
@@ -2566,7 +2410,7 @@ class KnackAPI {
                 try {
                     const fetchOptions = {
                         method,
-                        headers: headers || (requestOptions.body instanceof FormData ? this._buildUploadHeaders() : this._buildHeaders()),
+                        headers: headers || (this._buildHeaders(true, { json: !(requestOptions.body instanceof FormData) })),
                         signal: controller.signal
                     };
 
