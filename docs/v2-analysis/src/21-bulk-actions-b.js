@@ -2702,7 +2702,7 @@ function preserveBulkEditSelectedRowColors(viewId) {
     // callback - filtering to just these two keeps this from re-running on every unrelated
     // attribute Knack touches while rendering (aria-*, data-column-index, etc.).
     const observer = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => restoreCell(mutation.target));
+        new Set(mutations.map((mutation) => mutation.target)).forEach(restoreCell);
     });
     observer.observe(tableBody, {
         attributes: true,

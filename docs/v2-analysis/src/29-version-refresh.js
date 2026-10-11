@@ -109,6 +109,7 @@ function createVersionRefreshController(options = {}) {
         pendingRequestActive: false,
         reloadTimerId: 0,
         pendingObserver: null,
+        pendingCheckTimerId: 0,
         refreshHoldIds: new Set(),
         syncInFlight: false,
     };
@@ -335,6 +336,7 @@ function createVersionRefreshController(options = {}) {
 
         internalState.pendingObserver.disconnect();
         internalState.pendingObserver = null;
+        window.clearTimeout(internalState.pendingCheckTimerId);
     }
 
     /**
@@ -506,8 +508,10 @@ function createVersionRefreshController(options = {}) {
             }
         };
 
+        // Page-wide class/style changes are frequent, so check at most once per quiet period rather than on every batch.
         internalState.pendingObserver = new MutationObserver(function () {
-            runPendingRefreshCheck();
+            window.clearTimeout(internalState.pendingCheckTimerId);
+            internalState.pendingCheckTimerId = window.setTimeout(runPendingRefreshCheck, 250);
         });
         internalState.pendingObserver.observe(document.body, {
             subtree: true,
