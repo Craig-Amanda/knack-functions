@@ -1,12 +1,12 @@
 {
     "resolveElement": {
         "v1": "input",
-        "v2": "input, root = document",
+        "v2": "input,root=document",
         "reason": "Optional trailing root for scoped selector lookups; every V1 call form (one argument) behaves as before."
     },
     "resolveElements": {
         "v1": "input",
-        "v2": "input, root = document",
+        "v2": "input,root=document",
         "reason": "Optional trailing root for scoped selector lookups; every V1 call form (one argument) behaves as before."
     }
 }

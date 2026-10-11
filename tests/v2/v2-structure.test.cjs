@@ -23,7 +23,7 @@ function declarations(source) {
     const out = new Map();
     const duplicates = [];
     const add = (name, params, kind) => { if (out.has(name)) duplicates.push(name); out.set(name, { params, kind }); };
-    const paramText = (fn) => fn.params.map((p) => source.slice(p.start, p.end).replace(/\s+/g, ' ')).join(', ');
+    const paramText = (fn) => fn.params.map((p) => source.slice(p.start, p.end).replace(/\s+/g, '')).join(',');
     for (const node of ast.body) {
         if (node.type === 'FunctionDeclaration') add(node.id.name, paramText(node), 'function');
         else if (node.type === 'ClassDeclaration') add(node.id.name, null, 'class');
