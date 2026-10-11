@@ -8,7 +8,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { extract } = require('./extract.cjs');
+const { extract, topLevelNames } = require('./extract.cjs');
 
 const V1 = 'knackFunctions.js';
 const V2 = process.env.KF_V2_PATH || 'knackFunctionsV2.js'; // KF_V2_PATH lets a preview assembly be tested before it lands
@@ -74,7 +74,8 @@ async function realm({ file, names, html = '', exclude = [], before = '', statem
 /** Run the same scenario against V1 and V2 and return both results. */
 async function both({ names, html, exclude, before, statements }, scenario, arg) {
     const [v1, v2] = await Promise.all([
-        realm({ file: V1, names, html, exclude, before, statements }),
+        // V2-only names (new helpers, warnDeprecated) simply do not exist in V1, so load only the V1 ones.
+        realm({ file: V1, names: names.filter((name) => topLevelNames(V1).includes(name)), html, exclude, before, statements }),
         realm({ file: V2, names, html, exclude, before, statements, fallback: V1 }),
     ]);
     try {
