@@ -15031,132 +15031,90 @@ function buttonToUrl({ key: viewId }, keywords) {
 // Section: quill-truncation
 // ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
-// Quill rich-text editor (React) and grid truncation ported as-is: V1 lines 7143-7655 and 7670-7872 (analyses C09, C10; Quill needs the React/ReactDOM page globals).
+// Quill rich-text editor (plain DOM, Quill 2.x; no React) and grid truncation (analyses C09, C10).
 
 /**
  * Enhanced Quill Rich Text Editor for Knack Replaces Knack's Redactor editor with Quill.js
  */
 
+/** Formats the editor accepts: exactly what the toolbar offers, so pasted content can't bring in anything else. */
+const QUILL_FORMATS = ['header', 'font', 'bold', 'italic', 'underline', 'color', 'background', 'align', 'list', 'indent', 'code-block', 'blockquote', 'script', 'link', 'image'];
+
+/** Maps each toolbar button to its tooltip; `{mod}` is replaced by Cmd or Ctrl. The tooltip doubles as the accessible name. */
+const QUILL_TOOLBAR_TIPS = [
+    ['button.ql-bold', 'Bold ({mod}+B)'],
+    ['button.ql-italic', 'Italic ({mod}+I)'],
+    ['button.ql-underline', 'Underline ({mod}+U)'],
+    ['button.ql-link', 'Insert Link ({mod}+K)'],
+    ['button.ql-image', 'Insert Image'],
+    ['button.ql-code-block', 'Code Block'],
+    ['button.ql-blockquote', 'Blockquote'],
+    ['button.ql-clean', 'Remove Formatting'],
+    ['button.ql-list[value="ordered"]', 'Numbered List ({mod}+Shift+7)'],
+    ['button.ql-list[value="bullet"]', 'Bullet List ({mod}+Shift+8)'],
+    ['.ql-color', 'Text Color'],
+    ['.ql-background', 'Background Color'],
+    ['button.ql-script[value="sub"]', 'Subscript ({mod}+,)'],
+    ['button.ql-script[value="super"]', 'Superscript ({mod}+.)'],
+    ['.ql-align', 'Align'],
+    ['.ql-header', 'Heading'],
+    ['.ql-font', 'Font'],
+];
+const QUILL_ALIGN_TIPS = { '': 'Align Left', center: 'Align Center', right: 'Align Right', justify: 'Justify' };
+
+/** Gives the toolbar buttons tooltips and accessible names. @param {Element} toolbar - The `.ql-toolbar` element. */
+function labelQuillToolbar(toolbar) {
+    const mod = /Mac|iPod|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+    QUILL_TOOLBAR_TIPS.forEach(([selector, tip]) => toolbar.querySelectorAll(selector).forEach((el) => {
+        el.title = tip.replace('{mod}', mod);
+        el.setAttribute('aria-label', el.title);
+    }));
+    toolbar.querySelectorAll('.ql-align.ql-picker .ql-picker-item').forEach((option) => {
+        option.title = QUILL_ALIGN_TIPS[option.getAttribute('data-value') ?? ''] ?? '';
+    });
+}
+
 /**
- * QuillEditor React component with optimized rendering
+ * Mounts a Quill editor in an element, with no framework needed.
+ * @param {Element|string} target - Empty element (or selector) that becomes the editor; Quill adds its toolbar before it.
+ * @param {Object} [options={}] - Editor options.
+ * @param {string} [options.value=''] - Initial HTML; loading it is silent, so it does not fire `onChange`.
+ * @param {Function} [options.onChange] - Called with the editor HTML after each user edit.
+ * @param {Object} [options.modules] - Quill modules; defaults to `createQuillModules()`.
+ * @param {string} [options.theme='snow'] - Quill theme.
+ * @param {boolean} [options.readOnly=false] - Whether editing is disabled.
+ * @param {string[]} [options.formats=QUILL_FORMATS] - Formats the editor accepts.
+ * @returns {{quill: Object, getHtml: Function, setHtml: Function, setReadOnly: Function, destroy: Function}|null} Controller, or null when Quill or the target is missing.
  */
-function QuillEditor({ value, onChange, modules, theme = "snow", readOnly = false }) {
-    const editorRef = React.useRef(null);
-    const quillRef = React.useRef(null);
+function createQuillEditor(target, { value = '', onChange, modules, theme = 'snow', readOnly = false, formats = QUILL_FORMATS } = {}) {
+    const element = resolveElement(target);
+    if (!element || !window.Quill) return null;
 
-    // Initialize Quill instance
-    React.useEffect(() => {
-        if (!editorRef.current || !window.Quill || quillRef.current) return;
+    const quill = new window.Quill(element, { theme, modules: modules || createQuillModules(), readOnly, formats });
+    const setHtml = (html) => quill.setContents(quill.clipboard.convert({ html: html || '' }), 'silent');
+    if (value) setHtml(value);
 
-        // Create new Quill instance
-        quillRef.current = new window.Quill(editorRef.current, {
-            theme,
-            modules,
-            readOnly,
-        });
+    const toolbar = element.previousElementSibling?.classList.contains('ql-toolbar') ? element.previousElementSibling : element.parentNode?.querySelector('.ql-toolbar');
+    if (toolbar) labelQuillToolbar(toolbar);
 
-        // Find the toolbar element through various fallback methods
-        const toolbar = [
-            editorRef.current.previousSibling,
-            editorRef.current.parentNode?.querySelector('.ql-toolbar'),
-            document.querySelector('.ql-toolbar')
-        ].find(el => el?.classList?.contains('ql-toolbar'));
+    const handleChange = () => onChange?.(quill.root.innerHTML); // Silent loads don't emit, so this is only real edits.
+    quill.on('text-change', handleChange);
 
-        // Detect Mac or Windows for shortcut display
-        function getModifierKey() {
-            return /Mac|iPod|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
-        }
-
-        if (toolbar) {
-            const modifierKey = getModifierKey();
-            const tooltips = [
-                { selector: 'button.ql-bold', tip: `Bold (${modifierKey}+B)` },
-                { selector: 'button.ql-italic', tip: `Italic (${modifierKey}+I)` },
-                { selector: 'button.ql-underline', tip: `Underline (${modifierKey}+U)` },
-                { selector: 'button.ql-link', tip: `Insert Link (${modifierKey}+K)` },
-                { selector: 'button.ql-image', tip: 'Insert Image' },
-                { selector: 'button.ql-code-block', tip: 'Code Block' },
-                { selector: 'button.ql-blockquote', tip: 'Blockquote' },
-                { selector: 'button.ql-clean', tip: 'Remove Formatting' },
-                { selector: 'button.ql-list[value="ordered"]', tip: `Numbered List (${modifierKey}+Shift+7)` },
-                { selector: 'button.ql-list[value="bullet"]', tip: `Bullet List (${modifierKey}+Shift+8)` },
-                { selector: '.ql-color', tip: 'Text Color' },
-                { selector: '.ql-background', tip: 'Background Color' },
-                { selector: 'button.ql-script[value="sub"]', tip: `Subscript (${modifierKey}+,)` },
-                { selector: 'button.ql-script[value="super"]', tip: `Superscript (${modifierKey }+.)` },
-                { selector: '.ql-align', tip: 'Align' }
-            ];
-
-            tooltips.forEach(({ selector, tip }) => {
-                toolbar.querySelectorAll(selector).forEach(btn => {
-                    btn.title = tip;
-                });
-            });
-
-            // Add tooltips for each align option in the dropdown
-            const alignPicker = toolbar.querySelector('.ql-align.ql-picker');
-            if (alignPicker) {
-                const alignOptions = alignPicker.querySelectorAll('.ql-picker-item');
-                alignOptions.forEach(option => {
-                    switch (option.getAttribute('data-value')) {
-                        case null:
-                            option.title = 'Align Left';
-                            break;
-                        case 'center':
-                            option.title = 'Align Center';
-                            break;
-                        case 'right':
-                            option.title = 'Align Right';
-                            break;
-                        case 'justify':
-                            option.title = 'Justify';
-                            break;
-                    }
-                });
-            }
-        }
-
-        // Listen for text changes
-        quillRef.current.on('text-change', () => {
-            const html = editorRef.current.querySelector('.ql-editor').innerHTML;
-            onChange && onChange(html);
-        });
-
-        // Cleanup
-        return () => {
-            if (quillRef.current) {
-                quillRef.current.off('text-change');
-                quillRef.current = null;
-            }
-        };
-    }, [modules, theme, readOnly]);
-
-    // Handle external value changes
-    React.useEffect(() => {
-        if (
-            !quillRef.current ||
-            value === quillRef.current.root.innerHTML ||
-            quillRef.current.hasFocus()
-        ) return;
-
-        quillRef.current.clipboard.dangerouslyPasteHTML(value || '');
-    }, [value]);
-
-    // Handle readOnly changes
-    React.useEffect(() => {
-        if (quillRef.current) {
-            quillRef.current.enable(!readOnly);
-        }
-    }, [readOnly]);
-
-    return React.createElement('div', { ref: editorRef });
+    return {
+        quill,
+        getHtml: () => quill.root.innerHTML,
+        setHtml,
+        setReadOnly: (isReadOnly) => quill.enable(!isReadOnly),
+        destroy: () => quill.off('text-change', handleChange),
+    };
 }
 
 /**
  * Custom Quill icon definitions for lists
  */
 function initializeQuillIcons() {
-    if (!(window.Quill?.imports?.['ui/icons'])) return;
+    if (!(window.Quill?.imports?.['ui/icons']) || initializeQuillIcons.done) return;
+    initializeQuillIcons.done = true;
 
     const icons = window.Quill.imports['ui/icons'];
 
@@ -15199,7 +15157,7 @@ const QuillModal = {
         const modal = document.createElement('div');
         modal.id = 'quill-universal-modal';
         modal.innerHTML = `
-            <div class="ql-modal-content">
+            <div class="ql-modal-content" role="dialog" aria-modal="true" aria-labelledby="ql-modal-title">
                 <h3 id="ql-modal-title"></h3>
                 <div id="ql-modal-fields"></div>
                 <div class="ql-modal-actions">
@@ -15298,36 +15256,50 @@ const QuillModal = {
             unlinkBtn.style.display = 'none';
         }
 
-        modal.style.display = 'flex';
-
-        // Set up event handlers
-        saveBtn.onclick = () => {
+        const previousFocus = document.activeElement;
+        const close = () => {
+            modal.style.display = 'none';
+            modal.removeEventListener('keydown', onKeydown);
+            if (previousFocus?.isConnected) previousFocus.focus?.();
+        };
+        const save = () => {
             if (type === 'link') {
                 let urlVal = document.getElementById('ql-link-url').value.trim();
-                let labelVal = document.getElementById('ql-link-label').value.trim();
-                if (urlVal && labelVal) {
-                    if (!/^https?:\/\//i.test(urlVal)) urlVal = 'https://' + urlVal;
-                    onSave(urlVal, labelVal);
-                    modal.style.display = 'none';
-                }
+                const labelVal = document.getElementById('ql-link-label').value.trim();
+                if (!urlVal || !labelVal) return;
+                if (!/^https?:\/\//i.test(urlVal)) urlVal = 'https://' + urlVal;
+                onSave(urlVal, labelVal);
             } else if (type === 'image') {
-                let urlVal = document.getElementById('ql-image-url').value.trim();
-                if (urlVal) {
-                    onSave(urlVal);
-                    modal.style.display = 'none';
-                }
+                const urlVal = document.getElementById('ql-image-url').value.trim();
+                if (!urlVal) return;
+                onSave(urlVal);
+            }
+            close();
+        };
+        // Escape cancels, Enter in a field saves, and Tab stays inside the dialog.
+        const onKeydown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                onCancel?.();
+                close();
+            } else if (event.key === 'Enter' && event.target.tagName === 'INPUT') {
+                event.preventDefault();
+                save();
+            } else if (event.key === 'Tab') {
+                const focusable = [...modal.querySelectorAll('input, button')].filter((el) => el.offsetParent !== null && !el.disabled);
+                if (!focusable.length) return;
+                const [first, last] = [focusable[0], focusable.at(-1)];
+                if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
             }
         };
 
-        unlinkBtn.onclick = () => {
-            onUnlink && onUnlink();
-            modal.style.display = 'none';
-        };
-
-        cancelBtn.onclick = () => {
-            onCancel && onCancel();
-            modal.style.display = 'none';
-        };
+        modal.style.display = 'flex';
+        modal.addEventListener('keydown', onKeydown);
+        saveBtn.onclick = save;
+        unlinkBtn.onclick = () => { onUnlink?.(); close(); };
+        cancelBtn.onclick = () => { onCancel?.(); close(); };
+        fields.querySelector('input')?.focus();
     }
 };
 
@@ -15398,6 +15370,7 @@ function createQuillModules() {
                 }
             }
         },
+        clipboard: { matchVisual: false }, // Quill 2: don't turn pasted spacing into extra blank lines.
         keyboard: {
             bindings: {
                 orderedList: {
@@ -15421,126 +15394,90 @@ function createQuillModules() {
     };
 }
 
+/** Controllers of the editors mounted by `replaceKnackRichTextWithQuillEditor`, so a re-render never mounts a second one. */
+const quillEditorControllers = new WeakMap();
+
 /**
- * Main function to replace Knack's rich text editor with Quill
+ * Replaces Knack's Redactor rich-text inputs in a view with Quill editors.
+ * The Redactor textarea stays the source of truth: every edit is copied into it and Knack is notified.
+ * @param {string} [viewId] - View to search; the whole document when omitted.
+ * @param {Object} [options={}] - `theme`, `modules`, `readOnly` and `formats`, as for `createQuillEditor`.
+ * @returns {number|undefined} Number of rich-text inputs found; undefined when Quill is missing or nothing was found.
  */
 function replaceKnackRichTextWithQuillEditor(viewId, options = {}) {
-    // Check for required dependencies
-    if (!window.React || !window.ReactDOM || !window.Quill) {
-        console.warn("React or Quill not loaded, using Knack Redactor editor.");
+    if (!window.Quill) {
+        console.warn("Quill not loaded, using Knack Redactor editor.");
         return;
     }
 
-    // Initialize Quill icons
     initializeQuillIcons();
+    ensureQuillMousedownGuard();
 
-    // Configure Quill
-    const quillModules = createQuillModules();
-
-    // Get container element
     const container = viewId ? document.getElementById(viewId) : document;
-    if (!container) return;
+    const richInputs = container?.querySelectorAll('.kn-input-rich_text');
+    if (!richInputs?.length) return;
 
-    // Get all rich text inputs in container
-    const richInputs = container.querySelectorAll?.('.kn-input-rich_text') ||
-        document.querySelectorAll('.kn-input-rich_text');
-
-    if (!richInputs.length) return;
-
-    // Process each rich text input
     richInputs.forEach((knInput, idx) => {
-        // Idempotency guard: skip if we've already mounted a Quill editor for this input
-        if (knInput.dataset.quillMounted === 'true') return;
+        if (quillEditorControllers.has(knInput)) return;
         const knackEditor = knInput.querySelector('.redactor-editor');
         const textarea = knInput.querySelector('textarea.rich_text');
         if (!knackEditor || !textarea) return;
 
-        // Move label above the new editor
+        const editorHost = document.createElement('div');
+        editorHost.className = 'my-react-editor'; // Class name kept from V1: apps style and target it.
+        editorHost.id = `my-react-editor-${viewId || 'global'}-${idx}`;
+        editorHost.dataset.for = knInput.id;
+
+        // Move the label above the new editor.
         const label = knInput.querySelector('label.kn-label');
-        let detachedLabel = null;
         if (label) {
-            detachedLabel = label.cloneNode(true);
+            knInput.parentNode.insertBefore(label.cloneNode(true), knInput);
             label.remove();
         }
+        knInput.parentNode.insertBefore(editorHost, knInput);
 
-        // Create or get React container
-        const containerId = `${viewId || 'global'}-${idx}`;
-        let reactDiv = knInput.parentNode.querySelector(`.my-react-editor[data-for="${knInput.id}"]`);
-
-        if (!reactDiv) {
-            reactDiv = document.createElement('div');
-            reactDiv.className = 'my-react-editor';
-            reactDiv.id = `my-react-editor-${containerId}`;
-            reactDiv.setAttribute('data-for', knInput.id);
-
-            knInput.parentNode.insertBefore(reactDiv, knInput);
-            if (detachedLabel) {
-                reactDiv.parentNode.insertBefore(detachedLabel, reactDiv);
-            }
-        }
-
-        // Replace editor
         try {
-            // Hide original editor
             knackEditor.classList.add(CLASS_HIDDEN);
+            const controller = createQuillEditor(editorHost, {
+                theme: options.theme,
+                modules: options.modules,
+                formats: options.formats,
+                readOnly: options.readOnly || textarea.disabled,
+                value: textarea.value,
+                onChange: (content) => {
+                    // An editor holding only an empty paragraph is empty; one holding only an image is not.
+                    const isEmpty = !content || (!/<img\b/i.test(content) && content.replace(/<[^>]+>/g, '').trim() === '');
+                    textarea.value = isEmpty ? '' : content;
+                    knackEditor.innerHTML = isEmpty ? '' : content;
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                },
+            });
+            quillEditorControllers.set(knInput, controller);
 
-            // Render Quill editor
-            if (!reactDiv._reactRootContainer) {
-                reactDiv._reactRootContainer = ReactDOM.createRoot(reactDiv);
-            }
-
-            reactDiv._reactRootContainer.render(
-                React.createElement(QuillEditor, {
-                    theme: options.theme || "snow",
-                    value: textarea.value,
-                    modules: options.modules || quillModules,
-                    readOnly: options.readOnly || false,
-                    onChange: (content) => {
-                        const isEmpty = !content || (!/<img\b/i.test(content) && content.replace(/<[^>]+>/g, '').trim() === '');
-                        textarea.value = isEmpty ? '' : content;
-                        if (knackEditor) {
-                            knackEditor.innerHTML = isEmpty ? '' : content;
-                        }
-                        // Trigger events to notify Knack
-                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                        textarea.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                })
-            );
-
-            // Mark this input as processed to avoid duplicate toolbars on subsequent calls
-            knInput.dataset.quillMounted = 'true';
-
-            // Clean up old editor elements
-            document.querySelectorAll('.redactor-toolbar, .redactor-toolbar-tooltip, .redactor-air, .redactor-dropdown')
-                .forEach(el => el.remove());
-            document.querySelectorAll('[id^="redactor-toolbar-"]')
-                .forEach(el => el.remove());
-
+            // Remove the Redactor toolbars that are now unused.
+            document.querySelectorAll('.redactor-toolbar, .redactor-toolbar-tooltip, .redactor-air, .redactor-dropdown, [id^="redactor-toolbar-"]').forEach((el) => el.remove());
         } catch (err) {
-            console.error("Failed to load QuillEditor, reverting to Knack Redactor editor:", err);
-
-            // Revert to original editor
+            console.error("Failed to load Quill editor, reverting to Knack Redactor editor:", err);
             knackEditor.classList.remove(CLASS_HIDDEN);
-            reactDiv.remove();
+            editorHost.remove();
         }
     });
 
-    return richInputs.length; // Return count of replaced editors
+    return richInputs.length;
 }
 
-// Prevent KTL long click when Quill editor is focused or clicked
-document.addEventListener('mousedown', function(e) {
-    const isQuillFocused = document.activeElement && document.activeElement.closest('.ql-editor');
-    const isQuillClick = e.target.closest('.ql-editor, .ql-toolbar, .ql-container');
-
-    // Don't block clicks on toolbar pickers - they need to work!
-    const isPickerClick = e.target.closest('.ql-picker, .ql-picker-label, .ql-picker-options, .ql-picker-item');
-
-    if ((isQuillFocused || isQuillClick) && !isPickerClick) {
-        e.stopImmediatePropagation();
-    }
-}, true); // Use capture phase
+/** Stops KTL's long-click handling when the Quill editor is used. Installed once, the first time an editor is mounted. */
+function ensureQuillMousedownGuard() {
+    if (ensureQuillMousedownGuard.done) return;
+    ensureQuillMousedownGuard.done = true;
+    document.addEventListener('mousedown', function (e) {
+        const isQuillClick = document.activeElement?.closest('.ql-editor') || e.target.closest('.ql-editor, .ql-toolbar, .ql-container');
+        // Toolbar pickers need their clicks.
+        const isPickerClick = e.target.closest('.ql-picker, .ql-picker-label, .ql-picker-options, .ql-picker-item');
+        if (isQuillClick && !isPickerClick) e.stopImmediatePropagation();
+    }, true); // Capture phase
+}
 
 
 const gridTruncationControllers = new WeakMap();
@@ -21626,6 +21563,23 @@ function getCurrentSceneInfo(viewId, options) {
 function fileViewer(extension, url) {
     warnDeprecated('fileViewer', 'the file URL directly');
     return url;
+}
+
+/**
+ * @deprecated V1 was a React component; Quill is now mounted straight onto an element. Use createQuillEditor.
+ * Still works as a React component for any page code that rendered it.
+ * @param {{value?: string, onChange?: Function, modules?: Object, theme?: string, readOnly?: boolean}} props - Editor props.
+ * @returns {Object} React element.
+ */
+function QuillEditor({ value, onChange, modules, theme = "snow", readOnly = false }) {
+    warnDeprecated('QuillEditor', 'createQuillEditor');
+    let controller = null;
+    return React.createElement('div', {
+        ref: (element) => {
+            controller?.destroy();
+            controller = element ? createQuillEditor(element, { value, onChange, modules, theme, readOnly }) : null;
+        },
+    });
 }
 
 
