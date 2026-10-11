@@ -1,17 +1,12 @@
 /**
  * Curried operator helper from V1 (`evaluate(a)('<')(b)`).
- * @deprecated Use the JavaScript operator directly; kept so existing page code keeps working.
+ * @deprecated Use the JavaScript operator directly (or applyOperator()); kept so existing page code keeps working.
  * @param {*} a - Left operand.
  * @returns {(operator: string) => (b: *) => *} Applies `operator` to `a` and `b`; `'Invalid operation'` for unknown operators.
  */
 const evaluate = (a) => (operator) => (b) => {
     warnDeprecated('evaluate', 'the JavaScript operator directly');
-    const operations = {
-        '+': () => a + b, '-': () => a - b, '/': () => a / b, '*': () => a * b, '%': () => a % b,
-        '>': () => a > b, '>=': () => a >= b, '<': () => a < b, '<=': () => a <= b,
-        '==': () => a == b, '===': () => a === b, '!=': () => a != b, '!==': () => a !== b,
-    };
-    return operations[operator] ? operations[operator]() : 'Invalid operation';
+    return applyOperator(a, operator, b);
 };
 
 // jQuery pseudo-selector `:textEquals(text)` from V1: exact trimmed-text match ignoring Knack's required marker (*).
