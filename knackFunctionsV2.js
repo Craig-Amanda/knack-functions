@@ -8752,8 +8752,13 @@ function ensureBulkActionControllerLifecycleBinding() {
     if (bulkActionControllerLifecycleBound || typeof window.jQuery !== 'function') return;
 
     bulkActionControllerLifecycleBound = true;
+    // A scene renders many views back to back; one sync after the burst is enough.
+    let syncQueued = false;
     window.jQuery(document).on('knack-view-render.any knack-scene-render', function () {
+        if (syncQueued) return;
+        syncQueued = true;
         window.setTimeout(() => {
+            syncQueued = false;
             bulkActionSyncControllerVisibility();
         }, 0);
     });
