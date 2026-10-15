@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-15
+
+<!-- pr:103 fix/wait-get-value-keys - amandajane-mo -->
+- `waitGetValueFromDetail` now returns each value of a multi-field call under both the ID as passed (`407`, `'2336'`) and its `field_` key (`field_407`). This fixes callers that read numeric keys, which broke in v1.14.2, and keeps `field_` key reads working.
+- Single-field calls are unchanged.
+
 ## 2026-10-01
 
 <!-- pr:101 Hide-Empty-Cols-by-Field - amandajane-mo -->

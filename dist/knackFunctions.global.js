@@ -18260,13 +18260,25 @@ function addPlaceholderToInput(fieldID, placeholder) {
  * @param {string|number|(string|number)[]} options.fieldIds - The field ID(s), with or without the `field_` prefix.
  * @param {number} [options.delay=20000] - Maximum time to wait for the field(s) in milliseconds.
  * @param {boolean} [options.returnHtml=false] - If true, returns the HTML content; otherwise, returns text.
- * @returns {Promise<string|object|null>} - Field value(s) or null if not found.
+ * @returns {Promise<string|object|null>} - Field value(s) or null if not found. With several field IDs, each value
+ *   is keyed both by the ID exactly as passed (e.g. `407` or `'2336'`) and by its `field_` key (e.g. `field_407`),
+ *   so `values[407]`, `const { 407: park } = values` and `values.field_407` all work.
  */
 async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHtml = false}) {
     // Normalise fieldIds to always be an array for uniform handling
     const fieldIdArray = Array.isArray(fieldIds) ? fieldIds : [fieldIds];
     const normalisedViewId = viewId ? knackNavigator.normalizeViewId(viewId) : '';
     const fieldValues = {};
+
+    // Key each value by the ID as passed and by its field_ key. Results were keyed as passed until v1.14.2, which
+    // switched to field_ keys only and silently broke callers that read numeric keys.
+    const setFieldValue = (fieldId, value) => {
+        fieldValues[fieldId] = value;
+        const normalisedFieldId = knackNavigator.normalizeFieldId(fieldId);
+        if (normalisedFieldId) {
+            fieldValues[normalisedFieldId] = value;
+        }
+    };
 
     try {
         // Attempt to wait for all fields and track missing fields
@@ -18283,10 +18295,10 @@ async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHt
                         selector,
                         delay
                     });
-                    return { fieldId: normalisedFieldId, found: true, element };
+                    return { fieldId, found: true, element };
                 } catch (error) {
                     console.warn(`Field ${normalisedFieldId} not found ${normalisedViewId ? `in view ${normalisedViewId}` : 'globally'} within ${delay}ms.`);
-                    return { fieldId: normalisedFieldId, found: false, element: null };
+                    return { fieldId, found: false, element: null };
                 }
             })
         );
@@ -18297,9 +18309,9 @@ async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHt
                 const value = returnHtml
                     ? element.innerHTML?.trim() || null
                     : element.textContent?.trim() || null;
-                fieldValues[fieldId] = value;
+                setFieldValue(fieldId, value);
             } else {
-                fieldValues[fieldId] = null;
+                setFieldValue(fieldId, null);
             }
         });
 
@@ -18315,7 +18327,7 @@ async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHt
         // Preserve already-found values and only set null for missing ones
         fieldIdArray.forEach(fieldId => {
             if (fieldValues[fieldId] === undefined) {
-                fieldValues[fieldId] = null;
+                setFieldValue(fieldId, null);
             }
         });
 
