@@ -39,6 +39,7 @@
     "addModalNavigationButtons": "readonly",
     "addPlaceholderToInput": "readonly",
     "appendShrinkLink": "readonly",
+    "applyKnackViewFilters": "readonly",
     "applyMenuLinkFilters": "readonly",
     "areAllInputsEmpty": "readonly",
     "attachNativeDateInputPicker": "readonly",
