@@ -18262,7 +18262,8 @@ function addPlaceholderToInput(fieldID, placeholder) {
  * @param {boolean} [options.returnHtml=false] - If true, returns the HTML content; otherwise, returns text.
  * @returns {Promise<string|object|null>} - Field value(s) or null if not found. With several field IDs, each value
  *   is keyed both by the ID exactly as passed (e.g. `407` or `'2336'`) and by its `field_` key (e.g. `field_407`),
- *   so `values[407]`, `const { 407: park } = values` and `values.field_407` all work.
+ *   so `values[407]`, `const { 407: park } = values` and `values.field_407` all work. Use v1.17.8 or later for this:
+ *   v1.17.7 has the same code, but its jsDelivr file fails the loader's SRI check.
  */
 async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHtml = false}) {
     // Normalise fieldIds to always be an array for uniform handling
