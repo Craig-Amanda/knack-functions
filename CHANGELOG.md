@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-16
+
+<!-- pr:104 fix/rerelease-wait-get-value-keys - amandajane-mo -->
+- Re-release of the `waitGetValueFromDetail` key fix from v1.17.7, whose jsDelivr file fails the loader's SRI check. Use v1.17.8 or later.
+
 ## 2026-10-15
 
 <!-- pr:103 fix/wait-get-value-keys - amandajane-mo -->
