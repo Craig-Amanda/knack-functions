@@ -1,0 +1,16 @@
+/**
+ * Curried operator helper from V1 (`evaluate(a)('<')(b)`).
+ * @deprecated Use the JavaScript operator directly (or applyOperator()); kept so existing page code keeps working.
+ * @param {*} a - Left operand.
+ * @returns {(operator: string) => (b: *) => *} Applies `operator` to `a` and `b`; `'Invalid operation'` for unknown operators.
+ */
+const evaluate = (a) => (operator) => (b) => {
+    warnDeprecated('evaluate', 'the JavaScript operator directly');
+    return applyOperator(a, operator, b);
+};
+
+// jQuery pseudo-selector `:textEquals(text)` from V1: exact trimmed-text match ignoring Knack's required marker (*).
+// Prefer getElementByText() in new code.
+if (globalThis.jQuery?.expr?.[':']) {
+    globalThis.jQuery.expr[':'].textEquals = (element, _index, match) => element.textContent.replace('*', '').trim() === match[3];
+}

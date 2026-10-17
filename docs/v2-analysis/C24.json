@@ -1,0 +1,771 @@
+{
+  "chunkId": "C24",
+  "chunkSummary": "Lines 19341-20225 are entirely 2025/2026-era native-DOM code (no jQuery, no var, JSDoc throughout) in three unrelated groups - two capitalisation helpers plus a detail-view connection-id waiter and a Knack-style dropdown builder (wave 1, internal simplification only), the asset/link rewriter updateLinksAndAssets with its two extension lists and buildKnackAssetInfo (wave 1, split into app-link routing vs Knack asset rewriting and purge the embedded app constants), and the 13-item file carousel added in PR 87 (wave 2, port as-is with a re-entrancy fix, a shared style/asset-info primitive and per-type stage renderers) - so no public signature changes or shims are needed anywhere in the chunk, but three latent bugs (waitSelector 'delay' vs 'timeout' mismatch, carousel keydown/history leak on re-open, HEAD size fetch ignoring response.ok) and several app-specific constants (1542-3553-3690 asset prefix, assetURLs, .ca-link classes, 'Staff Name') should be fixed or externalised in the port. The chunk contains no jQuery at all (the only indirect path is addInputEventListener, whose jQuery use is confined to the sanctioned Chosen/datepicker/timepicker exceptions), so the no-jQuery rule and the native-return/new-name shim pattern do not apply to any item here.",
+  "functions": [
+    {
+      "name": "capitaliseInput",
+      "kind": "function",
+      "startLine": 19345,
+      "endLine": 19434,
+      "currentSignature": "capitaliseInput(viewId, inputSelector, options = { mode: 'title', trim: true, smartWords: true, preserveCapitalAfterPrefixes: [] })",
+      "currentReturns": "undefined (void; silently returns when the view root or input is not found, L19347/L19350). Side effect: binds native 'input' and 'blur' listeners via addInputEventListener (L19356, L19434) and rewrites input.value in place.",
+      "verdict": "split",
+      "proposedSignature": "capitaliseInput(viewId, inputSelector, options = { mode: 'title', trim: true, smartWords: true, preserveCapitalAfterPrefixes: [] }) - identical parameter text (tests/v2/v2-structure.test.cjs compares parameter source verbatim); the title-case algorithm moves to a new pure helper toTitleCase(str, { smartWords, preserveCapitalAfterPrefixes, minorWords })",
+      "proposedReturns": "undefined (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "capitaliseString(str, { allCaps: false }) at L19442-19452 is a weaker title-caser (first letter of each \\b\\w word, no lower-casing, no minor words); the two algorithms are NOT interchangeable today, so share the helper only if that behaviour difference is accepted"
+      ],
+      "modernisations": [
+        "L19361-19372: the options destructuring and the sort/trim/filter of preserveCapitalAfterPrefixes run inside the event callback, i.e. on every keystroke; hoist them above the addInputEventListener call so they run once per binding.",
+        "L19353 minorWords and L19382-19420 (the whole word-level transform) become a pure top-level helper toTitleCase(str, opts) with a unit test; capitaliseInput keeps only the DOM wiring (resolve view, resolve input, bind, compute, restore caret).",
+        "L19375-19376: `let isBlur = e && e.type === 'blur'` -> `const isBlur = e?.type === 'blur'`; L19386: name the guard `const isTypingSpace = e?.inputType === 'insertText' && e.data === ' '` instead of the triple-negative condition.",
+        "L19388-19392: the two nested `.replace(..., function (match) {...})` callbacks become arrow functions; lower-case the prefixes once at normalisation (L19367-19370) so L19399 does not call toLowerCase per word per prefix.",
+        "L19394-19410: replace the `.some` that mutates `capitalised` from inside the predicate with `const prefix = normalisedPrefixes.find(p => capitalised.length > p.length && capitalised.slice(0, p.length).toLowerCase() === p)` followed by one assignment.",
+        "L19379-19421: the mode dispatch becomes an early-return chain (`if (mode === 'all') return str.toUpperCase();` etc.) inside a small `transform(str, e)` closure; drop the `let result = str` accumulator.",
+        "L19345 default parameter: the object literal is redundant because L19361-19366 re-defaults every key, but keep the literal verbatim - simplifying it to `options = {}` would trip the verbatim parameter-text check in tests/v2/v2-structure.test.cjs unless an entry is added to signature-exceptions.json.",
+        "No JSDoc @example; add one showing the knack-view-render binding so consumers rebind on every render."
+      ],
+      "behaviourRisks": [
+        "The regexes use ASCII `\\b` and `\\w` (L19387, L19389, L19391), so accented characters (Jose with acute, O'Neil with non-ASCII apostrophes) are treated as word boundaries; a Unicode-aware rewrite (`\\p{L}` with the u flag) would change output for existing data - decide explicitly and keep ASCII semantics unless the apps want the change.",
+        "smartWords last-word test `idx + word.length !== full.length` (L19417) is evaluated against the untrimmed value during 'input' events, so a trailing space makes the final minor word lower-case until blur trims it; preserving this quirk exactly is safer than 'fixing' it silently.",
+        "Caret restoration (L19424-19430) reads selectionStart before assignment and only restores when the input is document.activeElement; inputs of type email/number return null selectionStart and setSelectionRange throws on them in Chromium - the existing `typeof pos === 'number'` guard must survive the rewrite.",
+        "Null options: the default parameter only applies for undefined; `options || {}` at L19366 is what protects against an explicit null - keep both.",
+        "Only 'input' and 'blur' are bound; no 'change' event is dispatched after rewriting value, so Knack's Backbone form model sees the final value only on the native change/blur - unchanged, but do not add a synthetic 'input' dispatch or the listener will recurse.",
+        "DOM references die on knack-view-render; the function must be called from the view's render handler (and getViewRootElement at L19346 supports the #connection-form-view modal case - keep using it rather than document.getElementById).",
+        "addInputEventListener (L7963) wires plain text inputs natively (addNative, L8013-8015) and only reaches for jQuery on Chosen selects, jQuery UI datepickers and timepickers (L8017-8110) - exactly the three exceptions the policy allows - so capitaliseInput stays jQuery-free in V2 as long as that primitive keeps the same dispatch."
+      ],
+      "knackPractice": "Follows the view-scoped model: resolves the view root through getViewRootElement (L6931, which also handles Knack's #connection-form-view modal forms) and queries the input inside it; it must be invoked from knack-view-render.view_x because Knack re-renders form inputs. It does not touch Knack.views or fire jQuery events, so Knack's form submission picks up the rewritten value naturally. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 60,
+      "rationale": "Modern code, but 90 lines mixing DOM binding with a 40-line pure string algorithm that re-normalises options on every keystroke (L19361-19372). Splitting out toTitleCase gives a testable primitive, removes the per-event work and halves the function, all without touching the public parameter list. Low risk because the only consumers are apps calling it from render handlers and the transform can be verified with table-driven tests."
+    },
+    {
+      "name": "capitaliseString",
+      "kind": "function",
+      "startLine": 19442,
+      "endLine": 19452,
+      "currentSignature": "capitaliseString(str, options = { allCaps: true })",
+      "currentReturns": "string ('' for non-string or whitespace-only input, L19443; otherwise trimmed upper-cased string, or trimmed string with the first letter of each ASCII word upper-cased)",
+      "verdict": "keep",
+      "proposedSignature": "capitaliseString(str, options = { allCaps: true })",
+      "proposedReturns": "string (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "Partial overlap with the title branch of capitaliseInput (L19382-19420) - different algorithm (no lower-casing of the remainder, no minor words), so not a true duplicate"
+      ],
+      "modernisations": [
+        "L19444: `const { allCaps = true } = options;` throws TypeError when a caller passes null explicitly; use `options ?? {}`.",
+        "L19446-19451: collapse the if/else to `const trimmed = str.trim(); return allCaps ? trimmed.toUpperCase() : trimmed.replace(/\\b\\w/g, c => c.toUpperCase());` and drop the inline comment.",
+        "Keep the parameter text verbatim for the V2 structure test."
+      ],
+      "behaviourRisks": [
+        "ASCII-only `\\b\\w` (L19450): the same non-ASCII caveat as capitaliseInput; do not swap in toTitleCase without accepting that 'mcDONALD' would become 'Mcdonald' instead of 'McDONALD'.",
+        "Returns '' (not the input) for numbers or null; callers may rely on that for template rendering."
+      ],
+      "knackPractice": "Pure string helper, no Knack interaction.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 7,
+      "rationale": "Already modern and 11 lines; only a null-options guard and a ternary are worth doing. Kept distinct from toTitleCase because its output differs and consuming apps may depend on it."
+    },
+    {
+      "name": "waitGetConxIdFromDetailId",
+      "kind": "function",
+      "startLine": 19462,
+      "endLine": 19515,
+      "currentSignature": "waitGetConxIdFromDetailId({ viewId, fieldId, delay = 5000 })",
+      "currentReturns": "Promise<string|string[]|null> - a single id when exactly one unique id is found, an array when several, null when none/timeout/error (never rejects; errors go to console.error at L19513)",
+      "verdict": "modernise",
+      "proposedSignature": "waitGetConxIdFromDetailId({ viewId, fieldId, delay = 5000 }) - identical destructured parameter text; internally normalises ids via knackNavigator and passes the wait as `timeout`",
+      "proposedReturns": "Promise<string|string[]|null> (unchanged union)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "getConnectionIdFromHtml (L18806-18830): L19478-19497 re-implement its connection-value-node + ancestor walk almost line for line, differing only in collecting every id instead of the first",
+        "waitGetValueFromDetail (L18265-18328): same `#view .field_x .kn-detail-body` wait pattern (L19464 vs L18281-18283) and the same waitSelector({selector, delay}) mistake"
+      ],
+      "modernisations": [
+        "BUG L19466-19470: waitSelector (L8772-8777) reads `timeout`, not `delay`, so the documented 5000ms is ignored and the 10000ms default applies. Pass `timeout: delay`.",
+        "L19464: build the selector from `knackNavigator.normalizeViewId(viewId)` and `knackNavigator.normalizeFieldId(fieldId)` so 'view_12'/12 and 'field_5'/5 all work (today 'field_5' yields `.field_field_5` and always resolves null); this matches the tolerance waitGetValueFromDetail gained in PR 85 (CHANGELOG L92-93).",
+        "L19476-19512: replace the `new Promise(resolve => setTimeout(..., 100))` wrapper with `await waitMs(100)` (or better, wait directly for `span[data-kn=\"connection-value\"]` inside the detail body so no arbitrary settle delay is needed) and return the computed value directly.",
+        "L19478-19497: replace the inline extraction with the proposed shared primitive getConnectionIdsFromElement(element) -> string[]; this function becomes `const ids = [...new Set(elements.flatMap(getConnectionIdsFromElement))]`.",
+        "L19512-19514: report through errorHandler.handle(error, { viewId, fieldId }, 'waitGetConxIdFromDetailId') and still resolve null, instead of a bare console.error with a stringified error.",
+        "L19470-19474: `returnType: 'elements'` returns a NodeList or an Array depending on the text-condition branch of waitSelector (L8812-8818); `Array.from` at L19478 already normalises it - keep that."
+      ],
+      "behaviourRisks": [
+        "Fixing the timeout bug shortens the real wait from 10s to 5s; slow detail views that currently succeed between 5s and 10s would start resolving null. Consider keeping 10000 as the default value in the parameter list is NOT allowed (parameter text) - instead document the change in CHANGELOG.",
+        "Removing the 100ms settle delay (L19477) risks reading the detail body before Knack has injected connection spans; if the selector is changed to wait for the connection span itself, non-connection fields that have no span would wait until timeout instead of returning null fast.",
+        "The single-vs-array return union (L19507-19510) is awkward but public; do not normalise to always-array.",
+        "Id normalisation changes failures into successes for prefixed field ids - a behaviour change, but strictly additive."
+      ],
+      "knackPractice": "Uses Knack's details-view DOM convention (`.kn-detail.field_x .kn-detail-body`) and the `span[data-kn=\"connection-value\"]` marker Knack renders for connection fields, waiting with a MutationObserver-based helper rather than polling - consistent with the documented 'rebind on render, never cache' model. It would be more idiomatic to read `Knack.views[viewId].model.attributes.field_x_raw` ([{id, identifier}]) when the view model is available, falling back to the DOM; unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 28,
+      "rationale": "Fifty-four lines that duplicate getConnectionIdFromHtml and carry a real bug (delay vs timeout). Sharing one id-extraction primitive and normalising ids via knackNavigator keeps the signature and return union intact while halving the body. Medium risk purely because of render-timing semantics around the settle delay."
+    },
+    {
+      "name": "createDropdownHTML",
+      "kind": "function",
+      "startLine": 19524,
+      "endLine": 19574,
+      "currentSignature": "createDropdownHTML(dropName, isRequired = true, labelText = 'Select')",
+      "currentReturns": "HTMLDivElement (detached `div.kn-input.kn-input-multiple_choice.control` containing label.label.kn-label[for] with text span + span.selectText + optional span.kn-required, and div.kn-select > div.kn-select > select#dropName.select[name][data-placeholder=Select][style=vertical-align:bottom])",
+      "verdict": "simplify",
+      "proposedSignature": "createDropdownHTML(dropName, isRequired = true, labelText = 'Select')",
+      "proposedReturns": "HTMLDivElement with the identical structure, classes, attributes and inline style",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19526-19573: build the markup with one template literal parsed through a `<template>` (`const tpl = document.createElement('template'); tpl.innerHTML = ...; return tpl.content.firstElementChild;`), setting dropName/labelText via textContent/setAttribute afterwards so no developer string is interpolated as HTML. 51 lines -> ~18.",
+        "L19533-19534: keep the trailing space in `${labelText} ` - Knack's own label markup separates the text from the required asterisk this way and CSS/tests may depend on textContent.",
+        "L19548-19552: the nested `div.kn-select > div.kn-select` looks accidental (Knack renders a single `.kn-select` wrapper) but is observable DOM; keep it unless verified against a live Knack form, and note it in JSDoc.",
+        "L19563: `select.style.verticalAlign = 'bottom'` is presentational; keep for compatibility but flag that it belongs in app CSS."
+      ],
+      "behaviourRisks": [
+        "Consumers' CSS or later querySelector calls may target the exact hierarchy (`.kn-select .kn-select select`, `.selectText`, `.kn-required`); any 'tidy-up' of the nesting is a DOM-shape signature change under the policy.",
+        "The select has data-placeholder but is not initialised with Chosen; apps presumably call $(select).chosen() themselves - do not start initialising it in V2.",
+        "dropName is used verbatim for id, name and label[for]; values with spaces already break the label association today."
+      ],
+      "knackPractice": "Mimics Knack's multiple_choice input markup (`.kn-input.kn-input-multiple_choice.control`, `.kn-label`, `.kn-required`, `.kn-select`) so Knack's form CSS styles the injected control. It deliberately produces a detached element; the element is outside Knack's form model, so the caller must read its value on knack-form-submit itself and must re-inject on each knack-view-render. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 20,
+      "rationale": "Pure DOM factory with no Knack runtime dependency; the only gain is brevity (template literal vs 20 createElement/appendChild calls). Keeping the exact (including double-nested) structure makes it zero-risk."
+    },
+    {
+      "name": "OFFICE_EXTENSIONS",
+      "kind": "const ArrayExpression",
+      "startLine": 19577,
+      "endLine": 19580,
+      "currentSignature": "const OFFICE_EXTENSIONS = ['docx', 'odt', 'rtf', 'docm', 'doc', 'dotx', 'dotm', 'dot', 'xlsx', 'xls', 'ppts', 'ppt', 'pptx']",
+      "currentReturns": "string[] (mutable page-global array; read with .includes at L13934, L19649, L19963)",
+      "verdict": "keep",
+      "proposedSignature": "const OFFICE_EXTENSIONS = [...] (same name, same array type, single quotes)",
+      "proposedReturns": "string[]",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19579: 'ppts' is not a real extension (likely meant 'pps'/'ppsx'); add 'pps', 'ppsx', 'xlsm', 'ods', 'odp' and keep 'ppts' so nothing that matched before stops matching.",
+        "Use single quotes (repo convention) and add a one-line JSDoc @type {string[]} - the two consts are the only undocumented top-level items in the chunk.",
+        "Do NOT Object.freeze: the script runs in sloppy mode and a consuming app that pushes its own extension would silently no-op; do NOT convert to a Set (callers and consumers use .includes)."
+      ],
+      "behaviourRisks": [
+        "Adding extensions moves those files from the 'download' branch to the 'open in new tab / Office embed' branch in updateLinksAndAssets (L19649) and renderFileCarouselItem (L19963) - additive but visible.",
+        "A const must precede any load-time use; all current uses are inside functions, so order is free, but keep it near buildKnackAssetInfo in V2 for readability."
+      ],
+      "knackPractice": "No Knack interaction; the list drives how Knack asset URLs are opened.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 4,
+      "rationale": "Data constant shared by three functions in two chunks; nothing to rewrite beyond the typo and quoting."
+    },
+    {
+      "name": "IMAGE_EXTENSIONS",
+      "kind": "const ArrayExpression",
+      "startLine": 19581,
+      "endLine": 19583,
+      "currentSignature": "const IMAGE_EXTENSIONS = ['png', 'jpeg', 'jpg', 'gif', 'bmp', 'svg', 'webp', 'tiff', 'ico']",
+      "currentReturns": "string[] (mutable page-global array; read with .includes at L19646, L19708, L19892, L19932)",
+      "verdict": "keep",
+      "proposedSignature": "const IMAGE_EXTENSIONS = [...] (same name and type)",
+      "proposedReturns": "string[]",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Add 'tif' and 'avif'; keep 'tiff' and 'bmp' even though Chromium/Firefox cannot render TIFF in <img> (those items hit the image error path and show the 'couldn't be loaded' fallback, L19950-19953).",
+        "Single quotes and a JSDoc @type line; same no-freeze/no-Set rule as OFFICE_EXTENSIONS."
+      ],
+      "behaviourRisks": [
+        "Membership decides three things at once: skip rewriting in updateLinksAndAssets (L19708), use Knack's kn-asset URL (L19646), and render as <img> in the carousel (L19932); extending the list changes all three."
+      ],
+      "knackPractice": "Mirrors the extensions Knack itself treats as images (opens its native lightbox); unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Data constant; keep."
+    },
+    {
+      "name": "buildKnackAssetInfo",
+      "kind": "function",
+      "startLine": 19592,
+      "endLine": 19598,
+      "currentSignature": "buildKnackAssetInfo(assetId, fileName)",
+      "currentReturns": "{assetId: string, fileName: string, extension: string, assetUrl: string} | {} (empty object when either argument is falsy, L19593)",
+      "verdict": "keep",
+      "proposedSignature": "buildKnackAssetInfo(assetId, fileName)",
+      "proposedReturns": "same object shape | {}",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "L18590 (another chunk) builds the same `https://api.knack.com/v1/applications/${Knack.application_id}/download/asset/...` URL by hand; a shared knackAssetDownloadUrl(assetId, fileName) would remove that copy"
+      ],
+      "modernisations": [
+        "L19594-19595: `const extension = fileName.match(/\\.([^.]+)$/)?.[1]?.toLowerCase() ?? '';` (do not switch to split('.').pop(), which returns the whole name when there is no dot).",
+        "Keep the `{}` empty-object contract: both callers test `.extension` / `.assetUrl` truthiness (L19668, L19707, L20127)."
+      ],
+      "behaviourRisks": [
+        "Returning null instead of {} would throw in updateLinksAndAssets' `info.extension` checks - keep {}.",
+        "encodeURIComponent(fileName) (L19596) is part of the URL contract Knack's download endpoint accepts; keep."
+      ],
+      "knackPractice": "Uses Knack's documented asset download endpoint (/v1/applications/{app}/download/asset/{assetId}/{fileName}) with Knack.application_id - the correct public way to link an asset without the object API key. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 7,
+      "rationale": "Seven-line modern helper already shared by two features; nothing to change beyond optional chaining."
+    },
+    {
+      "name": "updateLinksAndAssets",
+      "kind": "function",
+      "startLine": 19609,
+      "endLine": 19718,
+      "currentSignature": "updateLinksAndAssets(viewId)",
+      "currentReturns": "undefined (void; console.error + return when the view element is missing, L19612-19615). DOM side effects: sets href/target/rel/download on .ca-link/.ca-link-child/.ca-link-user, adds class 'extLink' to target=_blank links (L19695), replaces each non-image .kn-view-asset with a new <a data-asset-id data-file-name> (L19705-19717).",
+      "verdict": "split",
+      "proposedSignature": "updateLinksAndAssets(viewId) - unchanged public entry that calls two internal helpers: rewriteCaLinks(viewElement, currentURL) for the app-specific .ca-link routing and rewriteKnackViewAssets(viewElement) for the Knack .kn-view-asset replacement",
+      "proposedReturns": "undefined (unchanged); same attributes, classes and element replacement",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "fileViewer(extension, url) at L13932-13938 encodes the same office/pdf-vs-direct decision and returns url on both branches (dead logic in another chunk)",
+        "getAssetInfoFromElement's kn-view-asset branch (L19624-19636) duplicates initFileCarousel.getCellAssetInfo (L20121-20132)"
+      ],
+      "modernisations": [
+        "L19648: the literal `kn-asset/1542-3553-3690-` is one application's Knack asset path prefix baked into a shared library; L18600 in another chunk already uses an app-supplied global KN_ASSET_PREFIX for exactly this path - use that (guarded with `typeof KN_ASSET_PREFIX === 'string'`) or fall back to the asset download URL.",
+        "L19630-19631 and L19684: `assetURLs` is an app-supplied global; reference it as `globalThis.assetURLs ?? {}` so a page without it does not throw ReferenceError the first time a .ca-asset link is seen.",
+        "L19649-19656: the OFFICE and pdf branches have identical bodies - merge into `if (OFFICE_EXTENSIONS.includes(ext) || ext === 'pdf')`.",
+        "L19667-19671: processAssetElement is a one-line wrapper around a check setFileViewerLink already performs (L19645) - inline it.",
+        "L19610 and L19648: sanitiseURL(window.location.href) is computed twice; reuse currentURL.",
+        "L19677-19690: fullFormURL (and getRecordID()/Knack.getUserAttributes()) is computed for every link, including asset links that never use it - compute it only in the non-asset branch.",
+        "L19612-19615 and L19680: replace the two console.error calls with errorHandler.handle(new Error(...), { viewId, link: linkEle.textContent }, 'updateLinksAndAssets') per policy; keep the messages.",
+        "L19709-19717: copy every data-* attribute from the replaced element (`Object.assign(a.dataset, assetEl.dataset)`) and its class list, so a data-file-size or other Knack attribute is not lost before initFileCarousel reads it (L20130).",
+        "Rename the inner `isKnViewAsset` boolean flag pattern (L19624, L19645, L19667) into two small named helpers (assetInfoFromKnackElement / assetInfoFromCaLink) - boolean-mode parameters are what makes the function hard to read."
+      ],
+      "behaviourRisks": [
+        "The `download` attribute set at L19660 is ignored by browsers for cross-origin api.knack.com URLs (the carousel's own comment at L19814 says so), so those links currently open in-tab; routing them through forceDownloadFile on click would be an improvement but is a behaviour change - decide explicitly.",
+        "Replacing .kn-view-asset with a bare <a> (L19717) removes Knack's own click handling and classes; any consumer CSS targeting `.kn-view-asset` for non-image files is already broken today - do not 'fix' by keeping the class, because initFileCarousel and a second updateLinksAndAssets call rely on the element no longer matching.",
+        "Images are deliberately left alone (L19646-19648 builds Knack's kn-asset URL; L19708 skips replacement) so Knack's native lightbox keeps working; keep both branches.",
+        "The 'extLink' class (L19695) and .ca-link* selectors (L19674) are app CSS conventions (GAP-Track/Spot); they are observable DOM side effects and must stay exactly.",
+        "getRecordID() (L19686) reads the hash and returns the second-to-last segment; it depends on Knack's `#scene/record-id/` shape and throws nothing, but on a non-record page it returns a scene slug - existing behaviour."
+      ],
+      "knackPractice": "Operates on a rendered view's DOM and must be called from knack-view-render.view_x (every render replaces the links). It uses Knack's data-asset-id/data-file-name attributes on .kn-view-asset and the public asset download endpoint, which is the sanctioned way to link assets, but it fights Knack slightly by replacing Knack's own asset element and by hard-coding an app's kn-asset prefix instead of reading Knack.app attributes. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 70,
+      "rationale": "110 lines doing two jobs (app link routing via assetURLs/getRecordID and Knack asset rewriting) with duplicated branches, a boolean-mode helper trio and two app-specific constants a library must not own. Splitting into two internal helpers behind the same public name, merging the office/pdf branch and externalising the asset prefix removes about 40 lines with no signature change. Medium risk because the DOM side effects (extLink class, element replacement) are consumed by app CSS and by initFileCarousel."
+    },
+    {
+      "name": "fileCarouselState",
+      "kind": "let Literal",
+      "startLine": 19720,
+      "endLine": 19720,
+      "currentSignature": "let fileCarouselState = null",
+      "currentReturns": "null | { items: Array<{assetId, fileName, extension, assetUrl, caption?, fileSize?}>, index: number, triggerElement: HTMLElement|null, tryOfficeEmbed: boolean, keydownHandler: Function } (page global listed readonly in eslint/knack-functions-globals.json L152)",
+      "verdict": "keep",
+      "proposedSignature": "let fileCarouselState = null",
+      "proposedReturns": "same shape",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Add a JSDoc @type block documenting the state shape (currently undocumented, the only let in the chunk).",
+        "Keep it a top-level let: the carousel functions assign to it (L20040, L20078) and consumers may read it (it is in the globals list); a WeakMap or closure would remove a public global."
+      ],
+      "behaviourRisks": [
+        "Any consumer reading fileCarouselState to detect 'carousel open' would break if V2 moved the state into a closure.",
+        "Shared mutable state means two carousels cannot be open at once - by design."
+      ],
+      "knackPractice": "Page-lifetime UI state unrelated to Knack views; survives knack-view-render because the overlay lives on body, not inside a view.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 1,
+      "rationale": "One-line module state that is technically public API; nothing to change."
+    },
+    {
+      "name": "ensureFileCarouselOverlay",
+      "kind": "function",
+      "startLine": 19726,
+      "endLine": 19822,
+      "currentSignature": "ensureFileCarouselOverlay()",
+      "currentReturns": "HTMLElement (the #kfnFileCarousel overlay root; existing element on repeat calls, L19727-19728). Side effects: injects <style id=\"kfnFileCarouselStyles\"> into head and the overlay into body, binds backdrop/close/prev/next/download click handlers.",
+      "verdict": "simplify",
+      "proposedSignature": "ensureFileCarouselOverlay()",
+      "proposedReturns": "HTMLElement (same id, class names, child structure and ARIA attributes)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "Style-injection pattern (L19730-19786) is the same 'create style, set id, append once' block as ensureBulkActionBaseStyles L5034-5040, ensureBulkEditSelectionStyles L5477-5483, ensureMenuButtonActiveStyles L9505-9510 and the anonymous blocks at L7323, L8279, L8598"
+      ],
+      "modernisations": [
+        "L19730-19786: inject the CSS through the proposed shared ensureStyleOnce('kfnFileCarouselStyles', css) primitive; today the style is only injected when the overlay is missing, so a removed style tag is never restored.",
+        "L19810-19811: `addEventListener('click', closeFileCarousel)` passes the MouseEvent as closeFileCarousel's `options` argument; wrap as `() => closeFileCarousel()` so the options contract is honoured.",
+        "L19788-19808: add `aria-labelledby=\"kn-asset-header\"` to the dialog (it already has role=dialog/aria-modal) - additive accessibility.",
+        "L19815-19819: the download handler reads fileCarouselState directly; route it through a small `currentCarouselItem()` helper shared with renderFileCarouselItem's size callback (L19986).",
+        "Keep every class name in the CSS block verbatim (`kfn-file-carousel__*`, `is-open`, `is-loaded`): consuming apps may theme them."
+      ],
+      "behaviourRisks": [
+        "Reuses Knack's own id `kn-asset-header` (L19794) and class `kn-file-download` with FontAwesome `fa fa-cloud-download` (L19797) to inherit Knack's asset-viewer styling; if Knack's native viewer is open at the same time there are duplicate ids, and the icon depends on Knack bundling FontAwesome 4 (unverified against live docs).",
+        "z-index 2147483000 (L19733) intentionally sits above Knack modals and KTL overlays; lowering it would put the carousel behind .kn-modal-bg.",
+        "The style tag id and overlay id are observable; a consumer calling document.getElementById('kfnFileCarousel') to tweak the DOM must keep working.",
+        "innerHTML with a static template (L19788) is safe; do not switch to per-element createElement if it changes whitespace text nodes that `:empty` or flex gap CSS might see."
+      ],
+      "knackPractice": "Mounts once on document.body, outside any Knack view, so it survives scene/view re-renders - the right pattern for a global overlay in Knack's SPA. Borrowing Knack's kn-file-download/kn-asset-header hooks ties it to Knack's private CSS, which Knack may change without notice.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 90,
+      "rationale": "Recent, idempotent and already native; most of its 97 lines are CSS that must survive unchanged. The only real improvements are sharing the style-injection primitive and wrapping the two direct closeFileCarousel bindings, so it ports in wave 2 with the rest of the carousel."
+    },
+    {
+      "name": "forceDownloadFile",
+      "kind": "function",
+      "startLine": 19831,
+      "endLine": 19849,
+      "currentSignature": "forceDownloadFile(url, fileName)",
+      "currentReturns": "Promise<void> (never rejects: on any fetch/blob failure it logs and opens the URL in a new tab, L19845-19848)",
+      "verdict": "keep",
+      "proposedSignature": "forceDownloadFile(url, fileName)",
+      "proposedReturns": "Promise<void> (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19845-19847: report via errorHandler.handle(error, { url, fileName }, 'forceDownloadFile') before the window.open fallback, instead of console.error.",
+        "L19843: revoke the blob URL on the next tick (`setTimeout(() => URL.revokeObjectURL(blobUrl))`) - synchronous revocation right after click() has been observed to cancel downloads in Safari.",
+        "L19833: pass an AbortController with a generous timeout (e.g. 60s) so a stalled fetch cannot leave the user with no feedback; abort falls into the same new-tab fallback."
+      ],
+      "behaviourRisks": [
+        "Cross-origin fetch to api.knack.com needs CORS on the final response; if Knack redirects to S3 without CORS headers the fetch throws and the file opens in a new tab instead - existing and acceptable, but any test must stub fetch.",
+        "The fallback uses window.open with 'noopener', which some pop-up blockers suppress because it runs after an await (no longer in the click's user-activation window) - existing behaviour."
+      ],
+      "knackPractice": "Works around the fact that Knack asset downloads are cross-origin to the app domain so the HTML download attribute is ignored; no Knack API involvement.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 20,
+      "rationale": "Nineteen modern lines doing one job; only error reporting and blob-URL timing deserve attention."
+    },
+    {
+      "name": "formatFileSizeBytes",
+      "kind": "function",
+      "startLine": 19856,
+      "endLine": 19867,
+      "currentSignature": "formatFileSizeBytes(bytes)",
+      "currentReturns": "string ('' for non-finite or <= 0; otherwise e.g. '102 KB', '1.5 MB' - one decimal below 10, integer otherwise, units B/KB/MB/GB)",
+      "verdict": "keep",
+      "proposedSignature": "formatFileSizeBytes(bytes)",
+      "proposedReturns": "string (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19860-19865: the while loop can become `const unitIndex = Math.min(units.length - 1, Math.floor(Math.log2(size) / 10)); const value = size / 1024 ** unitIndex;` - same output, no mutation; optional.",
+        "Add a unit test (pure function)."
+      ],
+      "behaviourRisks": [
+        "Uses binary 1024 units labelled KB/MB to match Knack's own footer (per the JSDoc at L19852); switching to Intl.NumberFormat 'unit' style would change labels (kB) and rounding."
+      ],
+      "knackPractice": "Mirrors Knack's asset footer formatting; no API interaction.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 9,
+      "rationale": "Pure, tested-by-inspection, 12 lines; keep."
+    },
+    {
+      "name": "fetchFileSizeBytes",
+      "kind": "function",
+      "startLine": 19875,
+      "endLine": 19884,
+      "currentSignature": "fetchFileSizeBytes(item)",
+      "currentReturns": "Promise<number|null>; mutates item.fileSize in place (number, or null on missing header/any error)",
+      "verdict": "simplify",
+      "proposedSignature": "fetchFileSizeBytes(item)",
+      "proposedReturns": "Promise<number|null> and the same in-place mutation (renderFileCarouselItem relies on item.fileSize no longer being undefined, L19984)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19877-19879: check `response.ok` before reading content-length - a 404/403 HEAD currently yields the error body's length and the carousel shows a bogus size.",
+        "L19879: `Number.parseInt(contentLength, 10)` and guard NaN -> null.",
+        "L19880-19882: the empty catch swallows silently against policy; a CORS/HEAD failure is expected here, so keep best-effort semantics but log once at debug level (`console.debug`) or via errorHandler with a 'non-fatal' flag, and say so in the JSDoc.",
+        "Add an AbortController timeout (e.g. 8s) so a slow HEAD does not keep a stale closure alive."
+      ],
+      "behaviourRisks": [
+        "Content-Length is CORS-safelisted so it is readable cross-origin, but only if the final (possibly S3) response carries Access-Control-Allow-Origin; failures already resolve null - unchanged.",
+        "If a HEAD follows a redirect, the size reflects the redirect target; fine for downloads.",
+        "Mutating the caller's item object is part of the contract (cache across Prev/Next); do not make it pure."
+      ],
+      "knackPractice": "Knack does not expose asset size in the table DOM (comment at L19871), so a HEAD on the public download endpoint is the pragmatic source; unverified against live docs whether data-file-size is ever rendered.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 12,
+      "rationale": "Ten lines but with a missing response.ok check and a silent catch; two small fixes, no signature impact."
+    },
+    {
+      "name": "preloadFileCarouselImage",
+      "kind": "function",
+      "startLine": 19891,
+      "endLine": 19894,
+      "currentSignature": "preloadFileCarouselImage(item)",
+      "currentReturns": "undefined",
+      "verdict": "keep",
+      "proposedSignature": "preloadFileCarouselImage(item)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19892: `item?.extension` via optional chaining; otherwise unchanged."
+      ],
+      "behaviourRisks": [
+        "Relies on the browser HTTP cache; the preloaded Image is immediately garbage-collectable, which is fine for cache warming."
+      ],
+      "knackPractice": "No Knack interaction.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 4,
+      "rationale": "Four correct lines."
+    },
+    {
+      "name": "showFileCarouselFallback",
+      "kind": "function",
+      "startLine": 19902,
+      "endLine": 19908,
+      "currentSignature": "showFileCarouselFallback(stage, message = 'No preview available for this file type.')",
+      "currentReturns": "undefined; replaces stage children with div.kfn-file-carousel__fallback containing span.kfn-file-carousel__icon + message",
+      "verdict": "simplify",
+      "proposedSignature": "showFileCarouselFallback(stage, message = 'No preview available for this file type.')",
+      "proposedReturns": "undefined (same DOM)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "renderFileCarouselItem's final else branch (L19969-19973) is a copy of this body and should call it"
+      ],
+      "modernisations": [
+        "L19903-19907: `stage.replaceChildren(fallback)` instead of innerHTML = '' + appendChild.",
+        "L19906: build the icon span with createElement and append `message` as a text node so a caller-supplied message cannot inject HTML (all current callers pass plain strings, so output is identical)."
+      ],
+      "behaviourRisks": [
+        "If any consumer passes HTML in `message` today it would start rendering as text; none found in-file."
+      ],
+      "knackPractice": "No Knack interaction.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 7,
+      "rationale": "Tiny helper that should also absorb the duplicated branch in renderFileCarouselItem."
+    },
+    {
+      "name": "renderFileCarouselItem",
+      "kind": "function",
+      "startLine": 19915,
+      "endLine": 20001,
+      "currentSignature": "renderFileCarouselItem(index)",
+      "currentReturns": "undefined (early-returns when state/overlay/item missing, L19916-19921). Side effects: sets fileCarouselState.index, rebuilds the stage, updates filename/caption/counter/download href+size, toggles prev/next visibility, triggers a HEAD size fetch and two image preloads.",
+      "verdict": "split",
+      "proposedSignature": "renderFileCarouselItem(index) - unchanged; internally delegates the stage to renderCarouselImageStage(stage, item), renderCarouselPdfStage(stage, item), renderCarouselOfficeStage(stage, item) or showFileCarouselFallback(stage)",
+      "proposedReturns": "undefined (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "L19969-19973 duplicate showFileCarouselFallback (L19902-19908)"
+      ],
+      "modernisations": [
+        "L19932-19974: move the four stage branches into three small renderers plus showFileCarouselFallback; the main function becomes orchestration only (~35 lines).",
+        "L19988: `overlay.querySelector('.kfn-file-carousel__download-size')` re-queries an element already held as `downloadSize` (L19927) - reuse it.",
+        "L19923-19929, L19993-19995: collect the overlay children once in a `getFileCarouselUi(overlay)` object shared with closeFileCarousel and the download handler.",
+        "L19931 `stage.innerHTML = ''` -> `stage.replaceChildren()`; L19935 and L19972 static innerHTML -> createElement or a tiny `html` template helper.",
+        "L19984-19990: the in-flight guard compares `fileCarouselState.items[fileCarouselState.index] !== item`; express it through `currentCarouselItem() !== item` shared with the download click handler (L19817).",
+        "L19943-19946 slow-load timer: keep, but clear it in the error path only once (already done) and store the timer id on the loading element's dataset or a WeakMap if the renderers are split."
+      ],
+      "behaviourRisks": [
+        "Order matters: fileCarouselState.index is set at L19922 before any async work; the HEAD callback (L19986) and popstate close rely on that - keep it first.",
+        "style.visibility (L19993-19995) keeps the nav buttons' layout space; replacing with the hidden attribute would shift the dialog layout.",
+        "PDF <iframe> (L19957-19961): Chrome on Android and some mobile browsers have no inline PDF viewer and either download or show blank; iframes fire no error event, so there is no automatic fallback - any rewrite must not promise one.",
+        "Office embed (L19963-19968) posts the asset URL to view.officeapps.live.com, a third-party service; behind tryOfficeEmbed (default true) - a privacy/compliance consideration consumers should be able to disable, which they can via options.",
+        "Image error fallback checks `stage.contains(img)` (L19952) so a stale error after navigation does not clobber the next item - preserve.",
+        "Preloading with modulo wrap (L19999-20000) on a single-item carousel preloads the same item twice - harmless."
+      ],
+      "knackPractice": "Pure overlay rendering, independent of Knack views; the only Knack coupling is the asset URL shape built by buildKnackAssetInfo.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 75,
+      "rationale": "Eighty-seven lines with four stage branches inline, one of which duplicates an existing helper. Splitting per media type keeps each piece under 20 lines and makes the slow-load/error timers easier to reason about. Medium risk only because it is UI with timing (image load, HEAD race) that must be re-verified manually in Knack."
+    },
+    {
+      "name": "navigateFileCarousel",
+      "kind": "function",
+      "startLine": 20008,
+      "endLine": 20013,
+      "currentSignature": "navigateFileCarousel(delta)",
+      "currentReturns": "undefined",
+      "verdict": "keep",
+      "proposedSignature": "navigateFileCarousel(delta)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "None required; optionally `if (!fileCarouselState?.items.length) return;`."
+      ],
+      "behaviourRisks": [
+        "Wrap-around at both ends (L20011) is a deliberate UX choice; keep."
+      ],
+      "knackPractice": "No Knack interaction.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 6,
+      "rationale": "Six correct lines."
+    },
+    {
+      "name": "onFileCarouselPopState",
+      "kind": "function",
+      "startLine": 20020,
+      "endLine": 20022,
+      "currentSignature": "onFileCarouselPopState()",
+      "currentReturns": "undefined",
+      "verdict": "keep",
+      "proposedSignature": "onFileCarouselPopState()",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "None. It must stay a named top-level function because `window.removeEventListener('popstate', onFileCarouselPopState)` at L20075 depends on reference identity; an inline arrow would leak the listener."
+      ],
+      "behaviourRisks": [
+        "Any popstate (not only the entry pushed at L20054) closes the carousel; acceptable because the overlay is modal."
+      ],
+      "knackPractice": "Interacts with browser history that Knack's hash router also uses; see openFileCarousel risks.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 3,
+      "rationale": "Three lines; identity-stable listener by design."
+    },
+    {
+      "name": "openFileCarousel",
+      "kind": "function",
+      "startLine": 20032,
+      "endLine": 20060,
+      "currentSignature": "openFileCarousel(items, startIndex, triggerElement, options = {})",
+      "currentReturns": "undefined (no-op when items is not a non-empty array, L20033). Side effects: sets fileCarouselState, adds document keydown + window popstate listeners, history.pushState({kfnFileCarouselOpen:true}), body.style.overflow='hidden', adds .is-open, renders, focuses the close button.",
+      "verdict": "simplify",
+      "proposedSignature": "openFileCarousel(items, startIndex, triggerElement, options = {})",
+      "proposedReturns": "undefined (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "BUG L20040-20054: opening while already open overwrites fileCarouselState without removing the previous keydownHandler (two handlers -> every arrow key moves twice) and pushes a second history entry (one Back no longer closes). Fix: `if (fileCarouselState) teardownFileCarousel({ keepHistory: true })` first, where teardown is the listener/overflow cleanup shared with closeFileCarousel.",
+        "L20041: clamp startIndex (`Math.min(Math.max(0, Number(startIndex) || 0), items.length - 1)`) - an out-of-range index currently opens an empty overlay because renderFileCarouselItem returns at L19920.",
+        "L20035-20039: the keydown dispatch can be a lookup `{ Escape: () => closeFileCarousel(), ArrowLeft: () => navigateFileCarousel(-1), ArrowRight: () => navigateFileCarousel(1) }[event.key]?.()`; ignore events with modifiers or from inputs if a consumer later embeds the overlay with form controls (optional).",
+        "L20044: `options.tryOfficeEmbed !== false` -> `options?.tryOfficeEmbed !== false` to tolerate null."
+      ],
+      "behaviourRisks": [
+        "history.pushState with the same URL (L20054) does not fire hashchange, so Knack's Backbone hash router does not re-route; but if a consumer navigates Knack (Knack.router.navigate / hash change) while the overlay is open, the later history.back() in closeFileCarousel undoes that navigation. Unverified against live docs whether Knack's Backbone.history listens to popstate as well as hashchange.",
+        "KTL and consumer apps may also bind document keydown (the policy mentions the F2 debugger hook); the carousel does not stopPropagation on Escape, so a Knack modal underneath could also close - existing behaviour.",
+        "No focus trap: Tab leaves the dialog; adding one is an accessibility improvement, not a regression.",
+        "body.style.overflow='hidden' overwrites any inline overflow a consumer set; closeFileCarousel resets to '' rather than the previous value."
+      ],
+      "knackPractice": "Overlay lifecycle is independent of knack-view-render, but the history manipulation sits on top of Knack's hash routing; the single pushState-per-open design (comment L20052-20053) is a sensible compromise. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 32,
+      "rationale": "Modern and short, but the re-entrancy leak (double keydown handler, double history entry) is a real bug that any user can trigger by clicking a second file cell while the overlay is open via keyboard focus; fixing it needs a shared teardown with closeFileCarousel. Signature stays."
+    },
+    {
+      "name": "closeFileCarousel",
+      "kind": "function",
+      "startLine": 20067,
+      "endLine": 20085,
+      "currentSignature": "closeFileCarousel(options = {})",
+      "currentReturns": "undefined (no-op when overlay or state missing, L20069). Side effects: removes .is-open, clears stage, resets body overflow, removes keydown/popstate listeners, nulls fileCarouselState, history.back() unless options.viaPopState, refocuses triggerElement.",
+      "verdict": "simplify",
+      "proposedSignature": "closeFileCarousel(options = {})",
+      "proposedReturns": "undefined (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L20068-20069: if the overlay node was removed by a consumer but state exists, the function returns early and leaks the keydown listener and body overflow; tear down state first, then touch the overlay only if present.",
+        "L20071-20078: extract `teardownFileCarousel({ keepHistory })` shared with the re-open path in openFileCarousel; closeFileCarousel = teardown + history.back() + focus restore.",
+        "L20068, L20072: use the shared getFileCarouselUi(overlay) lookup; `stage.replaceChildren()` instead of innerHTML = ''.",
+        "L20084: `triggerElement?.focus?.()`; note that after a knack-view-render the trigger cell may be detached - focus() on a detached element is a harmless no-op."
+      ],
+      "behaviourRisks": [
+        "history.back() (L20082) is asynchronous; a close immediately followed by a programmatic open would push a new entry before the back completes - the shared teardown should guard with the keepHistory flag.",
+        "The direct listener bindings at L19810-19811 pass a MouseEvent as `options`; harmless today (`event.viaPopState` is undefined) but any new option key must not collide with Event properties - prefer wrapping the bindings.",
+        "Resetting body overflow to '' rather than the prior inline value - unchanged."
+      ],
+      "knackPractice": "See openFileCarousel: history.back() interacts with Knack's hash routing only if the hash changed while open.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 20,
+      "rationale": "Nineteen modern lines; the only substantive change is ordering the teardown so a missing overlay cannot leak listeners, and sharing that teardown with openFileCarousel's re-entrancy fix."
+    },
+    {
+      "name": "initFileCarousel",
+      "kind": "function",
+      "startLine": 20099,
+      "endLine": 20177,
+      "currentSignature": "initFileCarousel(viewId, fileFieldKey, options = {})",
+      "currentReturns": "undefined (returns early when the view is missing, already initialised, or the column cannot be resolved, L20102, L20107). Side effects: capture-phase click listener on the view root; sets viewElement.dataset.fileCarouselInit = 'true'.",
+      "verdict": "simplify",
+      "proposedSignature": "initFileCarousel(viewId, fileFieldKey, options = {})",
+      "proposedReturns": "undefined (unchanged; same data-file-carousel-init marker and capture-phase listener)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "getCellAssetInfo (L20121-20132) duplicates the .kn-view-asset branch of updateLinksAndAssets.getAssetInfoFromElement (L19624-19636) - both read data-asset-id/data-file-name and call buildKnackAssetInfo"
+      ],
+      "modernisations": [
+        "L20104-20106 and L20111-20114: the `.find(s => s.startsWith('td.') || s.startsWith('td['))` pick is written twice; one local `cellSelectorFor(fieldKey)` (or a KnackNavigator helper getViewCellSelector) removes it.",
+        "L20121-20132: replace getCellAssetInfo with the proposed shared getAssetInfoFromElement(cell.querySelector('[data-asset-id][data-file-name]')) primitive that also reads data-file-size.",
+        "L20150: `!viewElement.contains(fileCell)` is unreachable - closest() from a descendant of the view can only return a td inside the view - drop it.",
+        "L20110, L20176: destructure `{ captionFieldKeys = [], tryOfficeEmbed } = options ?? {}` once at the top; pass tryOfficeEmbed explicitly.",
+        "L20161-20171: build items with `Array.from(viewElement.querySelectorAll('tbody tr'), ...)` + `.flatMap`, computing startIndex via `items.findIndex(i => i.cell === fileCell)` to avoid the mutable counter.",
+        "L20145: the ' . ' caption separator (middle dot) deserves a named constant or an options.captionSeparator (additive, optional)."
+      ],
+      "behaviourRisks": [
+        "Capture-phase listener with stopImmediatePropagation (L20147, L20155-20157, L20174) intentionally pre-empts Knack's native image lightbox and also blocks any other capture listeners on the view root and all bubble listeners (KTL, consumer code) for clicks on file cells - keep exactly, document loudly.",
+        "The idempotency marker lives on the view root (L20176). Knack re-renders the inner content of #view_x (the root element persists), so the guard holds and the delegated listener keeps working; if Knack ever replaces the root, the marker resets and re-init is correct too - do not move the marker to the table element.",
+        "fileColumnSelector comes from knackNavigator.getViewColumnSelectors (metadata, cached); it is correct across renders but the nth-child fallback selectors are deliberately excluded (only td./td[ are used) - keep that filter or hidden/reordered columns break.",
+        "Only rows under tbody are collected (L20161); grouped-table summary rows and the clicked cell's own row ordering define the carousel order - matches the visible table.",
+        "If updateLinksAndAssets ran first on the same view, the file cell contains the replaced <a data-asset-id data-file-name> instead of Knack's element; both satisfy the attribute selector at L20122 - that coupling is why updateLinksAndAssets must keep copying those two attributes (L19713-19714)."
+      ],
+      "knackPractice": "Good Knack citizenship: resolves columns from Knack metadata via knackNavigator rather than header text, delegates one listener on the persistent view root, and is explicitly safe to call on every knack-view-render (JSDoc L20087-20090). Pre-empting Knack's own asset click handling via capture phase is a deliberate and documented fight with Knack's lightbox. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 62,
+      "rationale": "Recent, well-structured code; the port is as-is with one unreachable guard removed, the duplicated selector pick and asset-info reader shared, and no signature change. Medium risk because the capture-phase/stopImmediatePropagation behaviour and the init marker are easy to break subtly and only verifiable in a live Knack table."
+    },
+    {
+      "name": "insertStaffName",
+      "kind": "function",
+      "startLine": 20183,
+      "endLine": 20218,
+      "currentSignature": "insertStaffName(target)",
+      "currentReturns": "undefined (fire-and-forget; the internal waitSelector promise is not returned). Side effect: sets textContent of the target element(s) to the detail value next to the 'Staff Name' label, or to Knack.getUserAttributes().name after a 5s timeout.",
+      "verdict": "simplify",
+      "proposedSignature": "insertStaffName(target) - unchanged (an optional trailing labelText parameter is possible under the resolveElement/resolveElements precedent in tests/v2/signature-exceptions.json, but the app-specific label is better externalised as a documented constant or a new general helper)",
+      "proposedReturns": "undefined (unchanged; do not start returning the promise - return type is part of the signature)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "L20197-20204 and L20209-20216 are the same target-resolution block twice; resolveElements(input) at L7927 already normalises selector/Element/NodeList/array"
+      ],
+      "modernisations": [
+        "L20197-20216: one `const apply = (text) => resolveElements(target).forEach(el => { el.textContent = text; })` used by both the then and catch branches (check resolveElements' accepted inputs match: string, Element, NodeList, Array).",
+        "L20194: `staffField.nextElementSibling?.textContent.trim() || userName` - today a label without a sibling throws inside .then and only works because the .catch swallows it.",
+        "L20206-20208: the timeout is the normal case on pages without that detail; downgrade to console.warn or errorHandler with a non-fatal flag and keep the userName fallback; the outer try/catch (L20184, L20216-20218) only guards Knack.getUserAttributes and can go.",
+        "L20185, L20190: 'Staff Name' and '.kn-detail-label' are GAP-Track conventions; hoist to a named constant with a comment, and consider a general insertDetailValueByLabel(target, labelText, { fallback }) in wave 1 that this function calls.",
+        "Scope the waitSelector to a view when possible; today it matches the first 'Staff Name' label anywhere in the page."
+      ],
+      "behaviourRisks": [
+        "Returning the promise would be a (benign) return-type change; keep void per policy.",
+        "A 5s wait plus a MutationObserver on the whole document (waitSelector observes attributes too, L8872-8876) runs on every call; no change proposed but worth knowing.",
+        "If multiple details views contain 'Staff Name', the first in DOM order wins - unchanged."
+      ],
+      "knackPractice": "Reads a Knack details view by label text rather than field id (`.kn-detail-label` + sibling `.kn-detail-body`), which is fragile against label renames; the Knack-idiomatic approach is `.kn-detail.field_x .kn-detail-body` or Knack.views[view].model.attributes. Falls back to Knack.getUserAttributes().name, which is the documented user API. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 18,
+      "rationale": "Thirty-six lines, half duplicated, with an app-specific label baked in. Collapsing the two apply blocks over resolveElements and tolerating a missing sibling halves it with no public change; the label externalisation is flagged cross-cutting rather than forced through a parameter change."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "toTitleCase",
+      "purpose": "Pure title-case transform (first letter of each ASCII word, letters after - or ' upper-cased, remainder lower-cased, optional minor-word lower-casing except first/last, optional preserve-capital-after-prefix list). Extracted from capitaliseInput so it is unit-testable and not re-created per keystroke.",
+      "replaces": [
+        "capitaliseInput L19353 (minorWords) and L19382-19420 (word transform)",
+        "optionally capitaliseString allCaps:false branch L19450 (only if the behaviour difference is accepted)"
+      ],
+      "signature": "toTitleCase(str, { smartWords = true, preserveCapitalAfterPrefixes = [], minorWords = TITLE_CASE_MINOR_WORDS } = {}) -> string"
+    },
+    {
+      "name": "getConnectionIdsFromElement",
+      "purpose": "Collect every 24-hex connection record id under an element (connection-value span, its ancestors up to the root, then any descendant span) as a de-duplicated array; getConnectionIdFromHtml becomes `getConnectionIdsFromElement(root)[0] ?? null`.",
+      "replaces": [
+        "waitGetConxIdFromDetailId L19478-19497",
+        "getConnectionIdFromHtml L18806-18830 (other chunk)"
+      ],
+      "signature": "getConnectionIdsFromElement(rootOrHtml) -> string[]"
+    },
+    {
+      "name": "getAssetInfoFromElement",
+      "purpose": "Read Knack's data-asset-id / data-file-name / data-file-size attributes from an asset element (or the first such descendant of a cell) and return buildKnackAssetInfo output plus fileSize when present.",
+      "replaces": [
+        "updateLinksAndAssets.getAssetInfoFromElement kn-view-asset branch L19624-19636",
+        "initFileCarousel.getCellAssetInfo L20121-20132"
+      ],
+      "signature": "getAssetInfoFromElement(elementOrCell) -> {assetId, fileName, extension, assetUrl, fileSize?} | null"
+    },
+    {
+      "name": "ensureStyleOnce",
+      "purpose": "Idempotent style injection by id (foundation primitive; the same create/append block appears seven times in the file).",
+      "replaces": [
+        "ensureFileCarouselOverlay L19730-19786",
+        "ensureBulkActionBaseStyles L5034-5040, ensureBulkEditSelectionStyles L5477-5483, ensureMenuButtonActiveStyles L9505-9510, anonymous blocks at L7323, L8279, L8598 (other chunks)"
+      ],
+      "signature": "ensureStyleOnce(styleId, cssText) -> HTMLStyleElement"
+    },
+    {
+      "name": "getFileCarouselUi / currentCarouselItem / teardownFileCarousel",
+      "purpose": "Carousel-internal trio: one lookup object for the overlay's child elements, one accessor for the item at fileCarouselState.index, and one listener/overflow teardown shared by closeFileCarousel and the re-open path of openFileCarousel (fixes the keydown/history leak).",
+      "replaces": [
+        "renderFileCarouselItem L19923-19929, L19986-19988, L19993-19995",
+        "ensureFileCarouselOverlay L19810-19819",
+        "closeFileCarousel L20071-20078",
+        "openFileCarousel L20040-20054 (re-entrancy)"
+      ],
+      "signature": "getFileCarouselUi(overlay) -> {stage, filename, caption, counter, downloadSize, download, prev, next}; currentCarouselItem() -> item|null; teardownFileCarousel({ keepHistory = false } = {}) -> void"
+    },
+    {
+      "name": "waitMs",
+      "purpose": "Promise-based delay used for the detail-view settle wait; check other chunks for an existing equivalent before adding.",
+      "replaces": [
+        "waitGetConxIdFromDetailId L19476-19512 (setTimeout promise wrapper)"
+      ],
+      "signature": "waitMs(ms) -> Promise<void>"
+    }
+  ],
+  "crossCuttingFindings": [
+    "waitSelector option-name bug: waitGetConxIdFromDetailId (L19466-19470) and waitGetValueFromDetail (L18284-18287, another chunk) pass `delay`, but waitSelector (L8772-8777) only reads `timeout`, so the documented 5000/20000ms waits are silently 10000ms. V2 should fix the callers (or have waitSelector accept `delay` as an alias) and note it in CHANGELOG.",
+    "App-specific constants embedded in library code: the Knack asset path prefix `1542-3553-3690` (L19648), the `assetURLs` map (L19630-19631, L19684), the `.ca-link/.ca-link-child/.ca-link-user/.ca-asset` + `extLink` class conventions (L19674-19700) and the `'Staff Name'` label (L20190). Another chunk already consumes an app-supplied `KN_ASSET_PREFIX` global (L18600) for the same kn-asset path - V2 should use that single injection point and guard `globalThis.assetURLs`.",
+    "fileViewer(extension, url) at L13932-13938 depends on OFFICE_EXTENSIONS from this chunk and returns `url` on both branches (dead decision); it is a remove-dead/simplify candidate for its own chunk, and L18590 duplicates buildKnackAssetInfo's download-URL construction - one knackAssetDownloadUrl helper would serve both.",
+    "Connection-id extraction exists three times (getIdFromElement L18774, getConnectionIdFromHtml L18806, inline in waitGetConxIdFromDetailId L19478-19497). waitGetConxIdFromDetailId also belongs to the policy's getValueFromDetail / getValueFromDetailBody / waitGetValueFromDetail family (same `#view .field_x .kn-detail-body` selector) but, unlike waitGetValueFromDetail since PR 85, does not normalise ids through knackNavigator.",
+    "tests/v2/v2-structure.test.cjs compares V1 and V2 parameter source text verbatim: cosmetic default-value changes (e.g. capitaliseInput's object-literal default, L19345) or an added optional trailing parameter (e.g. a labelText for insertStaffName) require an entry in tests/v2/signature-exceptions.json (it already documents resolveElement/resolveElements gaining an optional trailing `root = document`, which is the precedent to follow). Every chunk should keep parameter text identical unless it documents the exception.",
+    "Style injection is hand-rolled seven times (L5034, L5477, L7323, L8279, L8598, L9505, L19730); ensureStyleOnce(id, css) should be a wave-1 foundation primitive.",
+    "The carousel reuses Knack's own id `kn-asset-header` (L19794), class `kn-file-download` and FontAwesome `fa fa-cloud-download` (L19797) to inherit Knack styling - a dependency on Knack private CSS/FontAwesome 4 that other overlay code (bulk actions, menu buttons) avoids; worth a single documented decision.",
+    "history.pushState/popstate/history.back are used only by the carousel (L20051-20054, L20075, L20082); the redirect/pop-up helpers near L18610 and any KnackNavigator routing code should be checked for interplay (a hash navigation while the overlay is open gets undone by history.back on close).",
+    "Error reporting in this chunk is console.error x5 (L19513, L19613, L19680, L19846 and insertStaffName L20207) versus errorHandler x1 (L20217); the carousel's fetchFileSizeBytes swallows errors silently (L19880-19882). V2 should route all through errorHandler.handle with a non-fatal convention for expected failures.",
+    "Naming: locals use `normalizedViewId` (US) because knackNavigator.normalizeViewId is US-spelled while new identifiers should be UK-spelled per policy; the chunk itself is otherwise consistently UK (capitalise, sanitise, normalisedPrefixes)."
+  ]
+}
