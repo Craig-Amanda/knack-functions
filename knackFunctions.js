@@ -9208,6 +9208,106 @@ function recordHasValue(recordValue) {
 }
 
 /**
+ * Applies filters (and optionally a keyword search) to a rendered Knack view in place: the view's records are
+ * re-fetched without Knack re-rendering the scene, so custom controls built around the view stay as they are.
+ * Setting `location.hash` would do a full scene re-render instead.
+ *
+ * The URL hash is kept in step (`view_x_filters`, `view_x_search`, `view_x_page`) without re-routing, so a
+ * refresh or the Back button returns to the same results. Hash values for other views are left alone.
+ *
+ * Knack's fetch reads the page from the view's `source.page`, not the hash, so both are set together.
+ * Without that, filtering while on page 3 fetches page 3 of the filtered results, or Knack's "404" when there
+ * are fewer pages.
+ *
+ * @param {string|number} viewId - View to filter, e.g. `'view_123'` or `123`.
+ * @param {object|Array<object>|null} filters - Knack filter payload, e.g. `{ match: 'and', rules: [...] }`.
+ *        `null`, `{}` or no rules/groups clears the filters.
+ * @param {object} [options]
+ * @param {string} [options.search] - Keyword search text. Omit to keep the current search; `''` clears it.
+ * @param {number} [options.page] - Page to load. Defaults to 1, or to the current page when `resetPage` is false.
+ * @param {boolean} [options.resetPage=true] - Go back to page 1 (ignored when `page` is given).
+ * @param {boolean} [options.syncHash=true] - Keep the URL hash in step with the filters, search and page.
+ * @param {boolean} [options.showSpinner=true] - Show Knack's spinner while the records load.
+ * @returns {Promise<boolean>} Resolves true once the records have loaded, or false when the view isn't rendered.
+ *          Rejects when the fetch fails.
+ *
+ * @example
+ * applyKnackViewFilters('view_2719', {
+ *     match: 'and',
+ *     rules: [{ field: 'field_407', operator: 'is', value: '65973d3248ee11002779f7a5' }]
+ * }, { search: 'Christmas' });
+ */
+function applyKnackViewFilters(viewId, filters, { search, page, resetPage = true, syncHash = true, showSpinner = true } = {}) {
+    const targetId = knackNavigator.normalizeViewId(viewId);
+    const model = targetId ? Knack?.models?.[targetId] : null;
+    if (!model || typeof model.fetch !== 'function') {
+        return Promise.resolve(false);
+    }
+
+    const hasFilters = Array.isArray(filters)
+        ? filters.length > 0
+        : Boolean(filters?.rules?.length || filters?.groups?.length);
+    const viewData = model.view || {};
+    const currentPage = Number(viewData.source?.page) || 1;
+    const targetPage = Number(page) > 0 ? Number(page) : (resetPage ? 1 : currentPage);
+
+    if (viewData.source) viewData.source.page = targetPage;
+    if (viewData.pagination_meta) viewData.pagination_meta.page = targetPage;
+
+    if (syncHash || search !== undefined) {
+        // Knack's fetch reads the keyword search from the hash, so a search change always updates it.
+        Knack.setHashVars();
+        const hashVars = { ...(Knack.hash_vars || {}) };
+        // Values in Knack.hash_vars are still URL-encoded, so new values are encoded the same way.
+        if (syncHash) {
+            hashVars[`${targetId}_page`] = String(targetPage);
+            if (hasFilters) {
+                hashVars[`${targetId}_filters`] = encodeURIComponent(JSON.stringify(filters));
+            } else {
+                delete hashVars[`${targetId}_filters`];
+            }
+        }
+        if (search !== undefined) {
+            const searchText = String(search ?? '').trim();
+            if (searchText) {
+                hashVars[`${targetId}_search`] = encodeURIComponent(searchText);
+            } else {
+                delete hashVars[`${targetId}_search`];
+            }
+        }
+
+        const query = Object.entries(hashVars)
+            .filter(([key]) => key)
+            .map(([key, value]) => `${key}=${value}`)
+            .join('&');
+        const sceneHash = Knack.getSceneHash();
+        Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
+        Knack.setHashVars();
+    }
+
+    model.setFilters(hasFilters ? filters : []);
+
+    if (showSpinner && Knack.showSpinner) Knack.showSpinner();
+    return new Promise((resolve, reject) => {
+        try {
+            model.fetch({
+                success: () => {
+                    if (Knack.hideSpinner) Knack.hideSpinner();
+                    resolve(true);
+                },
+                error: (_model, response) => {
+                    if (Knack.hideSpinner) Knack.hideSpinner();
+                    reject(new Error(`[KF] Could not load the filtered records for ${targetId} (status ${response?.status ?? 'unknown'}).`));
+                },
+            });
+        } catch (error) {
+            if (Knack.hideSpinner) Knack.hideSpinner();
+            reject(error);
+        }
+    });
+}
+
+/**
  * Applies menu-based filters to any target view with app-configurable behavior.
  * Designed for generic use across table/list/details/calendar targets.
  *
@@ -9377,54 +9477,11 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
     };
 
     const applyFilterInPlace = (filter, page = 1, rule = null, triggerElement = null) => {
-        const sceneHash = Knack.getSceneHash();
-        const query = filter && Array.isArray(filter.rules) && filter.rules.length
-            ? `view_${targetViewKey}_filters=${encodeURIComponent(JSON.stringify(filter))}&view_${targetViewKey}_page=${page}`
-            : `view_${targetViewKey}_page=${page}`;
-
         if (typeof config.onBeforeApply === 'function') {
             try { config.onBeforeApply({ targetId, filter, page, rule, triggerElement }); } catch (_) {}
         }
 
-        if (config.syncHash) {
-            Knack.router.navigate(query ? `${sceneHash}?${query}` : sceneHash, false);
-            Knack.setHashVars();
-        }
-
-        try {
-            const { targetView, targetModel, targetType } = getTargetViewContext();
-            if (!targetModel) return;
-
-            targetModel.setFilters(filter || {});
-            targetModel.fetch({
-                success: () => {
-                    rerenderCalendarIfNeeded(targetView);
-
-                    const firstRetryMs = Number(config.calendarFirstApplyRetryMs) || 0;
-                    const firstRefetchMs = Number(config.calendarFirstApplyRefetchMs) || 0;
-                    if (!hasAppliedOnce && targetType === 'calendar' && firstRefetchMs > 0) {
-                        hasAppliedOnce = true;
-                        setTimeout(() => {
-                            applyFilterInPlace(filter, page);
-                        }, firstRefetchMs);
-                    } else if (!hasAppliedOnce && targetType === 'calendar' && firstRetryMs > 0) {
-                        hasAppliedOnce = true;
-                        setTimeout(() => {
-                            rerenderCalendarIfNeeded(targetView);
-                        }, firstRetryMs);
-                    }
-
-                    if (typeof config.onAfterApply === 'function') {
-                        try { config.onAfterApply({ targetId, filter, page, targetType, rule, triggerElement }); } catch (_) {}
-                    }
-
-                    if (Knack.hideSpinner) Knack.hideSpinner();
-                },
-                error: () => {
-                    if (Knack.hideSpinner) Knack.hideSpinner();
-                }
-            });
-        } catch (error) {
+        const reportError = (error) => {
             if (typeof config.onError === 'function') {
                 try {
                     config.onError({ targetId, error });
@@ -9432,7 +9489,41 @@ function applyMenuLinkFilters({ menuViewId, targetViewId, rules = [], app = {} }
                 } catch (_) {}
             }
             console.warn('[KF] Menu filter apply failed', { targetId, error });
+        };
+
+        let applied;
+        try {
+            applied = applyKnackViewFilters(targetId, filter, { page, syncHash: config.syncHash, showSpinner: false });
+        } catch (error) {
+            reportError(error);
+            return;
         }
+
+        applied.then((loaded) => {
+            if (!loaded) return;
+            const { targetView, targetType } = getTargetViewContext();
+            rerenderCalendarIfNeeded(targetView);
+
+            const firstRetryMs = Number(config.calendarFirstApplyRetryMs) || 0;
+            const firstRefetchMs = Number(config.calendarFirstApplyRefetchMs) || 0;
+            if (!hasAppliedOnce && targetType === 'calendar' && firstRefetchMs > 0) {
+                hasAppliedOnce = true;
+                setTimeout(() => {
+                    applyFilterInPlace(filter, page);
+                }, firstRefetchMs);
+            } else if (!hasAppliedOnce && targetType === 'calendar' && firstRetryMs > 0) {
+                hasAppliedOnce = true;
+                setTimeout(() => {
+                    rerenderCalendarIfNeeded(targetView);
+                }, firstRetryMs);
+            }
+
+            if (typeof config.onAfterApply === 'function') {
+                try { config.onAfterApply({ targetId, filter, page, targetType, rule, triggerElement }); } catch (_) {}
+            }
+        }).catch(() => {
+            // A failed fetch only cleared the spinner here before, without reporting an error.
+        });
     };
 
     const triggers = Array.from(viewElement.querySelectorAll(linkSelector));
