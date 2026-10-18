@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-18
+
+<!-- pr:105 feat/apply-view-filters-in-place - amandajane-mo -->
+- Add `applyKnackViewFilters` to filter or search a view in place without re-rendering the scene.
+- `applyMenuLinkFilters` now keeps other views' page/search/filter params in the URL hash.
+
 ## 2026-10-16
 
 <!-- pr:104 fix/rerelease-wait-get-value-keys - amandajane-mo -->
