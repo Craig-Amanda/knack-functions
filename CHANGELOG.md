@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-19
+
+<!-- pr:106 feat/mqt-bulk-mode - amandajane-mo -->
+- `_mqt` accepts an optional `[bulk]` group after the target list, e.g. `_mqt=[On App, Bookable], [bulk, On App]`. A bare `[bulk]` enables every `_mqt` column; listing headers or field ids limits it.
+- With bulk mode on, row checkboxes are added (existing KTL checkboxes are reused, and the KTL bulk-ops toolbar is not enabled). Clicking a bulk-enabled cell with rows ticked sets the opposite of the clicked cell's value on the ticked rows plus the clicked row, after a confirmation, skipping rows already at that value.
+- Quick-toggle queue keys are now unique within one millisecond, and choice values keep the field's array/string shape.
+- New doc: `docs/multi-choice-quick-toggle.md`.
+
 ## 2026-10-18
 
 <!-- pr:105 feat/apply-view-filters-in-place - amandajane-mo -->
