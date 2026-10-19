@@ -21440,6 +21440,8 @@ class CAMultiChoiceQuickToggle {
         this.viewType = '';
         this.inlineEditing = false;
         this.viewTargets = [];
+        this.bulkEnabled = false;
+        this.bulkTargets = [];
         this.fieldToggleConfig = {};
         this.quickToggleParams = {
             bgColorTrue: '#e2efda',
@@ -21454,6 +21456,8 @@ class CAMultiChoiceQuickToggle {
         this.numToProcess = 0;
         this.refreshTimer = null;
         this.viewsToRefresh = [];
+        this.queueSeq = 0;
+        this.bulkInProgress = false;
     }
 
     /**
@@ -21470,6 +21474,7 @@ class CAMultiChoiceQuickToggle {
 
         this.updateTableColors();
         this.setupCellClickHandlers();
+        this.setupBulkCheckboxes();
     }
 
     /**
@@ -21491,6 +21496,7 @@ class CAMultiChoiceQuickToggle {
             const { options } = this.kwInstance;
             if (!ktl.core.hasRoleAccess(options)) return false;
             this.viewTargets = this.extractViewTargets(this.kwInstance);
+            this.setupBulkOptions(this.kwInstance);
         }
 
         return true;
@@ -21550,6 +21556,8 @@ class CAMultiChoiceQuickToggle {
                 inactiveValue: toggleChoices.inactiveValue,
                 bgColorTrue: fieldColors.bgColorTrue,
                 bgColorFalse: fieldColors.bgColorFalse,
+                header: knackValueResolver.toStringSafe(col.header) || fieldId,
+                bulk: this.matchesBulkTarget(fieldId, col.header),
             };
 
             if (this.inlineEditing && !col.ignore_edit) {
@@ -21570,8 +21578,91 @@ class CAMultiChoiceQuickToggle {
      */
     extractViewTargets(keywordInstance) {
         const targetGroup = Array.isArray(keywordInstance?.params?.[0]) ? keywordInstance.params[0] : [];
+        if (this.isBulkGroup(targetGroup)) return [];
         return targetGroup
             .map((value) => String(value || '').trim())
+            .filter(Boolean);
+    }
+
+    /**
+     * Checks whether a keyword parameter group is the bulk-mode group, e.g. [bulk] or [bulk, On App].
+     * @param {Array<string>|undefined} group - Parsed parameter group.
+     * @returns {boolean} True when the group's first token is "bulk".
+     */
+    isBulkGroup(group) {
+        return Array.isArray(group) && String(group[0] || '').trim().toLowerCase() === 'bulk';
+    }
+
+    /**
+     * Reads the optional bulk-mode group from the view keyword.
+     * A bare [bulk] enables bulk mode on every _mqt column; [bulk, On App] limits it to the listed columns.
+     * @param {Object|null} keywordInstance - Parsed KTL keyword instance.
+     * @returns {void}
+     */
+    setupBulkOptions(keywordInstance) {
+        const params = Array.isArray(keywordInstance?.params) ? keywordInstance.params : [];
+        const bulkGroup = params.find((group) => this.isBulkGroup(group));
+        if (!bulkGroup) return;
+
+        this.bulkEnabled = true;
+        this.bulkTargets = bulkGroup
+            .slice(1)
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+    }
+
+    /**
+     * Matches a field against the bulk-mode group.
+     * @param {string} fieldId - Normalised field id.
+     * @param {string} headerText - Raw column header text.
+     * @returns {boolean} True when bulk mode applies to this field.
+     */
+    matchesBulkTarget(fieldId, headerText) {
+        if (!this.bulkEnabled) return false;
+        if (!this.bulkTargets.length) return true;
+
+        const normalisedFieldId = knackNavigator.normalizeFieldId(fieldId);
+        const normalisedHeader = knackNavigator.normalizeViewColumnHeader(headerText);
+
+        return this.bulkTargets.some((target) => {
+            const targetFieldId = knackNavigator.normalizeFieldId(target);
+            if (targetFieldId && targetFieldId === normalisedFieldId) return true;
+            return knackNavigator.normalizeViewColumnHeader(target) === normalisedHeader;
+        });
+    }
+
+    /**
+     * Adds KTL row checkboxes when a bulk-mode column is clickable and the view has none yet.
+     * Checkboxes already added by _bulk_actions or KTL bulk operations are reused.
+     * @returns {void}
+     */
+    setupBulkCheckboxes() {
+        const viewRoot = this.getViewRoot();
+        const hasClickableBulkField = Object.entries(this.fieldToggleConfig).some(([fieldId, config]) => {
+            return config.bulk && viewRoot?.querySelector(`td.${fieldId}.mqtCellClickable`);
+        });
+        if (!hasClickableBulkField) return;
+        if (viewRoot?.querySelector('tbody input.bulkEditCb')) return;
+        if (typeof ktl?.views?.addCheckboxesToTable !== 'function') return;
+
+        ktl.views.addCheckboxesToTable(this.viewId, {
+            withMaster: true,
+            rowCheckboxClasses: ['mqtBulkCb'],
+            enhanceExisting: true,
+        });
+    }
+
+    /**
+     * Returns the record ids of the ticked rows in this view.
+     * @returns {Array<string>} Ticked record ids.
+     */
+    getTickedRecordIds() {
+        const viewRoot = this.getViewRoot();
+        if (!viewRoot) return [];
+
+        return Array.from(viewRoot.querySelectorAll('tbody input.bulkEditCb:checked'))
+            .filter((checkbox) => bulkActionIsSelectableGridDataRow(checkbox.closest('tr')))
+            .map((checkbox) => bulkActionGetRowCheckboxRecordId(checkbox))
             .filter(Boolean);
     }
 
@@ -21673,11 +21764,14 @@ class CAMultiChoiceQuickToggle {
      * @returns {void}
      */
     handleCellClick(e) {
-        if (document.querySelector('.bulkEditCb:checked')) return;
-
         const eventTarget = e.target instanceof Element ? e.target : null;
         const clickedCell = eventTarget?.closest('td');
         if (clickedCell instanceof HTMLElement && clickedCell.classList.contains('ktlNoInlineEdit')) return;
+
+        if (document.querySelector('.bulkEditCb:checked')) {
+            this.handleBulkCellClick(e, eventTarget, clickedCell);
+            return;
+        }
 
         e.stopImmediatePropagation();
 
@@ -21698,23 +21792,109 @@ class CAMultiChoiceQuickToggle {
         const value = this.getNextChoiceValue(record, fieldId, fieldConfig);
         if (value === undefined) return;
 
+        this.queueToggle(viewId, fieldId, value, recId, clickedCell);
+        this.startQtScanning();
+    }
+
+    /**
+     * Handles a click on a bulk-mode cell while rows are ticked: sets the clicked field on every
+     * ticked row (and the clicked row) to the clicked cell's toggled value, after a confirmation.
+     * Non-bulk columns, and ticks in another view, leave the click to KTL and Knack as before.
+     * @param {Event} e - Click event.
+     * @param {Element|null} eventTarget - Clicked element.
+     * @param {Element|null} clickedCell - Clicked table cell.
+     * @returns {void}
+     */
+    handleBulkCellClick(e, eventTarget, clickedCell) {
+        const fieldId = knackNavigator.normalizeFieldId(
+            clickedCell?.getAttribute('data-field-key')
+            || eventTarget?.getAttribute('data-field-key')
+            || eventTarget?.parentElement?.getAttribute('data-field-key')
+        );
+        const fieldConfig = this.fieldToggleConfig[fieldId];
+        if (!fieldConfig?.bulk) return;
+
+        const tickedIds = this.getTickedRecordIds();
+        if (!tickedIds.length) return;
+
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        if (this.bulkInProgress) return;
+
+        const viewId = this.viewId;
+        const clickedRecId = eventTarget?.closest('tr')?.id || '';
+        const clickedRecord = ktl.views.getDataFromRecId(viewId, clickedRecId);
+        const targetState = this.resolveSemanticChoice(clickedRecord, fieldId, fieldConfig) !== true;
+        const targetLabel = targetState ? fieldConfig.activeValue : fieldConfig.inactiveValue;
+
+        const recIds = Array.from(new Set([...tickedIds, clickedRecId].filter(Boolean)));
+        const toUpdate = recIds
+            .map((recId) => ({ recId, record: ktl.views.getDataFromRecId(viewId, recId) }))
+            .filter(({ record }) => this.resolveSemanticChoice(record, fieldId, fieldConfig) !== targetState);
+
+        if (!toUpdate.length) {
+            ktl.core.timedPopup(`${fieldConfig.header} is already ${targetLabel} on the selected records.`, 'info', 3000);
+            return;
+        }
+
+        const recordWord = toUpdate.length === 1 ? 'record' : 'records';
+        const skipped = recIds.length - toUpdate.length;
+        const message = [`Set <strong>${escapeHtml(fieldConfig.header)}</strong> to <strong>${escapeHtml(targetLabel)}</strong> on ${toUpdate.length} ${recordWord}?`];
+        if (skipped) {
+            message.push(`${skipped} selected ${skipped === 1 ? 'record is' : 'records are'} already ${escapeHtml(targetLabel)} and will be left as ${skipped === 1 ? 'it is' : 'they are'}.`);
+        }
+
+        this.bulkInProgress = true;
+        showConfirmationDialog({
+            title: `Update ${fieldConfig.header}`,
+            message,
+            buttons: [
+                { text: 'Cancel', className: 'kn-button is-secondary', value: 'cancel' },
+                { text: `Update ${toUpdate.length} ${recordWord}`, className: 'kn-button is-primary', value: 'confirm' },
+            ],
+        }).then((result) => {
+            if (result?.value !== 'confirm') {
+                this.bulkInProgress = false;
+                return;
+            }
+
+            const viewRoot = this.getViewRoot();
+            toUpdate.forEach(({ recId, record }) => {
+                const value = this.buildChoiceValue(record, fieldId, targetLabel);
+                const cell = viewRoot?.querySelector(`tbody tr[id="${recId}"] td.${fieldId}`);
+                this.queueToggle(viewId, fieldId, value, recId, cell);
+            });
+            this.startQtScanning();
+        });
+    }
+
+    /**
+     * Adds one record update to the PUT queue and marks its cell as pending.
+     * @param {string} viewId - Knack view id.
+     * @param {string} fieldId - Normalised field id.
+     * @param {string|Array<string>} value - Knack request value.
+     * @param {string} recId - Record id.
+     * @param {Element|null} cell - Rendered cell to mark as pending.
+     * @returns {void}
+     */
+    queueToggle(viewId, fieldId, value, recId, cell) {
         if (!this.viewsToRefresh.includes(viewId)) {
             this.viewsToRefresh.push(viewId);
         }
 
-        const dt = Date.now();
+        // The sequence suffix keeps keys unique when a bulk click queues several records in the same millisecond.
+        const dt = `${Date.now()}_${this.queueSeq++}`;
         this.quickToggleObj[dt] = { viewId, fieldId, value, recId, processed: false };
 
-        if (clickedCell instanceof HTMLElement) {
-            clickedCell.style.backgroundColor = this.quickToggleParams.bgColorPending;
+        if (cell instanceof HTMLElement) {
+            cell.style.backgroundColor = this.quickToggleParams.bgColorPending;
             if (this.quickToggleParams.pendingClass) {
-                clickedCell.classList.add(this.quickToggleParams.pendingClass);
+                cell.classList.add(this.quickToggleParams.pendingClass);
             }
         }
 
         clearTimeout(this.refreshTimer);
         this.numToProcess++;
-        this.startQtScanning();
     }
 
     /**
@@ -21744,15 +21924,21 @@ class CAMultiChoiceQuickToggle {
      * @returns {string|Array<string>|undefined} Knack request value for the next state.
      */
     getNextChoiceValue(record, fieldId, fieldConfig) {
-        const rawValue = record?.[`${fieldId}_raw`];
         const currentState = this.resolveSemanticChoice(record, fieldId, fieldConfig);
         const nextValue = currentState === true ? fieldConfig.inactiveValue : fieldConfig.activeValue;
+        return this.buildChoiceValue(record, fieldId, nextValue);
+    }
 
-        if (Array.isArray(rawValue)) {
-            return [nextValue];
-        }
-
-        return nextValue;
+    /**
+     * Shapes a choice label the way the record's field value is stored (single value or array).
+     * @param {Object} record - Knack row record.
+     * @param {string} fieldId - Normalised field id.
+     * @param {string} choiceLabel - Choice label to send.
+     * @returns {string|Array<string>} Knack request value.
+     */
+    buildChoiceValue(record, fieldId, choiceLabel) {
+        const rawValue = record?.[`${fieldId}_raw`];
+        return Array.isArray(rawValue) ? [choiceLabel] : choiceLabel;
     }
 
     /**
@@ -21760,7 +21946,7 @@ class CAMultiChoiceQuickToggle {
      * @returns {void}
      */
     startQtScanning() {
-        if (this.quickToggleParams.showNotification) {
+        if (this.quickToggleParams.showNotification || this.bulkInProgress) {
             ktl.core.infoPopup();
             this.showProgress();
         }
@@ -21802,7 +21988,7 @@ class CAMultiChoiceQuickToggle {
 
         apiClient.updateRecord(sceneId, normalisedViewId, recObj.recId, apiData)
             .then(() => {
-                if (this.quickToggleParams.showNotification) {
+                if (this.quickToggleParams.showNotification || this.bulkInProgress) {
                     this.showProgress();
                 }
 
@@ -21812,6 +21998,7 @@ class CAMultiChoiceQuickToggle {
                 if (this.isToggleQueueEmpty(this.quickToggleObj)) {
                     clearInterval(this.qtScanItv);
                     this.qtScanItv = null;
+                    this.bulkInProgress = false;
 
                     if (this.quickToggleParams.showSpinner) {
                         Knack.showSpinner();
@@ -21830,6 +22017,7 @@ class CAMultiChoiceQuickToggle {
             })
             .catch((reason) => {
                 ktl.views.autoRefresh();
+                this.bulkInProgress = false;
                 const errorMsg = reason ? JSON.stringify(reason) : 'Unknown error';
                 console.error('Multi-choice quick toggle operation failed:', reason);
                 errorHandler.handleError(reason, { function: 'doQuickToggle' }, 'Multi-choice Quick Toggle Error');
