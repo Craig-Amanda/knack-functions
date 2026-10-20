@@ -1,0 +1,154 @@
+{
+  "chunkId": "C05",
+  "chunkSummary": "Lines 1945-2836 hold two 2026-era, already-modern functions: renderVersionIndicator (1952-1981, 30 lines, native DOM, no jQuery) and the factory createVersionRefreshController (1991-2831, 841 lines) which returns a 28-method controller object for iframe-driven app version sync, localStorage/KTL-storage state, postMessage hand-off to the main window, hold/release custom events, MutationObserver-based deferred refresh and a guarded reload. Nothing uses jQuery, var or callbacks-in-place-of-promises; the controller is the policy's named wave-3 module (port as-is, dead-code removal and consistency fixes only, no signature changes, no shims). Concrete gains are internal: a single STATE_KEYS/normaliseState helper collapses three hand-written copies of the four-key state object (2142-2149, 2244-2249, 2262-2267); a resumePendingRefresh() helper replaces the duplicated block in releaseRefresh/releaseAllRefreshHolds (2342-2347, 2365-2370); the \"ensurePendingRefreshWatch(); runRefreshIfSafe()\" pairs in handleRefreshMessage (2720-2724, 2738-2740, 2755-2756) reduce to runRefreshIfSafe() because it already arms the watch when unsafe (2638-2641); syncedVersion || targetVersion is computed five times (2607-2618); function-expression option defaults become arrows; stale JSDoc @returns (1988 lists 9 of 28 keys) becomes a typedef. Two latent issues are worth fixing while porting: renderVersionIndicator looks up getElementById('') but creates 'kf-version-indicator' when indicatorId is an explicit empty string (1965 vs 1975), so repeated calls append duplicates; and the controller registers window listeners (2792-2800) with no destroy(), so repeated construction leaks handlers. Cross-version contracts (stored JSON shape, postMessage payload, kf-version-refresh-hold/release event names and detail shapes) must be byte-compatible because the iframe and parent window can briefly run different library versions by design.",
+  "functions": [
+    {
+      "name": "renderVersionIndicator",
+      "kind": "function",
+      "startLine": 1952,
+      "endLine": 1981,
+      "currentSignature": "renderVersionIndicator(text, options = {})  // options: { indicatorId = 'kf-version-indicator', className = 'kf-version-indicator', container = document.body }",
+      "currentReturns": "undefined (void); side effect: creates/updates/removes <div id=indicatorId class=className> under container",
+      "verdict": "simplify",
+      "proposedSignature": "renderVersionIndicator(text, options = {})  // same keys; container additionally accepts a selector string or jQuery object via resolveElement",
+      "proposedReturns": "undefined (void); identical DOM side effects (same id, className, textContent, same removal when text is empty)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Resolve the id once: `const id = knackValueResolver.toStringSafe(indicatorId) || 'kf-version-indicator'` and use it for BOTH the getElementById lookup (1965) and element creation (1975). Today an explicit indicatorId: '' looks up '' but creates 'kf-version-indicator', so a second call cannot find the first element and appends a duplicate.",
+        "Replace `String(className || '').trim() || 'kf-version-indicator'` (1979) with `knackValueResolver.toStringSafe(className) || 'kf-version-indicator'` for consistency with line 1964.",
+        "Collapse the create branch (1972-1976) to `versionElement ??= container.appendChild(Object.assign(document.createElement('div'), { id }))`.",
+        "Early return `if (!versionText) { versionElement?.remove(); return; }` (1967-1972) - drop the redundant `instanceof HTMLElement` check on a value that getElementById already guarantees is an Element or null.",
+        "Resolve `container` through the C01 resolveElement primitive so a selector string or jQuery object is accepted (superset of current input, not a signature change); keep returning early when it does not resolve to an Element.",
+        "Add `@param {string} [options.indicatorId]`, `[options.className]`, `[options.container]` to the JSDoc (1945-1951 only documents options as an opaque Object)."
+      ],
+      "behaviourRisks": [
+        "Element id 'kf-version-indicator' and class 'kf-version-indicator' are CSS hooks in consuming apps (Spot per CHANGELOG pr:58); the element must stay a <div> appended as the LAST child of container, with className fully replaced (not classList.add), because the controller re-renders on every storeUserVersion call (2290).",
+        "Current code silently no-ops when container is not an HTMLElement (1959-1961); widening inputs must keep that silent no-op rather than throwing.",
+        "Removing the element when text is empty (1967-1972) is relied on by resetState/storeUserVersion flows; keep it.",
+        "Fixing the empty-indicatorId duplicate bug changes behaviour for any caller that passed indicatorId: '' deliberately and expected... nothing sensible; treat as a bug fix but note it in the CHANGELOG."
+      ],
+      "knackPractice": "Pure DOM helper, independent of Knack render events; appends to document.body so it survives Knack scene/view re-renders (which only replace .kn-scene/.kn-view subtrees). Follows the Knack guidance of not caching view elements. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 18,
+      "rationale": "Already native and modern, so it qualifies as a wave-1 small helper with a clear tightening gain: one id resolution fixes a real duplicate-element bug and removes two repeated String(...).trim() expressions. No signature change; the only widening is accepting selector/jQuery containers through the shared resolveElement primitive."
+    },
+    {
+      "name": "createVersionRefreshController",
+      "kind": "function",
+      "startLine": 1991,
+      "endLine": 2831,
+      "currentSignature": "createVersionRefreshController(options = {})  // options: { storageKey = '', storageAdapter = createBulkActionStorageAdapter(localStorage, { preferKtl: true }), messageSource = '', messageType = '', isIframeWindow = () => ktl.scenes.isiFrameWnd(), getCurrentUserId = () => toStringSafe(Knack?.getUserAttributes?.()?.id), normaliseVersion = (value) => strip-html-and-collapse-whitespace, userVersionIndicatorId = '', userVersionIndicatorClassName = '', renderUserVersion = (userVersion) => renderVersionIndicator(...), canRefreshNow = null, refreshWaitMessage = 'There is a new version available. You will be updated when it is safe to do so.', refreshNowMessage = 'There is a new version available. Updating now...', refreshNotificationTarget = document.body, refreshNotificationClassName = ['notification-fixed-center', 'notification-fixed-center--warning'], refreshNotificationDelay = 5000, refreshNotificationFadeTime = 300, targetVersionItem = '', targetVersionItemFieldId = '', targetVersionValueFieldId = '', syncUserVersionViewId = '', syncUserVersionFieldId = '', showRefreshWait = (targetVersion) => showNotification(...), showRefreshNow = (targetVersion) => showNotification(...), syncUserVersion = async (targetVersion, context = {}) => KnackAPI.updateRecord(...), onUserVersionSynced = (syncedVersion, context) => {}, onSyncError = (error, context) => console.error(...), reload = () => window.location.reload(), refreshHoldEventName = 'kf-version-refresh-hold', refreshReleaseEventName = 'kf-version-refresh-release', reloadDelayMs = 1200, recentReloadWindowMs = 15000 }",
+      "currentReturns": "Object with 28 methods: normalizeVersion(value):string, createIframeVersionSnapshot(snapshot={}):{userVersion,targetVersion}, createCachedIframeVersionSnapshot():{userVersion,targetVersion}, cacheCurrentUserRecord(recordOrRecords):Object|null, cacheTargetVersionRecords(records):Object[], getCachedUserVersion(record?):string, getTargetVersion(records?):string, isHomeRoute():boolean, hasBlockingForm():boolean, canRefreshNow():boolean (alias of internal canRefreshPageNow), readState():{targetVersion,lastReloadedTarget,lastReloadedAt,userVersion}, writeState(state):void, storeUserVersion(userVersion):void, holdRefresh(holdId=''):string, releaseRefresh(holdId):boolean, releaseAllRefreshHolds():number, hasActiveRefreshHold():boolean, resetState():void, evaluateIframeVersionState(snapshot={}):{userVersion,targetVersion}, syncIframeVersion(snapshot={}):Promise<string|undefined>, evaluateAndSyncIframeVersion(snapshot={}):Promise<{userVersion,targetVersion}>, cacheCurrentUserRecordAndSync(recordOrRecords):Promise<snapshot>, cacheTargetVersionRecordsAndSync(records):Promise<snapshot>, postRefreshMessage(targetVersion, userVersion=''):void, runRefreshIfSafe():void, handleRefreshHoldEvent(event):void, handleRefreshReleaseEvent(event):void, handleRefreshMessage(event):void. Side effects at construction: two window.addEventListener registrations (2792-2800).",
+      "verdict": "simplify",
+      "proposedSignature": "createVersionRefreshController(options = {})  // identical option keys, defaults, and default-callback semantics; identical 28 returned methods plus ONE additive method destroy():void that removes the window listeners, disconnects the observer and clears the reload timer",
+      "proposedReturns": "Same 28-key object (same names, same sync/async nature, same return types) + destroy():void. Persisted JSON shape, postMessage payload shape and custom-event names/detail shapes unchanged.",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Convert every `function () {}` option default (2000-2010, 2021-2029, 2041-2057, 2060-2085) and inner callbacks (2180, 2202, 2213, 2222, 2231, 2489, 2663) to arrow functions. Keep the destructuring-default pattern itself: defaults such as renderUserVersion (2032) and showRefreshWait (2050) close over sibling option bindings (userVersionIndicatorId, refreshWaitMessage) and would silently lose access to caller-supplied values if rewritten as a static DEFAULTS object + Object.assign.",
+        "Introduce `const STATE_KEYS = ['targetVersion', 'lastReloadedTarget', 'lastReloadedAt', 'userVersion']` and one `normaliseState(raw)` helper; use it in readState (2244-2249), writeState (2262-2267) and mergeStoredState (2142-2149) which are three hand-written copies of the same four-field shape. writeState's four-way equality (2269-2273) becomes `STATE_KEYS.every((k) => currentState[k] === nextState[k])`.",
+        "Add `cancelScheduledReload()` and use it in holdRefresh (2318-2321) and resetState (2446-2449); stopPendingRefreshWatch (2297-2305) becomes `internalState.pendingObserver?.disconnect(); internalState.pendingObserver = null;`.",
+        "Add `resumePendingRefresh()` for the identical block in releaseRefresh (2342-2347) and releaseAllRefreshHolds (2365-2370).",
+        "In handleRefreshMessage replace `if (canRefreshPageNow()) { runRefreshIfSafe(); } else { ensurePendingRefreshWatch(); }` (2720-2724) and the two `ensurePendingRefreshWatch(); runRefreshIfSafe();` pairs (2738-2740, 2755-2756) with a bare `runRefreshIfSafe()`: it already arms the watch and shows the deferred notice when a hold or unsafe page blocks it (2638-2641), and ensurePendingRefreshWatch's synchronous runPendingRefreshCheck (2496) makes the pairs idempotent today. Verify with the differential harness (tests/v2/harness.cjs) that the reload-timer and observer end-states match for: safe page, modal open, hold active, duplicate message.",
+        "In syncIframeVersion compute `const appliedVersion = syncedVersion || targetVersion` once (replaces five repeats at 2607-2618).",
+        "resetState (2436-2441): drop the redundant `userVersion: storedState.userVersion` - mergeStoredState already takes it from baseState.",
+        "Replace the six `typeof X === 'function'` guards on option callbacks (2287, 2529, 2600, 2612, 2650, 2671) with one `call(fn, ...args)` helper; keep the guard semantics because callers may pass null to disable a hook (canRefreshNow = null is the documented precedent, 2059).",
+        "Replace `Knack?.getUserAttributes?.()?.id` (2004) with `globalThis.Knack?.getUserAttributes?.()?.id`: optional chaining does not protect an undeclared identifier in a classic script, and the same file already uses `globalThis.ktl?.` (1868). Likewise default isIframeWindow to `globalThis.ktl?.scenes?.isiFrameWnd?.() ?? (window.parent !== window)` instead of the unguarded `ktl.scenes.isiFrameWnd()` (2001), which throws on any controller call in an app without KTL.",
+        "Remove impossible-state guards: `typeof window !== 'undefined'` (2543, 2792-2793) in a browser-only classic script; `document.body instanceof HTMLElement` (2461) becomes `if (!document.body) return;`.",
+        "isHomeRoute (2199-2206): `window.location.hash.slice(1).split('?')[0].split('/').map((s) => s.trim()).filter(Boolean).length <= 1`, or route it through the proposed parseLocationHash() primitive shared with bulkActionGetCurrentHashState (3966-3969).",
+        "canRefreshPageNow (2227-2243): `[...document.querySelectorAll('.kn-modal')].some((el) => isElementVisible(el))` - note isElementVisible has a second `root` param, so never pass it directly as the .some callback.",
+        "Route default onSyncError (2082-2084) and the readState JSON warning (2234) through `errorHandler.handle(error, context, 'createVersionRefreshController')` per policy instead of raw console calls (keeps a console fallback via the top-of-file errorHandler shim).",
+        "Add `destroy()` to the returned object (additive) and document it; store the two bound listener references so it can removeEventListener them. Without this, constructing the controller inside a knack-scene-render handler stacks listeners (2792-2800).",
+        "Replace the stale `@returns` at 1988 (lists 9 of 28 keys) with a `@typedef {Object} VersionRefreshController` listing every method, and add `@param {Object} [options.*]` entries for the 36 option keys that are currently undocumented.",
+        "holdRefresh (2315): keep the `hold_${Date.now()}_${n}` id scheme (consumers may log/compare it); do not switch to crypto.randomUUID()."
+      ],
+      "behaviourRisks": [
+        "Cross-version message contract: the reloaded iframe may run NEWER library code than the parent window (that is precisely the moment a refresh is needed), so the postMessage payload `{source, type, userId, targetVersion, userVersion}` (2548-2554), the origin check (2694) and the handleRefreshMessage branch order (2709-2757) must stay byte-compatible between V1 and V2.",
+        "Persisted state contract: the JSON shape `{targetVersion, lastReloadedTarget, lastReloadedAt(ISO string), userVersion}` under storageKey (2244-2249, 2275) is shared across tabs and across the reload boundary; the 15 s reload-loop guard (2512-2523) depends on lastReloadedAt parsing with Date.parse.",
+        "Public custom events 'kf-version-refresh-hold' / 'kf-version-refresh-release' with detail `{holdId}` or `{all: true}` (2385-2415) are dispatched by consuming app code via window.dispatchEvent; names and detail keys are API.",
+        "Default notification classes ['notification-fixed-center', 'notification-fixed-center--warning'] (2066) and the two message strings (2063-2064) are app CSS/UX contracts; keep defaults verbatim.",
+        "Race-condition fix from CHANGELOG 2026-07-15 (pr:80): syncInFlight (2592-2597, 2627) and the ordering 'stopPendingRefreshWatch -> clear deferred notice -> showRefreshNow -> setTimeout(reload)' (2648-2669) prevent repeated refresh loops; any reordering while simplifying handleRefreshMessage/runRefreshIfSafe can reintroduce double reloads or a missed reload. Differential tests must cover: unsafe->safe transition via MutationObserver, hold released during pending reload timer, message arriving twice for the same target.",
+        "canRefreshPageNow depends on isElementVisible (13964) getClientRects semantics and on Knack DOM selectors '.kn-modal' and '.kn-form.kn-view form, .kn-view.kn-form form' (2212, 2229); if C01 changes isElementVisible (e.g. to element.checkVisibility()) hidden-but-boxed modals may be judged differently.",
+        "MutationObserver attributeFilter ['class','style','hidden','aria-hidden'] (2495) is what makes modal close / form submit unblock the refresh; narrowing it would stall deferred refreshes.",
+        "Option defaults close over sibling options (renderUserVersion -> userVersionIndicatorId/isIframeWindow, showRefreshWait/showRefreshNow -> refreshWaitMessage/refreshNotification*); converting to a DEFAULTS object merge would silently ignore caller-supplied messages/ids.",
+        "Changing the isIframeWindow default to fall back to `window.parent !== window` when KTL is absent turns a hard ReferenceError into a working path; only observable in apps without KTL, but note it.",
+        "storeUserVersion calls renderUserVersion on every invocation even when unchanged (2286-2288); the indicator element is therefore re-written on each iframe message - keep so apps that style via className still see the class reapplied.",
+        "`canRefreshNow` is exposed under a different name than the internal function (2772: `canRefreshNow: canRefreshPageNow`); keep the public key name."
+      ],
+      "knackPractice": "Follows the Knack model where it touches Knack: user-version writes go through the view-based REST API (KnackAPI.updateRecord with scene key resolved from Knack.views metadata via knackNavigator.getSceneInfoForView, 2071-2080), the user id comes from Knack.getUserAttributes() (2004), and hash routing (#scene/record) is assumed in isHomeRoute (2199-2206). It layers a KTL concept on top - the hidden \"iframe window\" (ktl.scenes.isiFrameWnd, 2001) that KTL reloads periodically - which is not part of Knack's documented JS model; apps without KTL must supply isIframeWindow. The controller does not subscribe to knack-view-render/knack-records-render itself; it expects the app to call cacheCurrentUserRecordAndSync / cacheTargetVersionRecordsAndSync from those handlers in the iframe, which is the right division (library stays view-agnostic). Using a MutationObserver rather than render events to detect \"safe to refresh\" is justified because modal open/close and form visibility are not all surfaced as Knack events. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 3,
+      "estimatedV2Lines": 620,
+      "rationale": "The policy names the version refresh controller as a wave-3 module: 2026 code, already ES2020+, with a reload race fixed as recently as July 2026, so it must be ported as-is with dead-code removal and consistency fixes and no signature changes. The real savings are internal duplication (state shape written three times, resume block twice, redundant watch/run pairs, five-fold `syncedVersion || targetVersion`), stale JSDoc, and two robustness fixes (globalThis-guarded Knack/ktl access, an additive destroy() for listener leaks). Risk is medium only because of the cross-version postMessage/storage contracts and the reload race; both are mechanical to protect with the differential harness."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "parseLocationHash",
+      "purpose": "Single parser for Knack hash routes returning path, trimmed non-empty segments and query string; replaces three ad-hoc split(\"?\")/split(\"/\") implementations.",
+      "replaces": [
+        "isHomeRoute (2199-2206)",
+        "bulkActionGetCurrentHashState (3966-3969)",
+        "bulkActionGetHashQueryParam (3954-3955)"
+      ],
+      "signature": "parseLocationHash(hash = window.location.hash) -> { path: string, segments: string[], query: string, params: URLSearchParams }"
+    },
+    {
+      "name": "isKtlIframeWindow",
+      "purpose": "Guarded accessor for the KTL hidden iframe check so no caller dereferences an undeclared `ktl` global; falls back to the frame relationship when KTL is absent.",
+      "replaces": [
+        "createVersionRefreshController isIframeWindow default (2001)",
+        "ktl.scenes.isiFrameWnd() at 21045",
+        "ktl.scenes.isiFrameWnd() at 21376"
+      ],
+      "signature": "isKtlIframeWindow() -> boolean  // globalThis.ktl?.scenes?.isiFrameWnd?.() ?? (window.parent !== window)"
+    },
+    {
+      "name": "createJsonStateStore",
+      "purpose": "Typed JSON persistence over a storage adapter: read with per-key normalisers, merge-write only when changed. Collapses readState/writeState/mergeStoredState and is reusable by any other module persisting a small JSON object in local/session/KTL storage.",
+      "replaces": [
+        "readState (2227-2250)",
+        "writeState (2257-2275)",
+        "mergeStoredState (2142-2149)",
+        "JSON.parse/JSON.stringify of bulk-action session state (3293 area)"
+      ],
+      "signature": "createJsonStateStore(adapter, key, normalisers /* { [k]: (v) => any } */) -> { read(): Object, write(partial: Object): boolean, merge(partial, base = read()): Object }"
+    },
+    {
+      "name": "callIfFunction",
+      "purpose": "One-liner replacement for the repeated `if (typeof fn === \"function\") fn(...)` hook guards; preserves the ability to pass null to disable a hook.",
+      "replaces": [
+        "guards at 2231, 2287, 2529, 2600, 2612, 2650, 2671"
+      ],
+      "signature": "callIfFunction(fn, ...args) -> ReturnType<fn> | undefined"
+    },
+    {
+      "name": "ensureGlobal",
+      "purpose": "Read a page global without ReferenceError in a classic script (Knack, ktl, ktlKeywords); standardises on globalThis.X?. instead of bare X?. which still throws when X is undeclared.",
+      "replaces": [
+        "Knack?.getUserAttributes?.() (2004)",
+        "other bare `Knack?.` / `ktl.` references across chunks"
+      ],
+      "signature": "ensureGlobal(name) -> any | undefined  // globalThis[name]"
+    }
+  ],
+  "crossCuttingFindings": [
+    "createBulkActionStorageAdapter (1859) is a generic local/session/KTL storage adapter, not bulk-action specific: it is the default storageAdapter of the version controller (1995-1998) and of bulk actions (3293). V2 should expose a neutrally named createStorageAdapter and keep createBulkActionStorageAdapter/createBulkActionSessionStorageAdapter as deprecated aliases (owned by the chunk containing 1859).",
+    "Hash parsing is duplicated across chunks: isHomeRoute (2200-2204) vs bulkActionGetCurrentHashState (3966-3969) vs bulkActionGetHashQueryParam (3954-3955); all should use one parseLocationHash primitive.",
+    "ktl.scenes.isiFrameWnd() is dereferenced unguarded at 2001, 21045 and 21376; any app loading knackFunctions without KTL gets a ReferenceError from those paths. Proposed isKtlIframeWindow() primitive.",
+    "Bare `Knack?.x` optional chaining (2004 and elsewhere) does not guard an undeclared global in a classic script; createBulkActionStorageAdapter already uses the correct `globalThis.ktl?.` form (1868). V2 should standardise on globalThis.Knack?. / globalThis.ktl?. so the Playwright harness can load functions without stubbing every global.",
+    "App-specific defaults baked into the library: notification class names 'notification-fixed-center' / 'notification-fixed-center--warning' (2066) and the English refresh messages (2063-2064) come from Spot. They must stay as defaults for compatibility but should be documented as app CSS dependencies, and V2 could ship a minimal fallback style via an ensureVersionRefreshStyles() helper (idempotent style injection) so the notice is visible in apps without that CSS.",
+    "Naming prefixes are inconsistent across the file: this chunk introduces the 'kf-' prefix (kf-version-indicator id/class, kf-version-refresh-hold/release events) while other chunks use 'ktl', 'bulkAction', 'kn-' or no prefix. Keep existing names, but new V2 identifiers should settle on one prefix (recommend 'kf-').",
+    "UK/US spelling clash inside one public API: option `normaliseVersion` (2011) vs returned method `normalizeVersion` (2122/2760), both relying on knackNavigator.normalizeViewId/normalizeFieldId (US). Cannot rename; flag for the V2 naming guide so new identifiers use UK spelling consistently.",
+    "Recent-code logging uses console.warn/console.error directly (2083, 2234); the policy asks for errorHandler.handle. The same pattern appears throughout the bulk-action and KnackAPI chunks - a global consistency pass should route them through errorHandler with the console fallback.",
+    "Controllers/factories that register window/document listeners without a teardown (this one at 2792-2800) will stack handlers if constructed inside render handlers; check the interactive-table, file-carousel and MultiFormSubmissionCoordinator chunks for the same pattern and add destroy()/AbortController-based teardown consistently.",
+    "isElementVisible (13964, C-later chunk) is a hard dependency of canRefreshPageNow/hasBlockingForm; its semantics (getClientRects + computed display/visibility) must be preserved or the deferred-refresh gating changes. Note it takes a second `root` parameter, so it must never be passed directly as an Array#some callback.",
+    "JSDoc drift: the controller's @returns (1988) documents 9 of 28 returned methods and none of the 36 option keys; the globals generator (eslint/generate-globals.mjs) does not catch returned-object API drift, so V2 should add a typedef and a tests/v2 structural check that the returned key set is a superset of V1's."
+  ]
+}

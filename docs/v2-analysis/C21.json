@@ -1,0 +1,580 @@
+{
+  "chunkId": "C21",
+  "chunkSummary": "Form-input utilities in two layers: a recent (2026) native-DOM block (initialiseConditionalRequiredFieldVisibility, showNotification, normaliseInputs/isNodeList/isjQueryInstance/cssEscape, clearInput, resetSelectToFirstOption, toggleCheckboxOption) that mostly needs tightening, deduping against the C01 primitives (resolveElements) and a shared Chosen-refresh helper, plus a ~5-year-old jQuery tail (changeRadioButtonLabel, removeNull via ':contains', selectFromSelect, selectFromConx with var and a commented-out console.log) that goes fully native. No function returns a jQuery object, so only one shim is needed (normaliseInputs -> resolveElements); the dead `if (typeof globalThis...)` re-export statement is dropped. Everything is wave 1 except the 178-line conditional-required module, which should be split into reusable helpers in wave 2.",
+  "functions": [
+    {
+      "name": "initialiseConditionalRequiredFieldVisibility",
+      "kind": "function",
+      "startLine": 17454,
+      "endLine": 17631,
+      "currentSignature": "initialiseConditionalRequiredFieldVisibility(viewId, options = {})  // options: { controllerFieldId, isEnabled, fieldHasValue, resolveVisibilityTarget, excludeFieldIds = [], events = ['change', 'input'], delegate = 'input, select, textarea', submitNamespace = 'conditionalRequiredFieldVisibility' }",
+      "currentReturns": "{ viewElement: HTMLElement, formElement: HTMLFormElement, apply: () => HTMLElement[] } | null",
+      "verdict": "split",
+      "proposedSignature": "initialiseConditionalRequiredFieldVisibility(viewId, options = {})  // unchanged; body delegates to new top-level helpers getViewRequiredFieldIds(viewId), fieldWrapperHasValue(fieldWrap, { includeHidden: false }) and getRequiredFieldWrappers(viewElement, { excludeFieldIds, requiredFieldIds })",
+      "proposedReturns": "{ viewElement: HTMLElement, formElement: HTMLFormElement, apply: () => HTMLElement[] } | null",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Extract the 17472-17489 closure into a top-level `getViewRequiredFieldIds(viewId)` returning Set<string>; replace the nested ternary at 17475-17479 with `[viewModel?.view?.fields, viewModel?.fields, viewModel?.attributes?.fields].find(Array.isArray) ?? []`, and read `globalThis.Knack?.views` (bare `Knack?.views` at 17474 still throws ReferenceError when Knack is undeclared, e.g. in the Playwright harness).",
+        "The closure hasVisibleInputValue (17491-17519) re-implements fieldWrapperHasValue (17409-17437) line for line, adding only the datetime branch at 17496-17502 and dropping the hidden-input check at 17432-17436. Fold the datetime branch into fieldWrapperHasValue (C20) and call `fieldWrapperHasValue(fieldWrap, { includeHidden: false })` here; `.find(function (el) { return elementHasMeaningfulValue(el); })` at 17514-17516 becomes `.some(elementHasMeaningfulValue)`.",
+        "getRequiredFieldWraps (17521-17541): line 17538 `input[required], select[required], textarea[required]` is already covered by `[required]` at 17536 - delete it; `Array.isArray(excludeFieldIds) ? excludeFieldIds : [excludeFieldIds]` (17523) becomes `[].concat(excludeFieldIds)`; `fieldWrap.id.replace(/^kn-input-/, '')` (17531) can use `fieldWrap.id.slice('kn-input-'.length)`.",
+        "Replace the jQuery namespaced submit hook at 17618-17624 (not one of the three permitted jQuery uses) with `formElement.addEventListener('submit', apply, { signal })`, keeping idempotency per `submitNamespace` through a module-level `WeakMap<HTMLFormElement, Map<string, AbortController>>` that aborts the previous controller for the same namespace before re-binding.",
+        "hideField/restoreField (17551-17579): store previous display and disabled state in a WeakMap instead of three `data-conditional-required-*` attributes, or keep the data attributes if consumer CSS targets them (unknown; keep `data-conditional-required-hidden` at minimum since it is observable).",
+        "Drop the `instanceof HTMLElement` re-checks on elements that came from querySelectorAll (17492, 17528) - impossible states per policy."
+      ],
+      "behaviourRisks": [
+        "A native submit listener does not see `$(form).trigger('submit')`/`$(form).submit()`: jQuery runs its own handlers then calls native form.submit(), which fires no event. Knack's own submit path is the user's click/Enter (native event, both see it), but app code that triggers submit through jQuery would no longer re-run apply() before submission.",
+        "Relies on Knack skipping required-field validation for fields that are display:none and disabled (setVisibility at 17557 + `disabled = true` at 17562); that is an undocumented Knack behaviour - unverified against live docs. Changing the hide mechanism (e.g. to the `hidden` attribute or a class) could silently stop the feature working.",
+        "Required-field metadata is read from `Knack.views[viewId].model.view.fields` / `.model.fields` / `.model.attributes.fields` (17475-17479); form views in Knack expose `inputs` grouped in `groups[].columns[].inputs[]`, so this lookup may always return [] and the DOM `.kn-required` marker (17535) may be doing all the work - unverified against live docs. Keep all four detection paths.",
+        "Re-initialising on every knack-view-render stacks addInputEventListener bindings (17613) because only the submit hook is namespaced; V2 should make both idempotent, but a consumer that relied on apply() running twice per event would see one run.",
+        "`data-conditional-required-hidden`, `data-conditional-required-previous-display` and `data-conditional-required-was-disabled` are observable DOM state; keep the names.",
+        "Returns [] from apply() when controllerFieldId is set but its wrapper is missing (17585-17587) and null when the view/form is missing (17457-17459); preserve both."
+      ],
+      "knackPractice": "Follows the Knack model: resolves the view root by id, uses `#kn-input-field_x` wrappers via knackNavigator.getFieldWrapper, and expects to be called from a knack-view-render handler (the caller must rebind on each render; the function itself caches nothing across renders). Fights Knack slightly by guessing the view-model shape for required fields and by hooking the form submit through jQuery instead of the documented `knack-form-submit` event (which fires after submit, so pre-submit re-apply genuinely needs the native submit event). Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 115,
+      "rationale": "Modern 2026 code (CHANGELOG PR 65) but 178 lines with seven nested closures, one of which duplicates fieldWrapperHasValue and one of which duplicates a required-marker check. Splitting the metadata lookup and value detection into top-level helpers shrinks it and lets C20's form helpers share them. The only jQuery use is the submit namespace, which the policy's three-exception rule does not cover, so it goes native with a WeakMap for idempotency. Medium risk because the feature depends on Knack's undocumented treatment of hidden required inputs."
+    },
+    {
+      "name": "if (typeof globalThis !== 'undefined' && typeof globalThis.initialiseConditionalRequiredFieldVisibility === 'undefined')",
+      "kind": "statement",
+      "startLine": 17633,
+      "endLine": 17635,
+      "currentSignature": "if (typeof globalThis !== 'undefined' && typeof globalThis.initialiseConditionalRequiredFieldVisibility === 'undefined') { globalThis.initialiseConditionalRequiredFieldVisibility = initialiseConditionalRequiredFieldVisibility; }",
+      "currentReturns": "void (side effect never executes)",
+      "verdict": "remove-dead",
+      "proposedSignature": "(omitted)",
+      "proposedReturns": "n/a",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "n/a (the statement declares no global of its own; V2 omits it because the function declaration already creates window.initialiseConditionalRequiredFieldVisibility)",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Delete. In a classic script a top-level `function` declaration is already a property of globalThis, so the `=== 'undefined'` guard is always false. Verified that dist/knackFunctions.global.js is a plain terser pass with no IIFE wrapper (file starts `const CLASS_HIDDEN=...`), so the dist build has the same semantics.",
+        "If V2 ever needs an explicit export table (e.g. for a future module build), use C05's proposed ensureGlobal/one export block rather than per-function guards."
+      ],
+      "behaviourRisks": [
+        "None at runtime. Only risk is tooling: tests/v2/extract.cjs collects bare top-level statements and their referenced names; removing this one removes a reference edge, not a global."
+      ],
+      "knackPractice": "Not Knack-related. Looks like a leftover from a module/bundler experiment (only function in the file with such a guard).",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 0,
+      "rationale": "Dead by construction: the guard can never be true for a top-level function declaration in a classic script, and the build does not wrap the file. Removing it changes nothing observable and eliminates an inconsistency (no other global is re-exported this way)."
+    },
+    {
+      "name": "showNotification",
+      "kind": "function",
+      "startLine": 17882,
+      "endLine": 17992,
+      "currentSignature": "showNotification(options)  // options: { target = null, message = '', backgroundColor = '', className = '', delay = 2000, fadeTime = 500, styles = {}, onShow = null, onHide = null }",
+      "currentReturns": "HTMLDivElement | null (null with console.error when target is not found, 17904-17907)",
+      "verdict": "simplify",
+      "proposedSignature": "showNotification(options)  // same option names and defaults",
+      "proposedReturns": "HTMLDivElement | null",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Destructure defaults in one step: `const { target = null, message = '', backgroundColor = '', className = '', delay = 2000, fadeTime = 500, styles = {}, onShow = null, onHide = null } = options ?? {}` (17884-17897) and resolve target via `resolveElement(target)` so Element, selector and jQuery inputs all work.",
+        "Fix the class-token bug at 17922-17928: `settings.className.flatMap(cls => cls.split(' '))` yields '' tokens for arrays like ['a', ''] or ['a  b'] and `classList.add('')` throws SyntaxError. Use `[].concat(className ?? []).flatMap(c => String(c).split(/\\s+/)).filter(Boolean)`.",
+        "Replace the nested setTimeout pair (17968-17988) with the shared `fadeOutAndRemove(notification, { delay, fadeTime })` primitive, then restore z-index and call onHide in its `.then`. Keep timers (not transitionend) so removal still happens when the element is not painted.",
+        "Fix JSDoc: default backgroundColor is '' not '#4CAF50' (17873 vs 17887); return type is `HTMLDivElement|null`.",
+        "Strip the twelve narrating comments (17883, 17896, 17899, 17909, 17912, 17918, 17931, 17946, 17953, 17959, 17962, 17967) that restate the code.",
+        "Use `ensureStyle` (C01) to inject a one-time `.custom-notification` base rule instead of per-instance inline opacity/transition, if the owner agrees that is not a CSS-visible change (inline styles stay otherwise)."
+      ],
+      "behaviourRisks": [
+        "`p.innerHTML = msg` (17936) renders HTML; callers (createVersionRefreshController 2039/2048) may pass markup, so switching to textContent would break them - keep innerHTML and document the XSS responsibility.",
+        "Class name `custom-notification` and the `notification-fixed-center`/`ca-notification-copy` classes passed by in-file callers (2030, 11385) are consumer CSS hooks; keep them exactly.",
+        "Target is mutated: `position: relative` and `z-index: 1` are set when the computed z-index is 'auto' or '0' (17913-17916); only z-index is restored (17979) and `position` never is. Preserve, do not 'fix' silently - copyTextToClipboard (11375-11378) relies on the parent being positioned.",
+        "onHide fires only if the node is still attached when the timer ends (17974-17985); a consumer that removes the notification early never gets onHide. Keep.",
+        "delay=0 means never auto-remove and the z-index is never restored; keep.",
+        "Returns null and logs console.error on a missing target rather than throwing; keep the return, optionally route the log through errorHandler.handle."
+      ],
+      "knackPractice": "Not Knack-specific; a generic toast appended into any element. Works with Knack re-render only because the notification is short-lived; a re-render during the delay removes it (and leaks the target style tweak, which is on the old DOM anyway). Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 75,
+      "rationale": "Already native and used by copyTextToClipboard and the version-refresh controller, so it is a wave-1 dependency. Same behaviour, but 111 lines can drop to ~75 by removing narrating comments, destructuring defaults, fixing the empty-class-token crash and sharing the fade-and-remove timer with the other notification helpers."
+    },
+    {
+      "name": "isNodeList",
+      "kind": "const fn",
+      "startLine": 17994,
+      "endLine": 17994,
+      "currentSignature": "const isNodeList = val => NodeList.prototype.isPrototypeOf(val)",
+      "currentReturns": "boolean",
+      "verdict": "keep",
+      "proposedSignature": "const isNodeList = (val) => NodeList.prototype.isPrototypeOf(val)",
+      "proposedReturns": "boolean",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Add JSDoc (@param {*} val @returns {boolean}). Keep isPrototypeOf rather than `instanceof NodeList` so cross-realm NodeLists (iframes, which ktl uses) still match.",
+        "Make it the single source of truth: setVisibility (7054) and resolveElements (7937) inline the same `NodeList.prototype.isPrototypeOf(...)`; C01 should call isNodeList (or also accept HTMLCollection via `isArrayLike`)."
+      ],
+      "behaviourRisks": [
+        "None; pure predicate. Note it returns false for HTMLCollection (e.g. form.elements, select.options), which is why callers wrap those with Array.from first."
+      ],
+      "knackPractice": "Not Knack-related.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "One-line modern predicate that the policy explicitly lists for overlap checking; the overlap is in other functions inlining the same test, so the fix is to point them here, not to change this. Foundation primitive, wave 1."
+    },
+    {
+      "name": "isjQueryInstance",
+      "kind": "const fn",
+      "startLine": 17995,
+      "endLine": 17995,
+      "currentSignature": "const isjQueryInstance = val => window.jQuery && val instanceof window.jQuery",
+      "currentReturns": "boolean | undefined (returns window.jQuery's falsy value when jQuery is absent)",
+      "verdict": "simplify",
+      "proposedSignature": "const isjQueryInstance = (val) => Boolean(val) && (typeof val.jquery === 'string' || (typeof globalThis.jQuery === 'function' && val instanceof globalThis.jQuery))",
+      "proposedReturns": "boolean",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Coerce to a real boolean and read `globalThis.jQuery` so the predicate is usable in non-window contexts and in the Playwright harness.",
+        "Add the `.jquery` duck-type check used by bulkActionResolveElement (3678, `value?.jquery`) so a collection from a second jQuery copy (noConflict builds that KTL or apps load) is still recognised; then make bulkActionResolveElement and C01's widened resolveElement(s) call this instead of each testing differently.",
+        "Add JSDoc."
+      ],
+      "behaviourRisks": [
+        "Return value changes from `undefined` to `false` when jQuery is not loaded; both are falsy and the function has no JSDoc promising undefined, so no caller can reasonably depend on it. Flagged for completeness, not treated as a signature change.",
+        "Duck typing widens acceptance (any object with a string `.jquery` property); that is the intended fix, not a regression."
+      ],
+      "knackPractice": "Not Knack-related, but matters in Knack because Knack bundles its own jQuery and KTL/apps may introduce a second instance.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Policy lists isNodeList/isjQueryInstance as a pair to check; the real inconsistency is that three places detect jQuery collections three ways (instanceof here, `.jquery` at 3678, `instanceof jQuery` at 9627). One canonical predicate with both checks, returning a true boolean, is the simplification."
+    },
+    {
+      "name": "normaliseInputs",
+      "kind": "function",
+      "startLine": 18004,
+      "endLine": 18011,
+      "currentSignature": "normaliseInputs(target)",
+      "currentReturns": "Element[] (string -> querySelectorAll; jQuery -> toArray(); Array -> returned by reference, unfiltered; NodeList -> Array.from; any other truthy value -> [target])",
+      "verdict": "dedupe",
+      "proposedSignature": "normaliseInputs(target)  // shim over resolveElements(target)",
+      "proposedReturns": "Element[]",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "/** @deprecated Use resolveElements */ function normaliseInputs(target) { return resolveElements(target); }",
+      "duplicatesOf": [
+        "resolveElements"
+      ],
+      "modernisations": [
+        "Delete the body; C01's widened resolveElements(input, root = document) already accepts string, Element, NodeList, Array, jQuery and Document (tests/v2/foundation.test.cjs 'V2 resolveElement(s) also accept jQuery collections, Document roots and mixed arrays'), which is a superset of what normaliseInputs accepted.",
+        "Move the shim into the 'Compatibility shims' section with `@deprecated Use resolveElements`."
+      ],
+      "behaviourRisks": [
+        "V1 returns a caller-supplied Array by reference (18008) and keeps non-Element members; V2 returns a new filtered array. Only in-file caller is clearInput (18031), which skips non-Elements anyway (`field.matches && ...`, 18036); a consumer that mutated the returned array expecting identity would notice, which is implausible.",
+        "V1 wraps any unknown truthy value as `[target]` (18010) - e.g. normaliseInputs(document) -> [document], which makes clearInput(document) clear every input on the page. C01's resolveElements accepts Document roots, so that path survives; a plain object input goes from `[obj]` (and a later TypeError in clearInput) to `[]`, which is strictly better."
+      ],
+      "knackPractice": "Not Knack-related; generic input normalisation.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Policy names normaliseInputs as a suspected duplicate of resolveElements, and C01 has already chosen resolveElements as the canonical multi-element resolver and widened it to cover the jQuery and Document inputs normaliseInputs handled. One canonical implementation plus a two-line deprecated shim satisfies the global-name contract."
+    },
+    {
+      "name": "cssEscape",
+      "kind": "function",
+      "startLine": 18021,
+      "endLine": 18024,
+      "currentSignature": "cssEscape(value)",
+      "currentReturns": "string",
+      "verdict": "simplify",
+      "proposedSignature": "cssEscape(value)",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Drop the manual fallback at 18023: every evergreen browser Knack supports has CSS.escape, and the fallback is not equivalent anyway (CSS.escape('1a') -> '\\\\31 a', fallback -> '1a'). Body becomes `return CSS.escape(value);` (pass-through, so CSS.escape's own ToString of numbers/undefined matches V1's primary branch exactly).",
+        "Keep the global: it is covered by tests/v2/foundation.test.cjs (cssEscape('field[1].x') must equal V1) and is the name other V2 code should use instead of calling CSS.escape directly, so the policy's 'cssEscape vs CSS.escape' pair resolves to keeping the wrapper and deleting the polyfill branch.",
+        "Use it where V1 interpolates raw values into attribute selectors: toggleCheckboxOption 18154, selectFromSelect 18223/18225, bulkActionSetChosenSelectValue 4097/4101 (cross-chunk)."
+      ],
+      "behaviourRisks": [
+        "If a consumer runs in a context without CSS.escape (none realistic: it is in Chrome 46+, Firefox 31+, Safari 10+), the function now throws instead of degrading. Accepted by policy ('no defensive checks for impossible states')."
+      ],
+      "knackPractice": "Not Knack-related. Useful in Knack because field names/values that end up in `[name=...]` selectors can contain spaces and brackets (e.g. connection payloads).",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Four lines, already native; the only change is deleting an unreachable, non-conformant polyfill branch. It is a foundation helper that several wave-1 rewrites (radio-group scoping in clearInput, option-by-value lookups) will call, so it ships in wave 1."
+    },
+    {
+      "name": "clearInput",
+      "kind": "function",
+      "startLine": 18030,
+      "endLine": 18097,
+      "currentSignature": "clearInput(inputContainer, triggerChange = false)",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "clearInput(inputContainer, triggerChange = false)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Resolve containers with `resolveElements(inputContainer)` (18031) and collect controls with `el.matches('input, select, textarea') ? [el] : [...el.querySelectorAll('input, select, textarea')]`; drop the impossible-state guards `if (!field) return` (18034), `field.matches &&` (18036), `if (!input) return` (18045) and `field.querySelectorAll ? ... : []` (18057-18059).",
+        "Extract the radio-group resolution (18047-18064) into the shared `getRadioGroup(radioInput, root)` primitive (same-name radios within the container, falling back to document, falling back to [input]) and keep the per-container `processedRadioGroups` Set.",
+        "Replace the jQuery block at 18080-18085 (`$(targetInput).data('chosen')` + `.trigger('liszt:updated')`) with the shared `refreshChosenSelect(select)` primitive: native detection via `isChosenSelect` (next sibling `.chzn-container`/`.chosen-container`, as addInputEventListener already does at 7976-7986) and a single jQuery trigger, which is the policy's permitted Chosen exception. Also removes the bare global `$` (18081) that is used while only `window.jQuery` was checked (18080).",
+        "Factor the per-control reset into a small `resetControl(control)` returning whether it had a value, so the hadValue/clear/dispatch sequence (18067-18093) reads as three lines.",
+        "Replace `Array.from(targetInput.options).forEach(option => option.selected = false)` (18075) with `for (const o of select.options) o.selected = false` and keep `selectedIndex = -1` for single selects (that is V1's observable result: no option selected, not the first option)."
+      ],
+      "behaviourRisks": [
+        "Single selects end with selectedIndex -1 (18077), i.e. no selected option, which Chosen renders as its placeholder; do not change to `selectedIndex = 0` (that is resetSelectToFirstOption's job).",
+        "`input, select, textarea` includes `input[type=hidden]`; clearing hidden inputs matters for Knack connection pickers that keep their value in a hidden input - V1 clears them to '' and V2 must too, otherwise the visible Chosen resets but the submitted value does not.",
+        "The Chosen refresh is only attempted when the select is Chosen-enhanced; V1 detected that via jQuery `.data('chosen')` (Chosen 0.9.x stores its instance there). Native sibling detection is equivalent for Knack's markup but would miss a Chosen instance whose container was moved; firing `liszt:updated` unconditionally on every select is the safe fallback (it is a no-op without Chosen).",
+        "Events are dispatched natively (18088-18089); jQuery and Knack/Backbone handlers do receive native bubbling `input`/`change` events, so this already works in V1 and is unchanged.",
+        "Datepicker/timepicker inputs are cleared by `value = ''` without telling the widget; the jQuery UI datepicker re-reads the input on open, so this is fine, but a consumer expecting `onSelect` will not get it (same as V1).",
+        "`triggerChange && hadValue` means a select whose first option has value '' never emits change even if its selectedIndex changed from 0 to -1; preserve."
+      ],
+      "knackPractice": "Operates on raw form controls under a `#kn-input-field_x` wrapper or a whole `#view_x form`, so it fits the Knack DOM model; it talks to Knack's bundled Chosen through the legacy `liszt:updated` event (Chosen < 1.0, `.chzn-container`), which is what Knack listens for - consistent with 4104, 12342, 13134 and C04's finding. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 45,
+      "rationale": "Modern-ish but padded with defensive checks and an inline radio-group search, and it still reaches for `$()` for Chosen detection. The behaviour (what counts as cleared, when events fire) is subtle enough that the rewrite must be differential-tested, hence medium risk, but it is self-contained, 68 lines, no widget coupling beyond one Chosen trigger, so wave 1."
+    },
+    {
+      "name": "resetSelectToFirstOption",
+      "kind": "function",
+      "startLine": 18106,
+      "endLine": 18137,
+      "currentSignature": "resetSelectToFirstOption(selectEl, options = {})  // options: { silent = false, updateChosen = true }",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "resetSelectToFirstOption(selectEl, options = {})",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Collapse the triple assignment (loop 18116-18124 setting option.selected + attribute, then `selectedIndex` 18126, then `value` 18127) into one loop: `for (const [i, o] of [...selectEl.options].entries()) { o.selected = i === 0; o.toggleAttribute('selected', i === 0); }` - setting `selected` on options already updates selectedIndex and value.",
+        "Replace 18129-18132 with `if (updateChosen) refreshChosenSelect(selectEl)` (shared primitive; one jQuery trigger under the Chosen exception).",
+        "Keep the `changed` computation (18114) and the native `change` dispatch (18134-18136)."
+      ],
+      "behaviourRisks": [
+        "The `selected` attribute manipulation changes defaultSelected, which affects form.reset(); V1 does this deliberately (or accidentally) and V2 keeps it. `toggleAttribute` writes `selected=\"\"` instead of `selected=\"selected\"` - identical to the DOM, different only to getAttribute; keep setAttribute if the owner wants byte-identical markup.",
+        "Fires `liszt:updated` even when no Chosen is attached (18129-18132) - harmless; keep the unconditional trigger rather than gating on isChosenSelect to stay identical.",
+        "Empty select: selectedIndex becomes -1 and value '' (18126-18127); preserve."
+      ],
+      "knackPractice": "Written for Knack's Chosen-enhanced selects (JSDoc 18109) and uses the legacy `liszt:updated` event that Knack's bundled Chosen listens for. Follows the model. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 18,
+      "rationale": "Already modern and correct; the body does the same reset three different ways. Halving it and routing the Chosen refresh through the shared primitive is a pure simplification with no observable change."
+    },
+    {
+      "name": "toggleCheckboxOption",
+      "kind": "function",
+      "startLine": 18146,
+      "endLine": 18173,
+      "currentSignature": "toggleCheckboxOption(fieldId, identifier, show)",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "toggleCheckboxOption(fieldId, identifier, show)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Resolve the wrapper with `getFieldWrapper(fieldId)` (17197) instead of `document.getElementById('kn-input-' + fieldId)` (18147) so both 'field_2071' and '2071' work (knackNavigator.normalizePrefixedId accepts either) - a widening, not a break.",
+        "Escape the value in the attribute selector at 18154: `input[type=\"checkbox\"][value=\"${cssEscape(identifier)}\"]` - connection ids are safe but label-derived identifiers with quotes currently throw a SyntaxError from querySelector.",
+        "Replace the for/break loop (18155-18162) with `Array.from(wrapper.querySelectorAll('label.option, label.checkbox')).find(l => l.textContent.trim() === identifier)?.querySelector('input[type=\"checkbox\"]')`.",
+        "Keep `classList.toggle(CLASS_DISPLAY_NONE, !show)` on the closest label (18169-18171); it is the observable CSS contract."
+      ],
+      "behaviourRisks": [
+        "Hiding uses the KTL class `ktlDisplayNone` (CLASS_DISPLAY_NONE); if KTL CSS is not loaded nothing visibly happens. C01 proposes an ensureBaseStyles fallback; until then this is a hidden dependency.",
+        "Not scoped to a view: if two views on the page render the same field, document.getElementById hits the first `#kn-input-field_x` only (duplicate ids are common in Knack modals). Same as V1; a trailing `root = document` parameter would need a tests/v2/signature-exceptions.json entry.",
+        "Two console.warn paths (18149, 18165) are observable in consumer logs; keep or route via errorHandler without changing the outcome (silent return).",
+        "Hiding the label does not uncheck a checked option; a hidden-but-checked value is still submitted (same as V1)."
+      ],
+      "knackPractice": "Follows Knack's form markup for multiple-choice/connection checkbox fields (`#kn-input-field_x label.option input[type=checkbox]`) and leaves the value model alone. Must be re-run after each knack-view-render because Knack re-renders the options. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 20,
+      "rationale": "Native already; the gains are a selector-escaping fix, accepting both field-id forms through the existing getFieldWrapper helper, and a shorter label search. No signature or CSS contract changes."
+    },
+    {
+      "name": "changeRadioButtonLabel",
+      "kind": "function",
+      "startLine": 18179,
+      "endLine": 18188,
+      "currentSignature": "changeRadioButtonLabel(fieldId, originalLabelText, newLabelText)",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "changeRadioButtonLabel(fieldId, originalLabelText, newLabelText)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Replace `$('#kn-input-field_' + fieldId)` (18180) with `getFieldWrapper(fieldId)` (accepts 'field_12' and '12'; V1 only accepted the bare number per the JSDoc at 18176).",
+        "Replace `.find('label.option.radio').filter(fn)` (18181-18183) with `[...wrapper.querySelectorAll('label.option.radio')].filter(l => l.textContent.trim() === originalLabelText)` and apply to every match as jQuery did.",
+        "Replace detach/text/prepend (18185-18187) with `label.replaceChildren(label.querySelector('input'), ` ${newLabelText}`)` - same final DOM: the radio input followed by a text node with a leading space.",
+        "Fix the JSDoc typo `newLabelTex` and the wrong types (`{integer}` for label text) at 18176-18178."
+      ],
+      "behaviourRisks": [
+        "jQuery `.text()` replaced the whole label content including any `<span>` Knack may wrap the caption in; replaceChildren does the same, so markup inside the label is lost identically.",
+        "jQuery `.prepend(detachedInput)` on a multi-match set clones the input into each label; native loops keep each label's own input - better, but technically different for the (unlikely) multi-match case.",
+        "No match is a silent no-op in both versions."
+      ],
+      "knackPractice": "Edits Knack's rendered radio markup (`label.option.radio > input + text`) in place; must be re-applied on knack-view-render. Follows the model. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 10,
+      "rationale": "Old-layer jQuery code (`/****` doc banner, `$(this)` filters) with no return value, so it goes fully native with no shim. Ten lines, no widget coupling, textbook wave 1."
+    },
+    {
+      "name": "setupFieldStatus",
+      "kind": "function",
+      "startLine": 18194,
+      "endLine": 18211,
+      "currentSignature": "setupFieldStatus(fieldId, isAmber = false)",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "setupFieldStatus(fieldId, isAmber = false)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Collapse the two mutually exclusive branches (18204-18209) into `const isNot = text.includes('Not'); if (isNot === isAmber) el.style.backgroundColor = isAmber ? 'var(--warning)' : 'var(--success)';` - identical truth table.",
+        "Single quotes instead of double (18204-18208); remove the `if (!fieldElements.length) return;` guard (18198) since forEach on an empty list is already a no-op; drop the two narrating comments.",
+        "Accept 'field_12' as well as '12' by normalising with knackNavigator.normalizeFieldId and selecting `.${normalisedId}` (V1 builds `.field_${fieldId}` at 18196 so a prefixed id silently matched nothing)."
+      ],
+      "behaviourRisks": [
+        "Matches every `.field_x` element on the page (table cells, detail wrappers, list items) and writes an inline background colour; inline styles beat consumer CSS - same as V1, keep.",
+        "Depends on CSS custom properties `--warning` and `--success` defined by the consuming app's theme (also used at 11384); the library has no fallback. App-specific contract, see crossCuttingFindings.",
+        "The status heuristic is a case-sensitive substring test for 'Not' (18204, 18207), so 'Notified' counts as not-complete; preserve exactly.",
+        "Must be re-run on knack-view-render / knack-records-render; the function does not bind itself."
+      ],
+      "knackPractice": "Uses Knack's `td.field_x` / `.kn-detail.field_x` class convention to colour status cells; follows the model but is really an app-level rule (status text containing 'Not') living in the shared library. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 10,
+      "rationale": "Already native; the two if/else-if branches encode a two-by-two truth table that collapses to one comparison. No signature change, trivially testable."
+    },
+    {
+      "name": "removeNull",
+      "kind": "function",
+      "startLine": 18215,
+      "endLine": 18217,
+      "currentSignature": "removeNull(spanID)",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "removeNull(spanID)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Stop depending on the jQuery-only `:contains()` pseudo (18216) and on removeElement (9618, a jQuery wrapper): `document.querySelectorAll(`span.${cssEscape(spanID)}`).forEach(span => { if (span.textContent.includes('null')) span.remove(); })`.",
+        "Fix the 3-space indentation (18216) and the JSDoc (`spanID` is a class name, not an id; say so and type it as string)."
+      ],
+      "behaviourRisks": [
+        "jQuery `:contains('null')` is a case-sensitive substring match over the element's full text (descendants included); `textContent.includes('null')` is identical, so behaviour is preserved.",
+        "If C-chunk owners port removeElement to native without `:contains` support, any consumer passing `:contains` selectors to removeElement breaks; removeNull must not route through it in V2 (see crossCuttingFindings).",
+        "Removes the whole span, not just the text, so adjacent layout can shift - same as V1."
+      ],
+      "knackPractice": "Works around Knack rendering the literal string 'null' for empty text-formula/equation fields in details/tables; app-level cleanup that must be re-run per render. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 4,
+      "rationale": "Three-line old-layer helper whose only complexity is a jQuery pseudo-selector; native querySelectorAll plus a textContent test is the same behaviour with no library dependency."
+    },
+    {
+      "name": "selectFromSelect",
+      "kind": "function",
+      "startLine": 18222,
+      "endLine": 18229,
+      "currentSignature": "selectFromSelect(fieldID, value)  // fieldID is actually a CSS selector prefix such as '#view_12-field_7'",
+      "currentReturns": "undefined (console.error when no option matches)",
+      "verdict": "modernise",
+      "proposedSignature": "selectFromSelect(fieldID, value)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Replace the two jQuery queries (18223, 18225) with one `document.querySelectorAll(`${fieldID} option[value=\"${cssEscape(value)}\"]`)`; set `option.selected = true` on every match (jQuery `.prop` applied to the whole set, so keep the forEach).",
+        "Escape `value` - V1 interpolates it raw into an attribute selector, so a value containing a double quote throws a SyntaxError.",
+        "Correct the JSDoc: `fieldID` is a selector, not an id (18220); route the console.error through errorHandler.handle(new Error(...), { fieldID, value }, 'selectFromSelect') while keeping the silent return.",
+        "Build on the shared `selectOption(selectEl, { value })` primitive so selectFromConx, resetSelectToFirstOption and bulkActionSetChosenSelectValue share one implementation."
+      ],
+      "behaviourRisks": [
+        "V1 does not fire `change` nor refresh Chosen after selecting (18225); on a Knack connection dropdown the hidden Chosen UI will not update until something triggers `liszt:updated`. Consumers have presumably compensated; V2 must keep NOT triggering to avoid double change handlers, and expose refreshing through the new primitive's options instead.",
+        "Selecting an option by `.selected = true` vs jQuery `.prop('selected', true)` is identical, including on `multiple` selects (adds to the selection).",
+        "The error log text changes if routed through errorHandler; consumers grepping console output would notice (unlikely)."
+      ],
+      "knackPractice": "Generic; used with Knack's `#view_x-field_y` select ids. It bypasses Knack's Chosen layer, so on connection fields it only half-works unless the caller refreshes Chosen - fights the model slightly. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 8,
+      "rationale": "Old-layer jQuery with a duplicated query and an unescaped selector; the native version is shorter and safer with the same observable result. Returns nothing, so no shim."
+    },
+    {
+      "name": "selectFromConx",
+      "kind": "function",
+      "startLine": 18235,
+      "endLine": 18244,
+      "currentSignature": "selectFromConx(viewId, fieldID, txtVal)  // viewId with 'view_' prefix, fieldID bare number",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "selectFromConx(viewId, fieldID, txtVal)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Replace `var selectArr = $('#' + viewId + `-field_${fieldID} option`)` and the `.each` with early-exit `return false` (18236-18243) by `const select = document.getElementById(`${viewId}-field_${fieldID}`); const option = select && [...select.options].find(o => o.text == txtVal); if (option) option.selected = true;` (or `selectOption(select, { text: txtVal })`).",
+        "Delete the commented-out console.log at 18238.",
+        "Normalise ids via knackNavigator (`normalizeViewId(viewId)`, `normalizeFieldId(fieldID)`) so 'view_12'/'12' and 'field_7'/'7' all work - a widening.",
+        "Keep loose equality or, better, compare `o.text === String(txtVal)`; V1's `==` only differs for number-vs-string inputs, which String() covers."
+      ],
+      "behaviourRisks": [
+        "V1 goes through selectFromSelect, which re-queries by value and logs console.error if the value contains a quote; selecting the found option directly removes that failure mode but also that log line.",
+        "Matches the first option whose untrimmed `.text()` equals txtVal (18239); Knack option labels have no padding, but V2 must not trim either side to stay identical.",
+        "Like selectFromSelect, nothing fires `change` or `liszt:updated`, so the Chosen widget on a connection field does not visibly update; preserve, document, and offer the refresh via the primitive's options.",
+        "`select.options` ignores options inside `<optgroup>`? No - HTMLSelectElement.options is flat and includes them, same as jQuery's descendant `option` query."
+      ],
+      "knackPractice": "Targets Knack connection dropdowns (`#view_x-field_y`), selecting by display text, which is how users think of connections; but it does not notify Chosen, so it fights Knack's rendering layer. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 8,
+      "rationale": "The oldest code in the chunk (var, jQuery .each with return false, commented-out debugging). A native find over select.options is clearer and avoids the double query; no return value, so no shim."
+    },
+    {
+      "name": "addPlaceholderToInput",
+      "kind": "function",
+      "startLine": 18249,
+      "endLine": 18254,
+      "currentSignature": "addPlaceholderToInput(fieldID, placeholder)",
+      "currentReturns": "undefined",
+      "verdict": "keep",
+      "proposedSignature": "addPlaceholderToInput(fieldID, placeholder)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "`const input = document.getElementById(`field_${fieldID}`); if (input) input.placeholder = placeholder;` - single quotes, property instead of setAttribute; otherwise unchanged.",
+        "Consider (owner decision, flagged as a behaviour change) a fallback `document.querySelector(`[id$=\"-field_${fieldID}\"]`)` because Knack's documented input id is `#view_x-field_y`, not `#field_y` (18250); if the bare id never exists in current Knack markup this function is a silent no-op today. Unverified against live docs."
+      ],
+      "behaviourRisks": [
+        "The id convention `#field_N` is the only place in the file using it (grep shows 18250 alone); if Knack only emits `#view_x-field_N`, the function does nothing and 'fixing' it would make placeholders appear where consumers never saw them.",
+        "Must be re-run per knack-view-render; placeholder is lost on re-render."
+      ],
+      "knackPractice": "Intends to follow the Knack form-input model but addresses the input by a bare `field_N` id that the documented markup does not use. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 4,
+      "rationale": "Six native lines; nothing to modernise beyond quoting style. The real question (does `#field_N` exist?) is a product-behaviour check for the owner, not a rewrite task, so keep as-is and document."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "refreshChosenSelect",
+      "purpose": "Single permitted jQuery touchpoint for Knack's Chosen plugin: `if (typeof globalThis.jQuery === 'function') globalThis.jQuery(select).trigger('liszt:updated').trigger('chosen:updated')`. Fires both the legacy event Knack's bundled Chosen (0.9.x, `.chzn-container`) listens for and the modern one, so it survives a Knack upgrade. No-op when jQuery is absent.",
+      "signature": "refreshChosenSelect(selectEl: HTMLSelectElement) -> void",
+      "replaces": [
+        "clearInput 18080-18085",
+        "resetSelectToFirstOption 18129-18132",
+        "bulkActionSetChosenSelectValue 4104 (cross-chunk)",
+        "12342 and 13134 inline triggers (cross-chunk)"
+      ]
+    },
+    {
+      "name": "isChosenSelect",
+      "purpose": "Native detection of a Chosen-enhanced select (class `chosen-select`/`chzn-select`, or next sibling `.chzn-container`/`.chosen-container`), replacing `$(select).data('chosen')`.",
+      "signature": "isChosenSelect(el: Element | null) -> boolean",
+      "replaces": [
+        "clearInput 18082",
+        "addInputEventListener inner closure 7976-7986 (cross-chunk)"
+      ]
+    },
+    {
+      "name": "selectOption",
+      "purpose": "Select an option on a native select by value or display text without firing events unless asked; returns the option so callers can decide what to notify.",
+      "signature": "selectOption(selectEl: HTMLSelectElement, match: { value?: string, text?: string }, { emitChange = false, refreshChosen = false } = {}) -> HTMLOptionElement | null",
+      "replaces": [
+        "selectFromSelect 18222-18229",
+        "selectFromConx 18235-18244",
+        "resetSelectToFirstOption 18116-18127 (first-option case)",
+        "bulkActionSetChosenSelectValue 4097-4106 (cross-chunk, wave 3 consistency only)"
+      ]
+    },
+    {
+      "name": "getRadioGroup",
+      "purpose": "Return every radio sharing `radio.name` inside `root`, falling back to the document and finally to `[radio]`, with the name escaped via cssEscape.",
+      "signature": "getRadioGroup(radio: HTMLInputElement, root: ParentNode = document) -> HTMLInputElement[]",
+      "replaces": [
+        "clearInput 18047-18064",
+        "setSelectedRadioValue 17232 and getSelectedRadioValue radio lookups (cross-chunk, C20)"
+      ]
+    },
+    {
+      "name": "fadeOutAndRemove",
+      "purpose": "Timer-based opacity fade then removal of an element, resolving true if the element was still attached (so onHide-style callbacks can run) - the pattern duplicated by four notification helpers.",
+      "signature": "fadeOutAndRemove(el: HTMLElement, { delay = 0, fadeTime = 500 } = {}) -> Promise<boolean>",
+      "replaces": [
+        "showNotification 17968-17988",
+        "showPopUpNotification 18877-18880 (cross-chunk, jQuery .delay().fadeOut())",
+        "showInputNotification 11240-11244 (cross-chunk)",
+        "fadeFormConfirmation (C01) if its timings match"
+      ]
+    },
+    {
+      "name": "getViewRequiredFieldIds",
+      "purpose": "Set of normalised field ids the Knack view model marks `required`, probing `model.view.fields`, `model.fields` and `model.attributes.fields` (and `model.view.groups[].columns[].inputs[]` for forms if verified), read through `globalThis.Knack?.views`.",
+      "signature": "getViewRequiredFieldIds(viewId: string) -> Set<string>",
+      "replaces": [
+        "initialiseConditionalRequiredFieldVisibility closure 17472-17489"
+      ]
+    },
+    {
+      "name": "getRequiredFieldWrappers",
+      "purpose": "Visible `#kn-input-field_*` wrappers in a view that are required by DOM marker (`.kn-label .kn-required`, `[required]`, `[aria-required=true]`) or by view metadata, minus excluded ids.",
+      "signature": "getRequiredFieldWrappers(viewElement: HTMLElement, { excludeFieldIds = [], requiredFieldIds = getViewRequiredFieldIds(viewElement.id) } = {}) -> HTMLElement[]",
+      "replaces": [
+        "initialiseConditionalRequiredFieldVisibility closure 17521-17541"
+      ]
+    }
+  ],
+  "crossCuttingFindings": [
+    "Three notification helpers overlap: showNotification (17882, native, canonical), showInputNotification/updateInputNotification/removeInputNotification (11229-11260, jQuery, inserts after `.kn-input`, returns an id) and showPopUpNotification (18865, jQuery, calls Knack.showSpinner() and never hides it - almost certainly a bug). The latter two are in other chunks; recommend showPopUpNotification becomes a shim over showNotification with an `insertAfter` option, and showInputNotification keeps its id-based API but builds on the same fadeOutAndRemove primitive.",
+    "Chosen event name: the policy's Knack facts say `chosen:updated`, but all six V1 sites (3165, 4068, 4104, 12342, 13134, 18083, 18131) fire `liszt:updated`, and the policy's own DOM note names `.chzn-container`, which is Chosen 0.9.x - the version that listens for `liszt:updated`. C04 reached the same conclusion. refreshChosenSelect should fire both events; nobody should 'modernise' to chosen:updated alone.",
+    "removeElement (9618, other chunk) is a jQuery wrapper and removeNull (18216) feeds it a `:contains()` selector. If removeElement is ported to native querySelectorAll it will throw on `:contains`; either keep a `:contains` fallback in removeElement's shim or make sure no in-file caller passes jQuery pseudo-selectors (removeNull is the only one found; 13297-13298 also uses `:contains` with ktl.core.waitSelector).",
+    "Field-id conventions are inconsistent within this chunk: toggleCheckboxOption expects 'field_2071' (18147), while changeRadioButtonLabel (18180), setupFieldStatus (18196), selectFromConx (18236) and addPlaceholderToInput (18250) expect the bare number. V2 should accept both everywhere via knackNavigator.normalizeFieldId (pure widening) and the JSDoc should say so.",
+    "Two different getFieldWrapper helpers with swapped argument order coexist: top-level getFieldWrapper(fieldId, root = document) at 17197 and knackNavigator.getFieldWrapper(viewRoot, fieldId) at 145. initialiseConditionalRequiredFieldVisibility uses the navigator form (17584) while getFormFieldCheckboxValues (17341) uses the top-level form. Not a runtime bug, but a trap for V2 authors; document or make the top-level one delegate.",
+    "hasVisibleInputValue (17491-17519) duplicates fieldWrapperHasValue (17409-17437, C20) apart from a datetime branch and the hidden-input check; C20 should add the datetime branch and an `includeHidden` option so there is one implementation.",
+    "jQuery-collection detection is done three ways: `instanceof window.jQuery` (17995), `value?.jquery` (3678) and `selector instanceof jQuery` (9627). Standardise on isjQueryInstance with both checks.",
+    "App-specific constants leak into the library: CSS variables `--warning`/`--success` (18205, 18208, 11384), the 'Not' status heuristic (setupFieldStatus), the `ca-notification` class family (11385) and the `ktlDisplayNone` KTL class. They cannot be removed from existing globals, but V2 should not add new dependencies of this kind and should document them in each JSDoc.",
+    "Bare `Knack?.views` (17474) does not guard an undeclared identifier in a classic script; C05 made the same point for `Knack?.getUserAttributes`. V2 should consistently read `globalThis.Knack?.` so the Playwright harness can load functions without stubbing Knack.",
+    "showNotification is a wave-1 leaf that wave-3 code (createVersionRefreshController 2039/2048) calls with `className` arrays; the empty-token classList bug noted above would surface as a thrown SyntaxError inside the refresh flow if an app ever passes an empty string in that array - worth a unit test in tests/v2.",
+    "tests/v2/foundation.test.cjs already asserts cssEscape parity with V1, so C21's cssEscape must land in the same wave-1 assembly as the C01 foundations or that test fails on a missing global."
+  ]
+}

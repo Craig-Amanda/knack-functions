@@ -1,0 +1,671 @@
+{
+  "chunkId": "C04",
+  "chunkSummary": "Bulk-actions core: pure helpers (unique strings, registry callback lookup, failure classification), the KTL/sessionStorage adapter, the _bulk_actions keyword parser (definition, input flattening, group parsing), basket-label/item normalisation, the BULK_ACTION_DEFAULT_CONFIG constant with its create/merge functions, the session-persisted basket store, the async action runner, and three module-level state globals (controller Map, workflow Set, lifecycle flag). All 20 items are recent (2026) code: const-only, optional chaining, async/await, no jQuery, JSDoc on every function. The work is consistency and succinctness (collapse 20+ repeated `toStringSafe(x || d) || d` and 15 inline `x && typeof x === 'object' ? x : {}` checks, remove impossible `typeof globalThis` guards, put the constant before its first use, split the 156-line parser and 208-line runner into named helpers) with no public signature changes, so no shims are required for this chunk.",
+  "functions": [
+    {
+      "name": "bulkActionUniqueStrings",
+      "kind": "function",
+      "startLine": 1794,
+      "endLine": 1802,
+      "currentSignature": "bulkActionUniqueStrings(values)",
+      "currentReturns": "Array<string>",
+      "verdict": "keep",
+      "proposedSignature": "bulkActionUniqueStrings(values)",
+      "proposedReturns": "Array<string>",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Flatten the nested Array.from(new Set(...)) into `[...new Set((Array.isArray(values) ? values : []).map(knackValueResolver.toStringSafe, knackValueResolver).filter(Boolean))]` (line 1795-1801).",
+        "Optionally delegate to a generic `uniqueStrings(values)` shared primitive since nothing in the body is bulk-action specific."
+      ],
+      "behaviourRisks": [
+        "Non-array input must still yield [] (line 1797) because callers pass `bulkState?.recordIds || []` (line 6287) and raw keyword values.",
+        "Order preservation matters: BulkActionGridController.buildBasketItems (line 5688) maps the result straight into basket order."
+      ],
+      "knackPractice": "Pure helper, no Knack coupling; feeds record-id lists built from `record.id` values that Knack supplies in knack-view-render data. Follows the Knack model.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 5,
+      "rationale": "Already modern and 9 lines; a one-expression rewrite saves little. Used by four bulk-action callers (brief) so the name must survive unchanged. Wave 3 because it is part of the bulk-actions module that the policy ports as-is."
+    },
+    {
+      "name": "bulkActionResolveRegistryCallback",
+      "kind": "function",
+      "startLine": 1811,
+      "endLine": 1820,
+      "currentSignature": "bulkActionResolveRegistryCallback(name, registry, globalScope)",
+      "currentReturns": "Function | null",
+      "verdict": "simplify",
+      "proposedSignature": "bulkActionResolveRegistryCallback(name, registry, globalScope)",
+      "proposedReturns": "Function | null",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Lines 1815-1819 are two copies of the same lookup; replace with `return [registry, globalScope].map((scope) => (scope && typeof scope === 'object' ? scope[key] : null)).find((fn) => typeof fn === 'function') ?? null;`.",
+        "Keep the `typeof scope === 'object'` test: `globalThis` is an object, but a function passed as a registry must be ignored as today."
+      ],
+      "behaviourRisks": [
+        "Lookup order (registry first, then globalScope) is observable: a registry entry shadows a same-named page global.",
+        "`globalScope[key]` only finds function declarations and `var`/window-assigned globals; a consumer app that declares `const myCallback = ...` in its custom JS will not be found and parseBulkActionKeywordGroups emits a 'Missing data callback' warning (lines 3056-3058). V2 must not 'fix' this silently; document it.",
+        "Returns null (not undefined) for misses; the parser relies on `!handlerBatch` truthiness only, but KnackBulkActions.resolveRegistryCallback (line 6866) exposes it publicly."
+      ],
+      "knackPractice": "Mirrors how Knack custom JS exposes callbacks as page globals; the registry-first design lets createKnackBulkActions consumers avoid globals. Follows the documented pattern in Wiki/Bulk Actions Keyword Guide.md section 5. Unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 6,
+      "rationale": "Same behaviour, half the lines by iterating the two scopes. Exposed on both KnackBulkActions facades (lines 6847, 6882), so the signature and null return are fixed."
+    },
+    {
+      "name": "classifyBulkActionFailure",
+      "kind": "function",
+      "startLine": 1827,
+      "endLine": 1851,
+      "currentSignature": "classifyBulkActionFailure(error)",
+      "currentReturns": "{type: 'validation'|'network', message: string}",
+      "verdict": "simplify",
+      "proposedSignature": "classifyBulkActionFailure(error)",
+      "proposedReturns": "{type: 'validation'|'network', message: string}",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Move the status list `[400, 401, 403, 404, 409, 422]` (line 1845) into BULK_ACTION_DEFAULT_CONFIG.constants as `validationStatuses` so it sits beside validationErrorPattern.",
+        "Define BULK_ACTION_DEFAULT_CONFIG before this function in V2: today it is referenced at line 1846 but declared at line 3131 (temporal dead zone if anything calls this during script evaluation).",
+        "Collapse the two ternary result objects into `const fallback = isValidationError ? 'Validation issue. Check required or invalid fields.' : 'Network or unexpected error.'; return { type, message: message || fallback };`."
+      ],
+      "behaviourRisks": [
+        "401/403/404 are classified as 'validation' (line 1845); odd but consumers' retry UI (onlyFailed in the runner) depends on the type, so keep it.",
+        "Message precedence `body.message || bodyText || message || statusText` (lines 1836-1841) must be preserved; KnackAPI errors expose body/bodyText (other chunk).",
+        "Pattern is tested against the lower-cased message (line 1843); the regex has no `i` flag, so lower-casing is load-bearing.",
+        "Ignores a per-config `constants.validationErrorPattern` override even though createBulkActionConfig accepts one (lines 3188-3190); changing that would be a behaviour change, so flag rather than fix in V2."
+      ],
+      "knackPractice": "Interprets Knack REST API error shapes (HTTP 400/422 with a JSON body message) returned by the view-based API; consistent with Knack's documented error responses. Unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 14,
+      "rationale": "Logic is sound and small; the gains are ordering (constant before use) and removing the duplicated object literal. Exposed as KnackBulkActions.classifyFailure (lines 6846, 6881) and as the runner's default classifyError, so the return shape is public API."
+    },
+    {
+      "name": "createBulkActionStorageAdapter",
+      "kind": "function",
+      "startLine": 1859,
+      "endLine": 1931,
+      "currentSignature": "createBulkActionStorageAdapter(storage, options = {})  // options: {preferKtl = true, session = false, noUserId = false, secure = false}",
+      "currentReturns": "{get(key): string|null, set(key, value): boolean, remove(key): boolean}",
+      "verdict": "simplify",
+      "proposedSignature": "createBulkActionStorageAdapter(storage, options = {})",
+      "proposedReturns": "{get(key): string|null, set(key, value): boolean, remove(key): boolean}",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Lines 1878-1930 are six near-identical try/catch blocks. Resolve the backend once: `const backend = ktlStorage ? { get: (k) => ktlStorage.lsGetItem(k, noUserId, session, secure), set: (k, v) => ktlStorage.lsSetItem(k, v, noUserId, session, secure), remove: (k) => ktlStorage.lsRemoveItem(k, noUserId, session, secure) } : storage` then wrap with a shared `attempt(fn, fallback)` helper.",
+        "Drop `typeof globalThis !== 'undefined'` (line 1868): impossible in evergreen browsers (policy: no checks for impossible states). Keep the `typeof ktl.storage.lsXxx === 'function'` feature test because KTL is optional.",
+        "Replace the three `typeof storage.getItem !== 'function'` guards with one capability check when choosing the backend.",
+        "Make the empty-string-to-null mapping (line 1881) explicit in one place; see risk below."
+      ],
+      "behaviourRisks": [
+        "KTL branch maps '' to null (line 1881) but the raw Storage branch returns '' as-is (line 1887); a unified `get` must keep that asymmetry or consciously normalise both (createBulkActionBasketStore and bulkActionReadFormFlowState both test `if (!raw)`, so normalising to null is safe for in-repo callers, but createVersionRefreshController (line 1994) also consumes it).",
+        "`ktl.storage.lsGetItem(key, noUserId, session, secure)` parameter order is KTL's, not in this repo; unverified. Any reorder breaks persisted baskets.",
+        "Accessing sessionStorage/localStorage can throw SecurityError in sandboxed iframes or with blocked storage; the try/catch around every call must stay.",
+        "set/remove must keep returning booleans (bulkActionWriteFormFlowState ignores it but it is documented)."
+      ],
+      "knackPractice": "Knack docs do not cover client storage; this isolates the KTL (Knack Toolkit Library) `ktl.storage` dependency behind one adapter, which is the right place for it. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 30,
+      "rationale": "This is a foundation primitive shared by the bulk basket store, the form-flow state helpers and createVersionRefreshController (line 1994), so it belongs in wave 1 even though its consumers are wave 3. The body triples every branch; a backend-selection-plus-attempt() rewrite keeps the exact shape in under half the lines."
+    },
+    {
+      "name": "createBulkActionSessionStorageAdapter",
+      "kind": "function",
+      "startLine": 1938,
+      "endLine": 1943,
+      "currentSignature": "createBulkActionSessionStorageAdapter()",
+      "currentReturns": "{get, set, remove} storage adapter",
+      "verdict": "keep",
+      "proposedSignature": "createBulkActionSessionStorageAdapter()",
+      "proposedReturns": "{get, set, remove} storage adapter",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Keep `typeof sessionStorage !== 'undefined'` (line 1940) because referencing a blocked sessionStorage can throw; alternatively wrap in the shared attempt() helper.",
+        "Callers create a fresh adapter on every read/write/clear (lines 3790, 3812, 3849); a lazily memoised module-level instance is optional but changes nothing observable."
+      ],
+      "behaviourRisks": [
+        "Must keep `{ preferKtl: true, session: true }` so stored keys continue to go through KTL session storage; changing to raw sessionStorage would orphan in-flight form-flow state for users mid-upgrade."
+      ],
+      "knackPractice": "Not Knack-specific; session-scoped state survives Knack's hash-route navigation between grid and form scenes, which is why the form replication flow needs it.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 4,
+      "rationale": "Four-line factory already at target style. Nothing to change beyond keeping it next to the adapter it wraps."
+    },
+    {
+      "name": "resolveDefaultBulkActionAppId",
+      "kind": "function",
+      "startLine": 2838,
+      "endLine": 2843,
+      "currentSignature": "resolveDefaultBulkActionAppId(globalScope)",
+      "currentReturns": "string ('' when unresolved)",
+      "verdict": "keep",
+      "proposedSignature": "resolveDefaultBulkActionAppId(globalScope)",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Only caller passes globalThis (line 3285); default the parameter `globalScope = globalThis` so the caller can drop its `typeof globalThis` guard."
+      ],
+      "behaviourRisks": [
+        "The `globalScope?.application_id` fallback (line 2841) is for a bare page global that Knack does not define (unverified); keep it for standalone-module parity, it is one expression.",
+        "The app id becomes part of the sessionStorage key (line 3300); any change in resolution changes storage keys."
+      ],
+      "knackPractice": "Reads `Knack.application_id`, the documented way to get the app id in custom JS. Follows the Knack model.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 3,
+      "rationale": "Three lines, correct, single caller. Keep verbatim apart from the default parameter."
+    },
+    {
+      "name": "resolveBulkActionFieldId",
+      "kind": "function",
+      "startLine": 2851,
+      "endLine": 2859,
+      "currentSignature": "resolveBulkActionFieldId(value, viewId = '')",
+      "currentReturns": "string ('' when unresolved)",
+      "verdict": "keep",
+      "proposedSignature": "resolveBulkActionFieldId(value, viewId = '')",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Can be one expression: `return knackNavigator.normalizeFieldId(value) || (knackNavigator.normalizeViewId(viewId) ? knackNavigator.getFieldIdFromLabel(viewId, value) : '');` (getFieldIdFromLabel already normalises viewId at line 774, so the separate normalizeViewId at 2855 is redundant)."
+      ],
+      "behaviourRisks": [
+        "Label lookup depends on knackNavigator.getFieldIdFromLabel reading `Knack.views[vid].model.view.fields` or scene models (lines 176-200, 773-794) and caches results per view; a form view that has not rendered yet may resolve from scene metadata only."
+      ],
+      "knackPractice": "Uses Knack.views / Knack.scenes metadata via knackNavigator to translate human labels to field_x keys, which is the correct view-based approach. Unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 4,
+      "rationale": "Correct and small. The only simplification is dropping a redundant normalisation that the callee repeats."
+    },
+    {
+      "name": "parseBulkActionDefinition",
+      "kind": "function",
+      "startLine": 2868,
+      "endLine": 2901,
+      "currentSignature": "parseBulkActionDefinition(params, operation, options = {})  // options: {resolveFieldId = (v) => knackNavigator.normalizeFieldId(v)}",
+      "currentReturns": "{recordFieldId: string, dataCallbackName: string, successCallbackName: string, validationCallbackName: string}",
+      "verdict": "simplify",
+      "proposedSignature": "parseBulkActionDefinition(params, operation, options = {})",
+      "proposedReturns": "{recordFieldId: string, dataCallbackName: string, successCallbackName: string, validationCallbackName: string}",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Three near-identical return literals (lines 2876-2900). Compute the slot offset once: in update mode when `third != null && !resolveFieldId(third)` the callbacks start at index 2 and recordFieldId is ''; otherwise recordFieldId = resolveFieldId(third) and callbacks start at index 3. Then `const [data, success, validation] = params.slice(start, start + 3).map(toStringSafe); return { recordFieldId, dataCallbackName: data, successCallbackName: success, validationCallbackName: validation };`.",
+        "Destructure `const [, , third, fourth, fifth, sixth] = params ?? []` instead of four indexed reads (lines 2871-2874), or drop them entirely with the slice approach.",
+        "`String(operation || '').toLowerCase() === 'update'` (line 2870) repeats the same normalisation used at line 3029 and 6285; share a `bulkActionNormaliseOperation(value)` helper."
+      ],
+      "behaviourRisks": [
+        "Update-mode shift rule (param 3 may be a callback instead of a field, Wiki section 4A) must be preserved exactly; it relies on resolveFieldId returning '' for a non-field label, so a callback whose name happens to equal a field label on the form would be mis-parsed today too.",
+        "`third != null` (line 2885) treats an explicit null/undefined slot as 'no third param', while '' is treated as a non-field value; keep the loose-equality check.",
+        "resolveFieldId may be called twice for `third` in the proposed version; it is cached in knackNavigator so no observable difference, but call it once anyway."
+      ],
+      "knackPractice": "Interprets the `_bulk_actions` view-description keyword (a KTL-style keyword, not a Knack platform feature) against Knack form view `action` metadata ('create'/'update'). Follows the repo's own Wiki. Unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 16,
+      "rationale": "Pure parsing with one branching rule written out three times. Expressing it as an offset halves the body and makes the update-mode shift explicit. Single caller (line 3045) but it is a page global, so the name stays."
+    },
+    {
+      "name": "normalizeBulkActionKeywordGroupsInput",
+      "kind": "function",
+      "startLine": 2909,
+      "endLine": 2937,
+      "currentSignature": "normalizeBulkActionKeywordGroupsInput(keywordSource, keywordName = '_bulk_actions')",
+      "currentReturns": "Array<Array<*>>",
+      "verdict": "simplify",
+      "proposedSignature": "normalizeBulkActionKeywordGroupsInput(keywordSource, keywordName = '_bulk_actions')",
+      "proposedReturns": "Array<Array<*>>",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "`keywordName || '_bulk_actions'` (line 2910) duplicates the default parameter; keep only `toStringSafe(keywordName) || '_bulk_actions'` so a whitespace-only name also falls back, which makes the `normalizedKeywordName &&` guard at line 2930 unnecessary.",
+        "Inner `function flatten(source)` (line 2912) becomes a const arrow with early returns; the nested if/return chain can be: `if (!source) return []; if (Array.isArray(source)) return source.every(Array.isArray) ? source : source.flatMap(flatten); if (typeof source !== 'object') return []; return flatten(source.params ?? source[name]);` (flatten of undefined returns [] via the first guard).",
+        "Note `source.every(Array.isArray)` must stay a callback wrapper or be `Array.isArray` directly (it ignores extra args, so passing it directly is safe)."
+      ],
+      "behaviourRisks": [
+        "An empty array satisfies `.every(Array.isArray)` and returns [] (line 2916); fine but keep.",
+        "A keywords object whose `_bulk_actions` value is already a group array versus `{params: [...]}` (KTL keyword parser shape) must both still work; Wiki section 0 promises both inputs.",
+        "`source.params` is checked before `source[keywordName]` (lines 2926-2932); a keywords object that happens to have a `params` key would be mis-read today as well; keep order."
+      ],
+      "knackPractice": "Adapts the KTL (Knack Toolkit Library) keyword-parser output (`ktlKeywords`/`{params:[...]}` groups) that Knack itself does not provide; the shape is KTL's, so mark as unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 14,
+      "rationale": "Recursive flattener with redundant guards. Simplifying to early returns and `?? ` chaining keeps every accepted shape. Exposed publicly as KnackBulkActions.normalizeKeywordGroupsInput (lines 6848, 6883)."
+    },
+    {
+      "name": "parseBulkActionKeywordGroups",
+      "kind": "function",
+      "startLine": 2945,
+      "endLine": 3100,
+      "currentSignature": "parseBulkActionKeywordGroups(keywordGroups, options = {})  // options: {resolveView = (id) => knackNavigator.getViewObject(id), gridActionRegistry = null, dataCallbackRegistry = null, successCallbackRegistry = null, validationCallbackRegistry = null, globalScope = globalThis, keywordName = '_bulk_actions', sourceViewId = ''}",
+      "currentReturns": "{labelFieldIds: Array<string>, defaultRecordFieldId: string, actions: Array<{key, label, targetType:'grid'|'form', target, actionName?, handlerBatch?, operation?, recordFieldId?, dataCallback?, successCallback?, validationCallback?}>, warnings: Array<{type:'config'|'action', message, params}>}",
+      "verdict": "split",
+      "proposedSignature": "parseBulkActionKeywordGroups(keywordGroups, options = {})",
+      "proposedReturns": "same object shape",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Split the two forEach passes (lines 2963-3011 and 3013-3092) into private helpers: `parseBulkActionLabelGroup(params, sourceViewId)` -> {labelFieldIds, warning?}, `parseBulkActionGridAction(params, label, target, registry, globalScope)` and `parseBulkActionFormAction(params, label, formViewId, deps)`; the public function just orchestrates and collects warnings.",
+        "Lines 3053-3078 resolve three callbacks with copy-pasted blocks. Replace with a table: `const callbackSlots = [['dataCallback', parsed.dataCallbackName, dataCallbackRegistry, 'data'], ['successCallback', ..., 'success'], ['validationCallback', ..., 'validation']]` and one loop that pushes `Missing ${kind} callback: ${name}` and returns early.",
+        "Lines 3055-3060 and 3065-3070 use nested `if (name) { if (!resolved) ... }`; collapse to `if (name && !resolved)` like line 3076 already does.",
+        "Label parsing (lines 2968-2982): `raw.match(/field_\\d+/gi)` then normalise each; `matches?.length` with optional chaining removes the `matches && matches.length` idiom.",
+        "`globalScope = typeof globalThis !== 'undefined' ? globalThis : null` (line 2952) -> `globalScope = globalThis`.",
+        "`String(view.action || '').toLowerCase()` (line 3029) -> shared bulkActionNormaliseOperation helper; `/^action\\s*:/i` and `target.split(':').slice(1).join(':')` (line 3016) -> `target.replace(/^action\\s*:/i, '')`.",
+        "Use `labelLower === 'label' || reservedLabels.has(labelLower)` once via a `isReservedGroup(first)` predicate shared by both passes (lines 2967, 2992, 3020)."
+      ],
+      "behaviourRisks": [
+        "Groups with fewer than two params are silently dropped in both passes (lines 2964, 3014) with no warning; keep silent to avoid new warning noise in consumer UIs.",
+        "Second `label` group overwrites the first (line 2985 reassigns labelFieldIds); keep last-wins.",
+        "Reserved group ids are normalised with knackNavigator.normalizeFieldId only (line 2993), not label lookup, unlike `label` groups which accept labels; preserve.",
+        "Action `key` formats `action:${name}` and `${operation}:${formViewId}` (lines 3022, 3081) are persisted in sessionStorage as activeActionKey (line 3406) and used in workflow registry keys (line 6528); any change breaks restored baskets.",
+        "Warnings carry the raw `params` array by reference; UI may render them.",
+        "Create actions without a record field and without a default `record` group are rejected (line 3048); update actions are not.",
+        "resolveView default reads Knack.views[vid].model.view then Knack.scenes models (lines 176-200); V2 must keep the injectable `resolveView` because the Wiki documents it for other apps."
+      ],
+      "knackPractice": "Reads form view metadata (`view.action` = create/update) from Knack.views / Knack.scenes via knackNavigator and resolves `view_x` targets, which is the supported way to introspect views in custom JS. The keyword itself is a KTL convention layered on Knack view descriptions. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 3,
+      "estimatedV2Lines": 110,
+      "rationale": "At 156 lines with two passes and three copy-pasted callback blocks it fails the one-responsibility rule, but its output shape is consumed by the grid controller, modal, form replication and both facades, so the signature is frozen. Splitting into label/grid/form helpers plus a callback-slot loop removes roughly 45 lines without altering any branch; the risk is medium only because of the number of observable warning strings and key formats."
+    },
+    {
+      "name": "bulkActionNormaliseLabelText",
+      "kind": "function",
+      "startLine": 3107,
+      "endLine": 3114,
+      "currentSignature": "bulkActionNormaliseLabelText(value)",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "bulkActionNormaliseLabelText(value)",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Already a single regex chain. Do not switch to DOMParser/textContent: that would decode all entities (not just &nbsp;) and require `document`, changing output for labels containing &amp; etc.",
+        "Could reuse a generic `stripHtmlToText` primitive if other chunks (removeHtml family) converge on identical semantics; see crossCuttingFindings."
+      ],
+      "behaviourRisks": [
+        "Only `&nbsp;` is decoded (line 3111); `&amp;`, `&lt;` remain literal. Basket labels are rendered by the modal, so changing decoding changes visible text.",
+        "`<br>` becomes a space before other tags are stripped (line 3109-3110); ordering matters for multi-line Knack display values (field_x HTML)."
+      ],
+      "knackPractice": "Cleans Knack `field_x` HTML display values (Knack returns HTML for rich/connection fields) into plain basket text, consistent with the display-vs-raw distinction in the Knack record payload. Unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 6,
+      "rationale": "Six-line pure function already at target style; the only pressure is naming (UK 'Normalise' next to US 'Normalize' siblings) which policy forbids changing."
+    },
+    {
+      "name": "bulkActionNormalizeBasketItems",
+      "kind": "function",
+      "startLine": 3121,
+      "endLine": 3129,
+      "currentSignature": "bulkActionNormalizeBasketItems(items = [])",
+      "currentReturns": "Array<Object & {recordId: string, label: string}>",
+      "verdict": "simplify",
+      "proposedSignature": "bulkActionNormalizeBasketItems(items = [])",
+      "proposedReturns": "Array<Object & {recordId: string, label: string}>",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "recordId is stringified three times (lines 3123, 3126, 3127). Use flatMap once: `.flatMap((item) => { const recordId = toStringSafe(item?.recordId); return recordId ? [{ ...item, recordId, label: bulkActionNormaliseLabelText(item.label) || recordId }] : []; })`."
+      ],
+      "behaviourRisks": [
+        "Items are spread (`...item`) so extra persisted props (failureType, failureMessage) survive; keep the spread.",
+        "Label falls back to the record id when empty (line 3127); the modal shows this text."
+      ],
+      "knackPractice": "Normalises JSON restored from sessionStorage; not Knack-specific.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 7,
+      "rationale": "Correct; a flatMap removes the triple stringification and the filter/map pair. Two callers, both in createBulkActionBasketStore."
+    },
+    {
+      "name": "BULK_ACTION_DEFAULT_CONFIG",
+      "kind": "const object",
+      "startLine": 3131,
+      "endLine": 3168,
+      "currentSignature": "const BULK_ACTION_DEFAULT_CONFIG = { namespace, constants: {validationErrorPattern, reservedLabels, formFlowTtlMs, selectors: {formField, writableControl, textInput, richText}, styleId}, basket: {title, emptyText, ttlMs, modalClass}, action: {buttonClass, buttonBarClass, notify, onError, api}, selection: {scope, rowCheckboxClass, masterCheckboxClass}, form: {noticeClass, chosenUpdateEvent, styles} }",
+      "currentReturns": "Object (mutable, shared by reference)",
+      "verdict": "keep",
+      "proposedSignature": "const BULK_ACTION_DEFAULT_CONFIG = Object.freeze({...same keys...})",
+      "proposedReturns": "Object (frozen top level)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Declare it before classifyBulkActionFailure (used at line 1846) and before createBulkActionBasketStore so defaults are referenced instead of repeated literals ('KNACK_BULK' at 3284, `15 * 60 * 1000` at 3287).",
+        "Add `validationStatuses: [400, 401, 403, 404, 409, 422]` moved from classifyBulkActionFailure.",
+        "Shallow `Object.freeze` the top level and each section; note `reservedLabels` is a Set and `validationErrorPattern` a RegExp returned by reference from createBulkActionConfig (lines 3188-3193), so a consumer can mutate the shared Set today."
+      ],
+      "behaviourRisks": [
+        "`form.chosenUpdateEvent: 'liszt:updated'` (line 3165) is the legacy Chosen event that Knack's bundled Chosen fires; the file uses it consistently at 6 sites. Do not 'modernise' to 'chosen:updated'.",
+        "`selection.scope: 'ktlCheckbox'` (line 3160) couples to KTL's checkbox class; CSS and KTL bulk-edit rely on it.",
+        "Class names buttonClass/buttonBarClass/rowCheckboxClass/masterCheckboxClass and styleId are DOM side effects CSS depends on; must be identical.",
+        "Freezing changes behaviour for any consumer that mutates BULK_ACTION_DEFAULT_CONFIG directly instead of passing overrides; low likelihood but it is a page global."
+      ],
+      "knackPractice": "Selectors `[id^=\"kn-input-field_\"]` and `.redactor_editor` (lines 3137-3140) match Knack's form DOM conventions (`#kn-input-field_x` wrappers, Redactor rich-text editor). Follows the Knack DOM model. Unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 40,
+      "rationale": "A constant does not need rewriting, but V2 must hoist it above its first use and make it the single source of defaults. Freezing is optional hardening; if adopted, note it in the changelog."
+    },
+    {
+      "name": "createBulkActionConfig",
+      "kind": "function",
+      "startLine": 3175,
+      "endLine": 3228,
+      "currentSignature": "createBulkActionConfig(config = {})",
+      "currentReturns": "Object (fully populated config with the BULK_ACTION_DEFAULT_CONFIG shape)",
+      "verdict": "simplify",
+      "proposedSignature": "createBulkActionConfig(config = {})",
+      "proposedReturns": "Object (same shape)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Twenty occurrences of `knackValueResolver.toStringSafe(x || DEFAULT) || DEFAULT` (lines 3185-3225) -> shared `stringOr(value, fallback)`; three `Number.isFinite(Number(x)) ? Number(x) : d` -> `numberOr(value, fallback)`.",
+        "Seven inline `x && typeof x === 'object' ? x : {}` (lines 3176-3182, 3214, 3226) -> existing `bulkActionObjectOrEmpty` (line 4247) which the file already defines but does not use here.",
+        "Use nested destructuring with defaults: `const { basket = {}, action = {}, selection = {}, form = {}, constants = {} } = bulkActionObjectOrEmpty(config); const { selectors = {} } = constants;` then build the object with the helpers.",
+        "Build `constants.selectors` with `Object.fromEntries(Object.entries(DEFAULT.constants.selectors).map(([k, d]) => [k, stringOr(selectors[k], d)]))` to avoid listing the four selector keys twice."
+      ],
+      "behaviourRisks": [
+        "`basket.modalClass` and `form.noticeClass` have NO fallback (lines 3209, 3222) and default to ''; a generic `stringOr(value, DEFAULT.x)` loop over all keys would wrongly give them a default, so handle them explicitly.",
+        "`action.notify`/`onError` coerce non-functions to null (lines 3215-3216); `action.api` and `form.styles` pass through by reference, not cloned.",
+        "RegExp and Set are accepted only as instances (lines 3188, 3191); a string pattern is ignored, keep that.",
+        "Output must be a fresh object every call: BulkActionGridController and BulkActionModal each call it and store the result (lines 5102, 5599)."
+      ],
+      "knackPractice": "Configuration only; no Knack coupling beyond default selectors.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 35,
+      "rationale": "The most repetitive function in the chunk: 54 lines expressing 'string with default, number with default, object or empty'. Two tiny helpers remove the repetition while producing the identical object. Called from six sites including both facades, so the name and shape are frozen."
+    },
+    {
+      "name": "mergeBulkActionConfig",
+      "kind": "function",
+      "startLine": 3236,
+      "endLine": 3275,
+      "currentSignature": "mergeBulkActionConfig(baseConfig, overrideConfig = {})",
+      "currentReturns": "Object (normalised config)",
+      "verdict": "simplify",
+      "proposedSignature": "mergeBulkActionConfig(baseConfig, overrideConfig = {})",
+      "proposedReturns": "Object (normalised config)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "The body is a hand-written two-level deep merge of plain objects (lines 3242-3274) followed by createBulkActionConfig. Replace with `return createBulkActionConfig(deepMergePlain(createBulkActionConfig(baseConfig), overrideConfig));` where deepMergePlain is the generalised bulkActionMergeStyleMaps (line 4721).",
+        "Precondition for that: `bulkActionIsPlainObject` (line 4239) must be tightened to a prototype check (`Object.getPrototypeOf(v) === Object.prototype || === null`), otherwise a Set (`constants.reservedLabels`) or RegExp override would be spread into `{}` and silently destroyed.",
+        "Six inline `x && typeof x === 'object' ? x : {}` checks (lines 3238-3240, 3246, 3254, 3261, 3264, 3267) -> bulkActionObjectOrEmpty or removed entirely by the deep merge."
+      ],
+      "behaviourRisks": [
+        "Today `form.styles` is deep-merged but `action.api` and `constants.selectors` are shallow-merged one level (lines 3252-3256, 3265-3268); a generic deep merge would deep-merge nested `api` objects too. For plain-data configs this is a superset behaviour, but functions/classes inside `api` must be treated as leaves.",
+        "`override.constants.reservedLabels` as a Set must replace, not merge, the base Set; same for validationErrorPattern.",
+        "Result passes through createBulkActionConfig so unknown keys are dropped; must stay that way (both facades rely on the canonical shape, line 6835)."
+      ],
+      "knackPractice": "Configuration only.",
+      "risk": "medium",
+      "wave": 3,
+      "estimatedV2Lines": 8,
+      "rationale": "Forty lines that re-implement a deep merge the file already has for style maps. Delegating saves ~30 lines but depends on fixing the plain-object predicate first, which is why the risk is medium. Single caller is createKnackBulkActions.withConfig (line 6836) but it is a page global."
+    },
+    {
+      "name": "createBulkActionBasketStore",
+      "kind": "function",
+      "startLine": 3282,
+      "endLine": 3417,
+      "currentSignature": "createBulkActionBasketStore(options = {})  // options: {namespace = 'KNACK_BULK', appId = resolveDefaultBulkActionAppId(globalThis) || 'app', viewId = 'unknown', ttlMs = 900000, now = () => Date.now(), isOpen = () => false, storage = sessionStorage}",
+      "currentReturns": "{keys: {basket: string, activeAction: string}, expireIfNeeded(): boolean, getItems(): Array, setItems(items): Array, addItems(items): Array, removeItems(recordIds): Array, clear(): [], getActiveActionKey(): string, setActiveActionKey(key): string}",
+      "verdict": "simplify",
+      "proposedSignature": "createBulkActionBasketStore(options = {})",
+      "proposedReturns": "same store API",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Defaults `'KNACK_BULK'` (line 3284) and `15 * 60 * 1000` (line 3287) duplicate BULK_ACTION_DEFAULT_CONFIG.namespace / .basket.ttlMs; reference the constant.",
+        "`resolveDefaultBulkActionAppId(typeof globalThis !== 'undefined' ? globalThis : null)` (line 3285) -> `resolveDefaultBulkActionAppId(globalThis)`.",
+        "`loadEnvelope` is called in expireIfNeeded and again in getItems when memory is cold (lines 3337, 3344): read once per getItems by passing the envelope through, avoiding a double JSON.parse on first access.",
+        "Hoist `buildStorageKey` out as the store only builds two keys: `const key = (suffix) => [namespace, appId, viewId, suffix].filter(Boolean).join('_')`.",
+        "Use `Number(now())` once per save via a `timestamp()` helper; `memory` could be a small class-free closure as now, no change needed.",
+        "Optionally accept a pre-built `adapter` option (createVersionRefreshController accepts `storageAdapter` at line 1993) for test injection; additive, non-breaking."
+      ],
+      "behaviourRisks": [
+        "Storage key format `${namespace}_${appId}_${viewId}_basket` / `_activeAction` (lines 3300, 3305-3306) and the envelope shape `{storedAt, items}` are persisted user data; any change orphans baskets mid-session for users upgrading. Keep byte-identical.",
+        "`expireIfNeeded` never expires while `isOpen()` is true or ttlMs <= 0 (line 3331); the grid controller passes the modal's isOpen (line 5618).",
+        "getItems/setItems return `.slice()` copies, items themselves are shared references; callers mutate copies only via the runner's copy-on-write helpers.",
+        "`clear()` is referenced before its declaration inside expireIfNeeded (line 3336); fine for function declarations, but if V2 converts inner functions to const arrows the order must change.",
+        "Store ignores `bulkActionConfig` that createKnackBulkActions.withConfig passes in (line 6853); the grid controller compensates by passing `ttlMs: this.bulkActionConfig.basket.ttlMs` explicitly (line 5617). Reading `options.bulkActionConfig?.basket?.ttlMs` as a fallback would be a behaviour change for standalone callers; flag, do not change silently.",
+        "addItems merges by recordId with later items winning (line 3372); removeItems with no valid ids returns getItems() unchanged (line 3379)."
+      ],
+      "knackPractice": "Per-view (`view_x`) and per-app (`Knack.application_id`) scoped sessionStorage keeps the basket alive across Knack's hash-route navigation between the grid scene and the form scene, which is necessary because Knack re-renders views and loses DOM selection state. Consistent with Knack's SPA model. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 3,
+      "estimatedV2Lines": 100,
+      "rationale": "Well-structured closure store that is already modern; the improvements are referencing shared defaults, one storage read per getItems and dropping an impossible guard. Risk is medium purely because the persisted key/envelope format is implicit public state."
+    },
+    {
+      "name": "createBulkActionRunner",
+      "kind": "function",
+      "startLine": 3424,
+      "endLine": 3631,
+      "currentSignature": "createBulkActionRunner(options = {})  // options: {actions = [], classifyError = classifyBulkActionFailure, onStateChange = () => {}, concurrency = 'parallel'|'serial'}",
+      "currentReturns": "{run(actionKey, {items = [], onlyFailed = false, context = {}} = {}): Promise<{items, state, successIds, failedIds}>, resolveAction(actionKey): Object|null}",
+      "verdict": "simplify",
+      "proposedSignature": "createBulkActionRunner(options = {})",
+      "proposedReturns": "{run: async Function, resolveAction: Function}",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "`cloneForHandler` (lines 3431-3446): structuredClone exists in every evergreen browser; keep a single `try { return structuredClone(value); } catch { return Array.isArray(value) ? [...value] : { ...value }; }` and drop the `typeof structuredClone === 'function'` test and the JSON round-trip middle tier.",
+        "Split `run` (lines 3503-3625, 120 lines) into `runBatch(action, targetItems, ...)` and `runEach(action, targetItems, ...)` private helpers; `run` validates, prepares mutation helpers, dispatches and returns `{ items: nextItems, state, successIds, failedIds }` from one place instead of four return literals (lines 3537, 3556, 3566, 3617).",
+        "Serial loop (lines 3598-3602) -> `for (const [index, item] of targetItems.entries()) await runOne(item, index);`.",
+        "`createItemMutationHelpers` (lines 3454-3501): replace the manual index map building with `Map.groupBy`-style grouping or a simple reduce; keep copy-on-write.",
+        "`emitState` spreads twice (lines 3522-3525); `onStateChange(state = { ...state, ...overrides })` once is enough while still handing the listener a copy.",
+        "Use `catch {` (optional catch binding) instead of `catch (_) {}` (lines 3435, 3441).",
+        "Remove the inline explanatory comment at line 3478 by naming the helper `cloneOnFirstWrite`."
+      ],
+      "behaviourRisks": [
+        "Unknown action or missing handler throws synchronously inside an async function (lines 3511-3516) -> rejected promise; BulkActionGridController awaits inside try/catch (line 6225), so keep throwing rather than returning a failed state.",
+        "`handlerBatch` success marks every target item as success and failure marks all as failed (lines 3545-3566); partial batch results are not supported today. Do not add granularity in V2.",
+        "`onStateChange` receives a new object each time and the final `state` is returned; UI (replaceRunState, line 6221) depends on counters `processed/total/success/failed` and `completionMessage` strings exactly as written (lines 3534, 3551, 3561, 3607-3609).",
+        "Parallel mode pushes to successIds/failedIds in completion order, so ordering is nondeterministic today; serial mode preserves order. Keep both modes.",
+        "Items passed to handlers are clones, but the returned `items` array contains copy-on-write originals; handlers must not expect mutations to flow back.",
+        "`onlyFailed` filters by failureType OR failureMessage (line 3520) and clearFailure deletes both keys (lines 3495-3498); preserve the delete rather than setting undefined because items are JSON-persisted."
+      ],
+      "knackPractice": "Transport-agnostic: handlers receive `{recordId, item, context}` and typically call the Knack view-based REST API through KnackAPI (other chunk); concurrency 'serial' is the safe default against Knack's ~10 requests/second limit and the grid controller uses it (line 6219). Unverified against live docs.",
+      "risk": "medium",
+      "wave": 3,
+      "estimatedV2Lines": 150,
+      "rationale": "The largest item in the chunk; already async/await and immutable-by-copy, but `run` carries four exit paths and a three-tier clone fallback. Splitting batch/per-item execution and relying on structuredClone removes ~50 lines with identical outputs. Exposed via both facades (lines 6856, 6886)."
+    },
+    {
+      "name": "bulkActionControllerStore",
+      "kind": "const NewExpression",
+      "startLine": 3633,
+      "endLine": 3633,
+      "currentSignature": "const bulkActionControllerStore = new Map()  // Map<viewId, BulkActionGridController>",
+      "currentReturns": "Map",
+      "verdict": "keep",
+      "proposedSignature": "const bulkActionControllerStore = new Map()",
+      "proposedReturns": "Map",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Add a one-line JSDoc `/** @type {Map<string, BulkActionGridController>} */` (currently undocumented, line 3633).",
+        "Co-locate with bulkActionWorkflowRegistry and bulkActionControllerLifecycleBound under a 'Bulk-action module state' heading in V2."
+      ],
+      "behaviourRisks": [
+        "Keyed by normalised viewId and pruned by bulkActionSyncControllerVisibility on every knack-view-render.any (lines 3641-3655); the Map identity is shared across eight call sites, so it must remain one module-level instance, not per-facade.",
+        "It is a page global, so consumer apps could inspect controllers through it; keep the name."
+      ],
+      "knackPractice": "Holds per-view controller instances because Knack re-renders views and DOM references go stale; pruning on render events follows the documented render-event model.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 2,
+      "rationale": "Module-level state that is required by the controller lifecycle; nothing to rewrite beyond documentation."
+    },
+    {
+      "name": "bulkActionWorkflowRegistry",
+      "kind": "const NewExpression",
+      "startLine": 3634,
+      "endLine": 3634,
+      "currentSignature": "const bulkActionWorkflowRegistry = new Set()  // Set<`${namespace}::${formViewId}::${actionKey}`>",
+      "currentReturns": "Set",
+      "verdict": "keep",
+      "proposedSignature": "const bulkActionWorkflowRegistry = new Set()",
+      "proposedReturns": "Set",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Add `/** @type {Set<string>} */` JSDoc and document the key format used at line 6528."
+      ],
+      "behaviourRisks": [
+        "Never cleared: once a form-replicate workflow is registered for a namespace/form/action it stays bound for the page lifetime (lines 6529-6530). This is intentional de-duplication of jQuery document listeners; a V2 'cleanup' would double-bind on re-register."
+      ],
+      "knackPractice": "Guards against binding duplicate `knack-view-render.view_x` / `knack-form-submit.view_x` document listeners, which is necessary because Knack fires render events on every navigation. Follows the render-event model.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 2,
+      "rationale": "One-line state holder; keep as is with documentation."
+    },
+    {
+      "name": "bulkActionControllerLifecycleBound",
+      "kind": "let Literal",
+      "startLine": 3635,
+      "endLine": 3635,
+      "currentSignature": "let bulkActionControllerLifecycleBound = false",
+      "currentReturns": "boolean",
+      "verdict": "keep",
+      "proposedSignature": "let bulkActionControllerLifecycleBound = false",
+      "proposedReturns": "boolean",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Could be folded into ensureBulkActionControllerLifecycleBinding as a closure flag, but the global must still exist for eslint/knack-functions-globals.json parity (the name is listed there), so keep the `let`.",
+        "Add JSDoc `/** @type {boolean} */`."
+      ],
+      "behaviourRisks": [
+        "Set true at line 3663 before binding the jQuery listener; if V2 moves the lifecycle binding to native `document.addEventListener` it will NOT receive Knack's jQuery-triggered `knack-view-render.any` events (jQuery .trigger does not dispatch native events), so the binding must stay jQuery-based."
+      ],
+      "knackPractice": "Single-binding flag for the `knack-view-render.any knack-scene-render` listener (line 3664); Knack render events are jQuery events on document, so this flag plus jQuery binding is the documented approach.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 1,
+      "rationale": "Trivial module flag; the only decision is to keep it a global for parity."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "stringOr",
+      "purpose": "Trimmed string with fallback; replaces the twenty `knackValueResolver.toStringSafe(x || d) || d` expressions in createBulkActionConfig (lines 3185-3225) and the `toStringSafe(keywordName || '_bulk_actions')` idiom (line 2910).",
+      "replaces": ["createBulkActionConfig", "normalizeBulkActionKeywordGroupsInput", "createBulkActionBasketStore"],
+      "signature": "stringOr(value, fallback = '') => string"
+    },
+    {
+      "name": "numberOr",
+      "purpose": "Finite number with fallback; replaces three `Number.isFinite(Number(x)) ? Number(x) : d` expressions (lines 3194-3196, 3208).",
+      "replaces": ["createBulkActionConfig"],
+      "signature": "numberOr(value, fallback) => number"
+    },
+    {
+      "name": "isPlainObject / objectOrEmpty",
+      "purpose": "Prototype-checked plain-object predicate (Set, RegExp, Date, Map, class instances are NOT plain) and its `?? {}` companion; replaces fifteen inline `x && typeof x === 'object' ? x : {}` checks in createBulkActionConfig and mergeBulkActionConfig and fixes bulkActionIsPlainObject (line 4239) which currently returns true for Sets. bulkActionIsPlainObject/bulkActionObjectOrEmpty become aliases.",
+      "replaces": ["createBulkActionConfig", "mergeBulkActionConfig", "bulkActionIsPlainObject", "bulkActionObjectOrEmpty", "bulkActionCreateRunState"],
+      "signature": "isPlainObject(value) => boolean; objectOrEmpty(value) => Object"
+    },
+    {
+      "name": "deepMergePlain",
+      "purpose": "Recursive merge of plain objects treating non-plain values (functions, Set, RegExp, arrays) as leaves; generalises bulkActionMergeStyleMaps (line 4721) so mergeBulkActionConfig becomes one line.",
+      "replaces": ["mergeBulkActionConfig", "bulkActionMergeStyleMaps"],
+      "signature": "deepMergePlain(base = {}, override = {}) => Object"
+    },
+    {
+      "name": "attempt",
+      "purpose": "try/catch wrapper returning a fallback; collapses the six try/catch blocks in createBulkActionStorageAdapter (lines 1878-1930), the JSON.parse guards in createBulkActionBasketStore.loadEnvelope (line 3312) and bulkActionReadFormFlowState, and the clone fallback in createBulkActionRunner.",
+      "replaces": ["createBulkActionStorageAdapter", "createBulkActionBasketStore", "createBulkActionRunner"],
+      "signature": "attempt(fn, fallback = null) => * (returns fn() or fallback when it throws)"
+    },
+    {
+      "name": "uniqueStrings",
+      "purpose": "Generic ordered distinct trimmed strings; bulkActionUniqueStrings becomes an alias so other chunks (record-id lists, field-id lists) can share it.",
+      "replaces": ["bulkActionUniqueStrings"],
+      "signature": "uniqueStrings(values) => Array<string>"
+    },
+    {
+      "name": "bulkActionNormaliseOperation",
+      "purpose": "`String(value || '').toLowerCase() === 'update' ? 'update' : 'create'` appears at lines 2870, 3029 and 6285; one helper removes three copies.",
+      "replaces": ["parseBulkActionDefinition", "parseBulkActionKeywordGroups", "replicateBulkActionSubmittedRecord"],
+      "signature": "bulkActionNormaliseOperation(value, { strict = false } = {}) => 'create' | 'update' | '' (strict returns '' for anything else, matching the parser's rejection at line 3030)"
+    },
+    {
+      "name": "resolveBulkActionCallbackSlots",
+      "purpose": "Resolves a list of [resultKey, name, registry, kind] tuples through bulkActionResolveRegistryCallback and returns either the resolved map or the first `Missing ${kind} callback: ${name}` warning; replaces the three copy-pasted blocks at lines 3053-3078.",
+      "replaces": ["parseBulkActionKeywordGroups"],
+      "signature": "resolveBulkActionCallbackSlots(slots, globalScope) => { callbacks: Object, warning: {type, message}|null }"
+    }
+  ],
+  "crossCuttingFindings": [
+    "Declaration order: BULK_ACTION_DEFAULT_CONFIG (line 3131) is used by classifyBulkActionFailure at line 1846, 1,300 lines earlier. Works only because no top-level code calls it during evaluation; V2 must declare constants before the functions that read them (TDZ hazard for `const`).",
+    "Duplicated defaults: the literal 'KNACK_BULK' appears at lines 3132, 3284, 6292 (twice) and 6523, and `15 * 60 * 1000` at 3148 and 3287. All should reference BULK_ACTION_DEFAULT_CONFIG.",
+    "createKnackBulkActions.withConfig (lines 6831-6838) injects `bulkActionConfig` into createBulkActionBasketStore and createBulkActionRunner (lines 6852-6857), but neither function reads it (store destructures top-level namespace/ttlMs at 3283-3291; runner reads actions/classifyError/onStateChange/concurrency at 3425-3430). The grid controller compensates by re-passing ttlMs explicitly (line 5617). Either document that the config is ignored or make the store honour `bulkActionConfig.basket.ttlMs` / `.namespace` as fallbacks in a flagged behaviour change.",
+    "createBulkActionConfig accepts a `constants.validationErrorPattern` override (lines 3188-3190) but classifyBulkActionFailure always reads BULK_ACTION_DEFAULT_CONFIG (line 1846) and the facades never pass a config-aware `classifyError` to the runner, so the override is effectively dead unless a consumer wires it manually.",
+    "bulkActionIsPlainObject (line 4239) returns true for Set, RegExp, Date, Map and class instances; bulkActionMergeStyleMaps (line 4721) therefore spreads such values into `{}`. Harmless for CSS style maps today but blocks reuse as a generic deep merge (policy duplicate 'bulkActionIsPlainObject/objectOrEmpty vs generic'). createBulkActionConfig and mergeBulkActionConfig re-inline the check fifteen times instead of calling it.",
+    "Naming inconsistency inside one module: bulkActionNormaliseLabelText (UK) beside bulkActionNormalizeBasketItems and normalizeBulkActionKeywordGroupsInput (US); knackNavigator.normalizeViewId/normalizeFieldId are US. Policy: never rename existing globals; new identifiers UK.",
+    "Impossible-state guards to remove across the bulk module: `typeof globalThis !== 'undefined'` at lines 1868, 2950, 3285 (and the globalThis-exposure block at 6889-6896). `typeof sessionStorage !== 'undefined'` (lines 1940, 3290) should stay or move inside attempt() because storage access can throw SecurityError.",
+    "KTL coupling: `ktl.storage.lsGetItem(key, noUserId, session, secure)` argument order (lines 1880, 1897, 1914) is not verifiable from this repo (KTL not vendored). Also `selection.scope: 'ktlCheckbox'` (line 3160) ties the default selection scope to KTL's checkbox class. Keep both isolated in the adapter/config so V3 can swap them.",
+    "Chosen event: the module and five other sites (lines 3165, 4068, 4104, 12342, 13134, 18083, 18131) use the legacy `liszt:updated` event, which is what Knack's bundled (old-fork) Chosen listens for. The policy file mentions `chosen:updated`; do not migrate without verifying against Knack's bundled Chosen version.",
+    "Form-flow helpers just outside this chunk (C05): bulkActionWriteFormFlowState (line 3808) and bulkActionClearFormFlowState (line 3846) document `@returns {boolean}` but return undefined; bulkActionResetPendingFormFlow (line 3862) dereferences `bulkState.sourceViewId` without a null check although bulkActionReadFormFlowState can return null (line 3789).",
+    "parseBulkActionKeywordGroups and bulkActionResolveRegistryCallback resolve callbacks from `globalThis[name]`, which only sees function declarations and `var`/window-assigned globals; consumer apps declaring callbacks with `const` in their custom JS get 'Missing data callback' warnings. Worth a note in Wiki/Bulk Actions Keyword Guide.md.",
+    "Wiki/Bulk Actions Keyword Guide.md refers to a standalone `knack-bulk-actions.js` module that is not in this repo; the reserved-label set `['record','recordid','id','target','picker']` (line 3134) is documented only as `record`. Docs need refreshing when V2 ships.",
+    "Possible overlap for another chunk: bulkActionNormaliseLabelText (line 3107) is an HTML-to-text stripper; the policy lists removeHtml vs removeHtmlWithFormatting as suspected duplicates. If their semantics match (br -> space, &nbsp; only, whitespace collapse) a single shared `stripHtmlToText` could serve all three, with the bulk name kept as an alias."
+  ]
+}
