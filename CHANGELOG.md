@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-20
+
+<!-- pr:107 chore/rerelease-for-jsdelivr - amandajane-mo -->
+- Re-release v1.17.10's bundle as a new patch tag, because jsDelivr serves a copy of v1.17.10 that fails SRI.
+
 ## 2026-10-19
 
 <!-- pr:106 feat/mqt-bulk-mode - amandajane-mo -->

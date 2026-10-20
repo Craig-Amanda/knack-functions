@@ -2,6 +2,6 @@
   "name": "knack-functions",
   "file": "dist/knackFunctions.global.min.js",
   "sri": "sha384-eVk5BQYfBgVif85AWferlAw+VlsrcrEwAa8UIvjhlu8FdA7M2BVcal3fGcQWCyHb",
-  "commit": "f035fc1",
-  "builtAt": "2026-10-19T17:20:59Z"
+  "commit": "d7b9bca",
+  "builtAt": "2026-10-20T07:37:46Z"
 }
