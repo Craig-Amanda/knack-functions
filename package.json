@@ -1,6 +1,10 @@
 {
     "name": "knack-functions",
     "private": true,
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Craig-Amanda/knack-functions.git"
+    },
     "type": "module",
     "exports": {
         "./eslint": "./eslint/index.js",
