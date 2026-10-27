@@ -20325,6 +20325,42 @@ function insertStaffName(target) {
 //KTL Functions
 
 /**
+ * Builds Excel-friendly clipboard data from the visible rows of a table body.
+ * Line breaks inside a cell stay inside that cell instead of starting a new row:
+ * the HTML marks each `<br>` with `mso-data-placement:same-cell`, and the plain
+ * text quotes any cell that holds a line break, tab or double quote.
+ * Blank lines at the start or end of a cell are dropped. A cell holding one link
+ * keeps it as a hyperlink; other rich content (images, colours) is copied as text.
+ *
+ * @param {HTMLElement} tbody - The table body to read (must be in the page, so hidden content is skipped).
+ * @returns {{html: string, text: string}} Clipboard data for `text/html` and `text/plain`.
+ */
+function buildTableBodyClipboardData(tbody) {
+    const rows = Array.from(tbody.rows).filter(row => isElementVisible(row)).map(row =>
+        Array.from(row.cells).filter(cell => isElementVisible(cell)).map(cell => {
+            const lines = cell.innerText.trim().split('\n').map(line => line.trim());
+            const links = cell.querySelectorAll('a[href]');
+            return { lines, colSpan: cell.colSpan, href: links.length === 1 ? links[0].href : '' };
+        })
+    );
+
+    const html = rows.map(cells => '<tr>' + cells.map(({ lines, colSpan, href }) => {
+        const content = lines.map(escapeHtml).join('<br style="mso-data-placement:same-cell;">');
+        return `<td${colSpan > 1 ? ` colspan="${colSpan}"` : ''}>` +
+            (href ? `<a href="${escapeHtml(href)}">${content}</a>` : content) +
+            '</td>';
+    }).join('') + '</tr>').join('');
+
+    const text = rows.map(cells => cells.map(({ lines }) => {
+        const value = lines.join('\n');
+        return /[\n\t"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+    }).join('\t')).join('\n');
+
+    // The charset stops Excel reading £ and other non-ASCII text as Windows-1252.
+    return { html: `<meta charset="utf-8"><table>${html}</table>`, text };
+}
+
+/**
  * Adds KTL-style copy-to-clipboard behaviour for a view while excluding grid headers.
  * Use the `_copybody` view keyword to enable it. The keyword honours the same
  * role options as KTL's `_copy` keyword.
@@ -20395,6 +20431,15 @@ function copyViewBodyToClipboard(view, keywords) {
                 return;
             }
 
+            // Tables are copied as built cell data so multi-line cells paste into one Excel cell.
+            const onCopy = event => {
+                const { html, text } = buildTableBodyClipboardData(content);
+                event.clipboardData.setData('text/html', html);
+                event.clipboardData.setData('text/plain', text);
+                event.preventDefault();
+            };
+            if (viewType === 'table' || viewType === 'search') document.addEventListener('copy', onCopy);
+
             ktl.core.selectElementContents(content);
             try {
                 const successful = document.execCommand('copy');
@@ -20405,6 +20450,7 @@ function copyViewBodyToClipboard(view, keywords) {
             } catch (error) {
                 ktl.core.timedPopup('Unable to copy', 'error', 2000);
             } finally {
+                document.removeEventListener('copy', onCopy);
                 ktl.core.selectElementContents();
             }
         });
