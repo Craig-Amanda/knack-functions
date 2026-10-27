@@ -23,6 +23,7 @@ const tableHtml = `<div id="view_1" class="kn-table"><div class="table-keyword-s
   <td class="field_2244"><span class="col-2">
 18/09/2026
   </span></td>
+  <td class="field_3"><a href="https://example.com/cert.pdf">cert.pdf</a></td>
 </tr>
 <tr id="b">
   <td class="field_2040"><span class="col-0">
@@ -35,6 +36,7 @@ const tableHtml = `<div id="view_1" class="kn-table"><div class="table-keyword-s
   <td class="field_2244"><span class="col-2">
 16/09/2026
   </span></td>
+  <td class="field_3"><a href="#jobs/view/0277">View</a> <a href="#jobs/edit/0277">Edit</a></td>
 </tr>
 </tbody></table></div></div>`;
 
@@ -84,15 +86,16 @@ test('_copybody keeps multi-line cells in one Excel cell', async () => {
         assert.equal(clipboard.popup, 'Table copied to clipboard');
         // navigator.clipboard.read() sanitises the HTML (adds <tbody>, unescapes quotes), so match row by row.
         assert.ok(clipboard.html.includes(
-            '<tr><td>0048</td><td>2 Man job install new Crabtree RCD</td><td>18/09/2026</td></tr>'
+            '<tr><td>0048</td><td>2 Man job install new Crabtree RCD</td><td>18/09/2026</td><td><a href="https://example.com/cert.pdf">cert.pdf</a></td></tr>'
         ), clipboard.html);
+        // A cell with more than one link has no single target, so it is copied as text.
         assert.ok(clipboard.html.includes(
-            `<tr><td>0277</td><td>New outside light fitted${sameCell}Need to${sameCell}Return when parts in stock${sameCell}${sameCell}Morgan "M"</td><td>16/09/2026</td></tr>`
+            `<tr><td>0277</td><td>New outside light fitted${sameCell}Need to${sameCell}Return when parts in stock${sameCell}${sameCell}Morgan "M"</td><td>16/09/2026</td><td>View Edit</td></tr>`
         ), clipboard.html);
         assert.ok(!clipboard.html.includes('hidden'), clipboard.html);
         assert.equal(clipboard.text,
-            '0048\t2 Man job install new Crabtree RCD\t18/09/2026\n' +
-            '0277\t"New outside light fitted\nNeed to\nReturn when parts in stock\n\nMorgan ""M"""\t16/09/2026'
+            '0048\t2 Man job install new Crabtree RCD\t18/09/2026\tcert.pdf\n' +
+            '0277\t"New outside light fitted\nNeed to\nReturn when parts in stock\n\nMorgan ""M"""\t16/09/2026\tView Edit'
         );
     } finally {
         await browser.close();
