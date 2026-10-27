@@ -17378,7 +17378,7 @@ function getSelectedValue(fieldId, root = document) {
  * Gets the display value shown in a Knack form field.
  * @param {string|number} fieldId - Knack field ID.
  * @param {ParentNode} [root=document] - Optional root element to scope the lookup.
- * @returns {string} The current display value.
+ * @returns {string} The current display value, or '' when nothing is entered (including a radio or checkbox field with nothing ticked).
  */
 function getFormFieldDisplayValue(fieldId, root = document) {
     const fieldWrapper = getFieldWrapper(fieldId, root);
@@ -17416,7 +17416,8 @@ function getFormFieldDisplayValue(fieldId, root = document) {
         return dateParts.date;
     }
 
-    const inputEl = fieldWrapper.querySelector('input:not([type="hidden"]), textarea');
+    // Radios and checkboxes only count when ticked (handled above), so an unticked choice field returns ''.
+    const inputEl = fieldWrapper.querySelector('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]), textarea');
     return inputEl instanceof HTMLInputElement || inputEl instanceof HTMLTextAreaElement
         ? String(inputEl.value || '').trim()
         : '';

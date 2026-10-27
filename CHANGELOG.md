@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-27
+
+<!-- pr:108 fix/form-display-value-unticked - amandajane-mo -->
+- `getFormFieldDisplayValue` now returns `''` for a radio or checkbox field with nothing ticked, instead of the first option's value.
+
 ## 2026-10-20
 
 <!-- pr:107 chore/rerelease-for-jsdelivr - amandajane-mo -->
