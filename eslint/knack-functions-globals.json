@@ -47,6 +47,7 @@
     "bindRedirectToPopUpCloseButtons": "readonly",
     "borderRadiusLastVisible": "readonly",
     "buildKnackAssetInfo": "readonly",
+    "buildTableBodyClipboardData": "readonly",
     "bulkActionBuildButtonId": "readonly",
     "bulkActionBuildDynamicRequestPayload": "readonly",
     "bulkActionBuildFormFlowSessionKey": "readonly",

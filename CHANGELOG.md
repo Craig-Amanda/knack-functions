@@ -2,6 +2,11 @@
 
 ## 2026-10-27
 
+<!-- pr:109 fix/copybody-same-cell-line-breaks - CSWinnall -->
+- `_copybody` on table and search views now keeps multi-line cells in one Excel cell, instead of spilling each line onto a new row and pushing later columns down.
+- Hidden columns are no longer included in the copy.
+- A cell holding exactly one link pastes into Excel as a hyperlink.
+
 <!-- pr:108 fix/form-display-value-unticked - amandajane-mo -->
 - `getFormFieldDisplayValue` now returns `''` for a radio or checkbox field with nothing ticked, instead of the first option's value.
 
