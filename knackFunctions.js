@@ -20324,6 +20324,38 @@ function insertStaffName(target) {
 //KTL Functions
 
 /**
+ * Builds Excel-friendly clipboard data from the visible rows of a table body.
+ * Line breaks inside a cell stay inside that cell instead of starting a new row:
+ * the HTML marks each `<br>` with `mso-data-placement:same-cell`, and the plain
+ * text quotes any cell that holds a line break, tab or double quote.
+ * Blank lines at the start or end of a cell are dropped.
+ *
+ * @param {HTMLElement} tbody - The table body to read (must be in the page, so hidden content is skipped).
+ * @returns {{html: string, text: string}} Clipboard data for `text/html` and `text/plain`.
+ */
+function buildTableBodyClipboardData(tbody) {
+    const rows = Array.from(tbody.rows).filter(row => isElementVisible(row)).map(row =>
+        Array.from(row.cells).filter(cell => isElementVisible(cell)).map(cell => {
+            const lines = cell.innerText.trim().split('\n').map(line => line.trim());
+            return { lines, colSpan: cell.colSpan };
+        })
+    );
+
+    const html = rows.map(cells => '<tr>' + cells.map(({ lines, colSpan }) =>
+        `<td${colSpan > 1 ? ` colspan="${colSpan}"` : ''}>` +
+        lines.map(escapeHtml).join('<br style="mso-data-placement:same-cell;">') +
+        '</td>'
+    ).join('') + '</tr>').join('');
+
+    const text = rows.map(cells => cells.map(({ lines }) => {
+        const value = lines.join('\n');
+        return /[\n\t"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+    }).join('\t')).join('\n');
+
+    return { html: `<table>${html}</table>`, text };
+}
+
+/**
  * Adds KTL-style copy-to-clipboard behaviour for a view while excluding grid headers.
  * Use the `_copybody` view keyword to enable it. The keyword honours the same
  * role options as KTL's `_copy` keyword.
@@ -20394,6 +20426,15 @@ function copyViewBodyToClipboard(view, keywords) {
                 return;
             }
 
+            // Tables are copied as built cell data so multi-line cells paste into one Excel cell.
+            const onCopy = event => {
+                const { html, text } = buildTableBodyClipboardData(content);
+                event.clipboardData.setData('text/html', html);
+                event.clipboardData.setData('text/plain', text);
+                event.preventDefault();
+            };
+            if (viewType === 'table' || viewType === 'search') document.addEventListener('copy', onCopy);
+
             ktl.core.selectElementContents(content);
             try {
                 const successful = document.execCommand('copy');
@@ -20404,6 +20445,7 @@ function copyViewBodyToClipboard(view, keywords) {
             } catch (error) {
                 ktl.core.timedPopup('Unable to copy', 'error', 2000);
             } finally {
+                document.removeEventListener('copy', onCopy);
                 ktl.core.selectElementContents();
             }
         });
