@@ -7951,6 +7951,10 @@ function resolveElements(input) {
  *   - Chosen change events
  *   - jQuery UI datepicker calendar selections (onSelect)
  *   - jQuery timepicker selections (onSelect)
+ * - Several listeners on the same Chosen select or timepicker all run. Registering a callback with the same source
+ *   code (and delegate) on the same element again replaces the earlier one, so re-rendering a view doesn't stack
+ *   duplicates. The jQuery handlers keep the ktl_chosen / ktl_delegate_chosen / ktl_timepicker namespaces, so
+ *   .off('change.ktl_chosen') etc. still removes them all.
  *
  * @param {HTMLElement|NodeList|Array<HTMLElement>|string} target - Element, collection, or selector
  * @param {Function} callback - Function(event, element) to call on event
@@ -7969,6 +7973,17 @@ function addInputEventListener(target, callback, options = {}) {
 
     const eventList = Array.isArray(events) ? events : [events];
     const wired = [];
+
+    // jQuery-bound listeners (Chosen, timepicker) get a namespace from the callback's source, so listeners with
+    // different code on the same element all run, and binding the same code again replaces it instead of stacking.
+    const callbackNamespace = (() => {
+        const source = `${String(callback)}|${delegate || ''}`;
+        let hash = 5381;
+        for (let i = 0; i < source.length; i++) {
+            hash = ((hash << 5) + hash + source.charCodeAt(i)) | 0;
+        }
+        return 'kf_' + (hash >>> 0).toString(36);
+    })();
 
     const hasJq = () => !!(window.jQuery && window.jQuery.fn);
     const jq = () => window.jQuery;
@@ -8019,8 +8034,8 @@ function addInputEventListener(target, callback, options = {}) {
         try {
             const j = jq();
             j(selectEl)
-                .off('change.ktl_chosen')
-                .on('change.ktl_chosen', function (e) {
+                .off(`change.ktl_chosen.${callbackNamespace}`)
+                .on(`change.ktl_chosen.${callbackNamespace}`, function (e) {
                     callback(e, selectEl);
                 });
             return true;
@@ -8033,9 +8048,9 @@ function addInputEventListener(target, callback, options = {}) {
         if (!hasJq() || !delegate) return false;
         try {
             const j = jq();
-            j(rootEl).off('change.ktl_delegate_chosen');
+            j(rootEl).off(`change.ktl_delegate_chosen.${callbackNamespace}`);
             j(rootEl).on(
-                'change.ktl_delegate_chosen',
+                `change.ktl_delegate_chosen.${callbackNamespace}`,
                 `${delegate} select.chosen-select, ${delegate} select.chzn-select, ${delegate}.chosen-select, ${delegate}.chzn-select`,
                 function (e) {
                     callback(e, this);
@@ -8132,8 +8147,8 @@ function addInputEventListener(target, callback, options = {}) {
             const inputJq = j(inputEl);
 
             inputJq
-                .off('changeTime.ktl_timepicker selectTime.ktl_timepicker')
-                .on('changeTime.ktl_timepicker selectTime.ktl_timepicker', function (e) {
+                .off(`changeTime.ktl_timepicker.${callbackNamespace} selectTime.ktl_timepicker.${callbackNamespace}`)
+                .on(`changeTime.ktl_timepicker.${callbackNamespace} selectTime.ktl_timepicker.${callbackNamespace}`, function (e) {
                     try { callback(e, inputEl); } catch (_) {}
                 });
         } catch (_) {
