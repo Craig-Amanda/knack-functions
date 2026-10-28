@@ -1,0 +1,303 @@
+{
+  "chunkId": "C25",
+  "chunkSummary": "Lines 20226-20716 (the `//KTL Functions` section head) hold four unrelated KTL-era UI helpers plus two redundant globalThis export statements: copyViewBodyToClipboard (2026-08, native DOM, but built on the deprecated document.execCommand('copy') and four ktl.* calls), updateLabelText (a KTL field-keyword handler with a first-character type filter at L20361 that matches the wrong view types, a no-op `params.map(param => param)` and commented-out code), idleWatchDogTimeout (115 lines, no JSDoc, hand-rolled overlay/dialog whose dialog has no positioning in JS so consuming-app CSS on `#ktl-idle-dialog` is load-bearing, and a second invocation leaks the first invocation's 60 s auto-logout timer), and showConfirmationDialog (2026-04, already modern, Promise-based, used by renderInteractiveTable at L10545). The two dialogs duplicate ~60 lines of overlay/focus-restore/escape/cleanup scaffolding, so V2 should introduce one `createModalDialog` primitive that both consume (idle gains a `signal`-driven auto-close for free), extract `performKnackLogout`, and drop both globalThis blocks (L20313-20315 is redundant, L20713-20715 is provably dead because function hoisting defines the global before the `typeof === 'undefined'` test runs). No public signature changes; all four function globals are kept with identical parameter lists and return types.",
+  "functions": [
+    {
+      "name": "copyViewBodyToClipboard",
+      "kind": "function",
+      "startLine": 20231,
+      "endLine": 20311,
+      "currentSignature": "copyViewBodyToClipboard(view, keywords)",
+      "currentReturns": "undefined (void). Side effects: creates one `button.kn-button.knackCopyBodyButton` per view (idempotent via `#view_x .knackCopyBodyButton` lookup at L20249-20250), mutates Knack container inline styles (`.table-keyword-search` display:inline-flex at L20269; `.kn-records-nav` / `.kn-list-content` / `.kn-details section` flexDirection:column at L20281), toggles `button.disabled` on every call (L20310). Click handler selects the view body and runs document.execCommand('copy'), showing ktl.core.timedPopup feedback. Throws ReferenceError if `ktl` or `knackNavigator` are undefined; otherwise never throws.",
+      "verdict": "modernise",
+      "proposedSignature": "copyViewBodyToClipboard(view, keywords)",
+      "proposedReturns": "undefined (void), identical DOM contract: same button class `knackCopyBodyButton`, same container selectors, same `disabled` toggling. The click handler becomes async internally (Clipboard API) but the function itself stays synchronous and returns nothing.",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "copyTextToClipboard (L11361-11372) implements a second, text-only clipboard write with its own execCommand fallback; both should share one `writeClipboard({ text, html })` primitive",
+        "Inline first-letter capitalisation at L20297 duplicates capitaliseString (L19442, C24) - use `capitaliseString(viewType, { allCaps: false })` only after confirming that branch title-cases a single word; otherwise keep a one-line local"
+      ],
+      "modernisations": [
+        "L20294-20304: replace the deprecated `document.execCommand('copy')` with `navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], {type:'text/html'}), 'text/plain': new Blob([content.innerText], {type:'text/plain'}) })])` inside the click handler (user gesture, secure context - Knack is HTTPS), keeping the selection + execCommand path as the fallback for browsers without ClipboardItem. The html payload for table/search views must be wrapped as `<table>${content.outerHTML}</table>` (content is a `tbody`) so Excel/Word paste still recognises rows; the current selection-copy gets that context from the browser serialiser for free.",
+        "L20293 and L20303: drop `ktl.core.selectElementContents(content)` / `selectElementContents()` in favour of native `const range = document.createRange(); range.selectNodeContents(content); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);` and `getSelection().removeAllRanges()` (only needed on the fallback path).",
+        "L20236: `ktl.views.getViewType(viewId)` -> shared `getKnackViewType(viewId)` (= `Knack.views[viewId]?.model?.view?.type ?? ''`, the lookup already used inline at L16129) so the helper works when KTL is not loaded; keep `ktl.core.hasRoleAccess` (L20254) because keyword role options are a KTL concept, but guard it as `globalThis.ktl?.core?.hasRoleAccess?.(keywordOptions) === false`.",
+        "L20237-20242 and L20266: collapse the duplicated table/search entries into `const isGrid = viewType === 'table' || viewType === 'search';` and a selectors map `{ table: grid, search: grid, details: ..., list: ... }` built once at module level (it does not depend on viewId until interpolated - or keep a small arrow `bodySelector(viewId, viewType)`).",
+        "L20245: `console.log('copyViewBodyToClipboard error. Unsupported view type:', viewId)` -> `errorHandler.handle(new Error(`Unsupported view type ${viewType}`), { viewId, viewType }, 'copyViewBodyToClipboard')` or a plain early return; a console.log is neither an error report nor silent.",
+        "L20260-20263, L20270, L20282: move the three inline button styles into one `ensureStyle('knack-copy-body-style', `.knackCopyBodyButton{margin-bottom:10px;width:fit-content}.table-keyword-search>.knackCopyBodyButton{margin-left:10%}...`)` call (C01 primitive). Keep the two container inline styles at L20269 and L20281 exactly as they are - they override Knack layout and a stylesheet rule of lower specificity would not.",
+        "L20296-20299: build the feedback message with `capitaliseString` or a template literal and pass `{ ok: successful }` through one `ktl.core.timedPopup(message, ok ? 'success' : 'error', ok ? 1000 : 2000)` call; the try/catch/finally collapses to an `await writeClipboard(...)` with a single catch.",
+        "L20286: `function () {` click listener -> arrow; add `{ once: false }` nothing else - keep re-querying `contentSelector` inside the handler (L20287) because Knack replaces the tbody on every records render.",
+        "Add JSDoc `@returns {void}` is already present; add a one-line note that the function must be called on every `knack-view-render.view_x` / `knack-records-render.view_x` because the button lives inside the re-rendered view."
+      ],
+      "behaviourRisks": [
+        "Clipboard payload format: today the selection-based copy writes whatever the browser serialises for the selected tbody/section/columns (both text/html with ancestor context and text/plain). A Clipboard API rewrite must emit the same two MIME types and wrap tbody HTML in `<table>` or Excel paste silently degrades to plain text. Firefox supports ClipboardItem write only from 127 (2024) - keep the execCommand fallback.",
+        "navigator.clipboard.write is async and rejects when the document is not focused or the permission is denied; the current synchronous `successful` boolean becomes a resolved/rejected promise - map rejection to the existing `Unable to copy` popup (L20289, L20301) so the user-visible messages do not change.",
+        "The `.table-keyword-search` container is forced to `display:inline-flex` (L20269) and `.kn-records-nav` etc. to `flex-direction:column` (L20281) on every render; apps may have CSS that depends on these exact inline overrides. Do not move them to a stylesheet.",
+        "Button placement order: `appendChild` into the keyword-search box (L20271) versus `prepend` into the nav/list/details container (L20283). Preserve both because app CSS (`.knackCopyBodyButton` margin-left 10% vs 8px) assumes them.",
+        "`ktl.core.hasRoleAccess` short-circuits only on the first keyword occurrence (`keywords[keywordName][0]?.options`, L20253); a view with two `_copybody` keywords uses the first. Keep.",
+        "If KTL is absent the function currently throws ReferenceError at L20236; guarding `ktl?.` turns that into a silent return. Acceptable (the feature is KTL-keyword driven) but note it."
+      ],
+      "knackPractice": "A KTL view-keyword handler (`_copybody`), not Knack-native: it expects to be invoked with `(view, keywords)` from the app's KTL `processViewKeywords` callback on each view render (unverified against live KTL docs). It follows Knack DOM conventions correctly - `#view_x .kn-table-wrapper tbody`, `.kn-tr-nodata` for the empty-grid row, `.kn-records-nav`, `.kn-list-content`, `.kn-details section` - and is re-entrant, which is exactly what Knack's re-render-everything model needs. `ktl.views.getViewType` can be replaced with `Knack.views[viewId].model.view.type` (used at L16129; unverified against live docs).",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 60,
+      "rationale": "The function is already native-DOM and short, but it is built on `document.execCommand('copy')`, which is deprecated in every evergreen browser, and on four `ktl.*` calls of which only `hasRoleAccess` is genuinely KTL-specific. The rewrite keeps the `(view, keywords)` signature, the `knackCopyBodyButton` class and the container mutations, swaps in the async Clipboard API with the old path as fallback, and shares a `writeClipboard` primitive with copyTextToClipboard (L11361). Risk is medium only because the clipboard HTML payload must be wrapped so spreadsheet paste keeps working - a thing no unit test currently covers."
+    },
+    {
+      "name": "if (typeof globalThis !== 'undefined') {",
+      "kind": "statement",
+      "startLine": 20313,
+      "endLine": 20315,
+      "currentSignature": "if (typeof globalThis !== 'undefined') { globalThis.copyViewBodyToClipboard = copyViewBodyToClipboard; }",
+      "currentReturns": "n/a (statement). Assigns an own property on globalThis that already exists because the top-level function declaration at L20231 creates it at script instantiation.",
+      "verdict": "remove-dead",
+      "proposedSignature": "none - delete the block",
+      "proposedReturns": "n/a",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "Nothing to emit in practice: the top-level `function copyViewBodyToClipboard` declaration in V2 keeps `globalThis.copyViewBodyToClipboard` defined and eslint/generate-globals.mjs (L25-27) harvests the name from the declaration. Only if V2 is ever wrapped in an IIFE/module should a single `globalThis.copyViewBodyToClipboard = copyViewBodyToClipboard;` line go in the compatibility-shims section.",
+      "duplicatesOf": [
+        "Same idiom at L6893-6897 (KnackBulkActions), L17116 and L17633; a different-but-equivalent guard at L15 and L20713. Six export blocks, four spellings, zero of them necessary in a classic script."
+      ],
+      "modernisations": [
+        "L20313: `typeof globalThis !== 'undefined'` is always true in the evergreen browsers Knack supports (globalThis shipped 2019-2020); the guard protects against nothing.",
+        "L20314: the assignment is a no-op in a classic script - a top-level FunctionDeclaration already installs the binding on the global object before any statement runs, so the property exists and points at the same function."
+      ],
+      "behaviourRisks": [
+        "None for consumers: `globalThis.copyViewBodyToClipboard`, `window.copyViewBodyToClipboard` and the bare identifier continue to resolve to the same function via the declaration.",
+        "generate-globals.mjs also collects explicit `globalThis.x =` assignments (L51-61); removing the block does not remove the name from eslint/knack-functions-globals.json because the declaration supplies it (L120 of that file)."
+      ],
+      "knackPractice": "Not Knack-related; a defensive export pattern copied from module-style code into a classic `<script>` where it is inert.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 0,
+      "rationale": "In a classic script the function declaration is the global, so this block cannot change observable behaviour; it is one of six near-identical export blocks in four spellings that V2 should drop wholesale. No shim code is required because the name survives through the declaration itself."
+    },
+    {
+      "name": "updateLabelText",
+      "kind": "function",
+      "startLine": 20340,
+      "endLine": 20389,
+      "currentSignature": "updateLabelText(viewId, viewType, fieldId, { params })",
+      "currentReturns": "undefined (void). Side effect: sets `innerHTML` of one label element inside the view root resolved by getViewRootElement (L6931). Throws TypeError when the 4th argument is omitted (destructuring `{ params }` of undefined) or when `params` is empty (`params[0].join` at L20363); never throws otherwise.",
+      "verdict": "simplify",
+      "proposedSignature": "updateLabelText(viewId, viewType, fieldId, { params })",
+      "proposedReturns": "undefined (void); same single innerHTML write on the same selector per view type.",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "changeRadioButtonLabel (L18179, jQuery) rewrites a radio option label and is the only other label-text writer; different target, no dedupe, but both should use the same `fieldLabelElement(viewRoot, viewType, fieldId)` selector helper if one is introduced"
+      ],
+      "modernisations": [
+        "L20349-20365: replace the three `let`s and the two-branch if/else with destructuring: `const [labelParts = [], typeParts] = params; const labelTxt = labelParts.join(', '); const selector = typeParts && !typeParts.includes(viewType) ? null : selectors[viewType];` - `params.map(param => param)` at L20359 is an identity map and is deleted.",
+        "L20361 BUG: `type[0].includes(viewType[0])` compares the first character of the view type against the whole type string, so a type specifier of 'details' also matches 'list' (contains 'l'), 'table' and 'search' (contain 't'/'s'), and 'search' matches 'table' only by accident of letters. Compare whole words: `typeParts.map(t => t.trim().toLowerCase()).includes(viewType)`. This is a behaviour change for any app that (knowingly or not) relied on the fuzzy match - flag in the migration notes.",
+        "L20350-20356: collapse the duplicated selectors (`details`/`list` identical, `table`/`search` identical) into `const detail = ...; const header = ...; const selectors = { form, details: detail, list: detail, table: header, search: header };` hoisted to module scope as a function of fieldId, or keep inline - either way 4 lines fewer.",
+        "L20368-20379: hoist the `replacements` map to a module-level `const LABEL_PLACEHOLDERS` and apply with one `labelTxt.replace(/\\{(\\/?)(br|strong|em|hr)\\}/g, (_, close, tag) => `<${close}${tag}>`)` - same six tokens, one regex, no reduce. Rename `originalText` (L20376) to `labelHtml`; drop `|| ''` at L20384 (reduce already starts from a string).",
+        "L20385-20387: delete the empty else branch with its commented-out console.warn (policy: no commented-out code).",
+        "L20343-20346: keep the early return but route through `console.warn` only if the team wants noise on every unmatched render; otherwise `return` silently with the condition documented in JSDoc - the view genuinely may not be on the page yet.",
+        "L20347-20348: remove the double blank line; add `@returns {void}` to the JSDoc (every other tag is already present)."
+      ],
+      "behaviourRisks": [
+        "Fixing the L20361 type filter changes which view types a `[['Label'], ['details']]` keyword applies to; today it also hits list/table/search labels for the same field. Confirm with GAP-Track/Spot keyword usage before shipping, or keep the fuzzy match behind the old spelling and document it.",
+        "Table/search selector `th.field_x > span > a > span:not(span.icon)` (L20354-20355) only matches sortable headers (Knack wraps sortable header text in `<a>`); non-sortable columns are silently skipped. A broader selector would be a visible change - keep, but document.",
+        "`innerHTML` write (L20384) is required for the `{strong}`/`{br}` feature; the label text comes from the builder-authored keyword, not from record data, so no escaping is added. Do not switch to textContent.",
+        "Knack re-renders the view (and resets the label) on every render/filter/sort/page; the function must keep being called from the field-keyword hook on each `knack-view-render` - it is correctly stateless.",
+        "Omitting the options argument throws TypeError today; adding `= {}` / `params = []` defaults would make it a no-op instead. Policy counts thrown errors as signature, so either keep the exact parameter list (proposed) or treat the default as an additive hardening noted in the changelog."
+      ],
+      "knackPractice": "Follows Knack DOM conventions for labels: `#kn-input-field_x .kn-label span:not(.kn-required)` (form), `.field_x .kn-detail-label > span` (details/list), `th.field_x ... span` (table/search), scoped to the view root from getViewRootElement so it also works inside `#connection-form-view`. Its `(viewId, viewType, fieldId, { params })` shape is the KTL field-keyword handler contract (unverified against live KTL docs). Re-applying on every render is the right Knack model; it keeps no DOM references.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 28,
+      "rationale": "Fifty lines that do one innerHTML write can be twenty-eight with the same selectors and the same placeholder tokens: the identity `map`, the empty else with commented-out code, the duplicated selector entries and the reduce-over-object all go. The one real finding is the first-character type filter at L20361, which matches the wrong view types and should become a whole-word comparison with a migration note. Signature, return and DOM effects are unchanged."
+    },
+    {
+      "name": "idleWatchDogTimeout",
+      "kind": "function",
+      "startLine": 20391,
+      "endLine": 20505,
+      "currentSignature": "idleWatchDogTimeout()",
+      "currentReturns": "undefined (void). Side effects: removes any previous `#ktl-idle-overlay` / `#ktl-idle-dialog` (L20401-20402), appends a black 0.8-opacity fixed overlay (z-index 2010) and a `div#ktl-idle-dialog[role=dialog]` containing `h2#ktl-idle-title`, a paragraph, and `.ktl-dialog-buttons` with `button#ktl-idle-logout-btn.kn-button.is-secondary` and `button#ktl-idle-stay-btn.kn-button.is-secondary`; focuses the dialog; registers a window resize listener that sets dialog width 70%/25% at a 768 px breakpoint; starts a 60 s setTimeout that calls Knack.user.destroy() and, 2 s later, retries or reloads. Returns immediately. Throws ReferenceError if `Knack` is undefined when the timer fires.",
+      "verdict": "split",
+      "proposedSignature": "idleWatchDogTimeout()  - plus two new internal helpers it composes: `performKnackLogout({ fallbackDelayMs = 2000 } = {})` and the shared `createModalDialog(options)` primitive",
+      "proposedReturns": "undefined (void); identical DOM ids/classes (`ktl-idle-overlay`, `ktl-idle-dialog`, `ktl-idle-title`, `ktl-idle-logout-btn`, `ktl-idle-stay-btn`, `.ktl-dialog-buttons`, `kn-button is-secondary`), identical overlay inline styles, identical 60 s auto-logout and 2 s fallback.",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "showConfirmationDialog (L20526-20711): overlay creation, role/aria-modal/aria-labelledby/tabindex wiring (L20423-20426 = L20604-20607), previousActiveElement capture and focus restore (L20438-20452 = L20558, L20653-20655), remove-on-close cleanup (L20446-20453 = L20645-20657) and button wiring (L20483-20487 = L20666-20689) are the same ~60 lines written twice"
+      ],
+      "modernisations": [
+        "L20400-20453 + L20482-20495: build the dialog through the shared `createModalDialog({ overlayId: 'ktl-idle-overlay', dialogId: 'ktl-idle-dialog', titleId: 'ktl-idle-title', title: 'Knack Logout', message: 'You are about to be logged out. Do you wish to remain logged in?', buttons: [{ id: 'ktl-idle-logout-btn', text: 'Logout', className: 'kn-button is-secondary', value: 'logout' }, { id: 'ktl-idle-stay-btn', text: 'Stay Logged In', className: 'kn-button is-secondary', value: 'stay' }], buttonsClass: 'ktl-dialog-buttons', closeOnOverlay: false, closeOnEscape: false, signal: AbortSignal.timeout(60_000) })` and `await` its result: `logout` or timeout -> performKnackLogout(); `stay` -> `globalThis.ktl?.scenes?.resetIdleWatchdog?.()`. The 115-line body becomes ~35.",
+        "L20455-20480: extract `performKnackLogout()` (idempotent via a module-level flag, `Knack.user.destroy()` in try/catch reporting through `errorHandler.handle(err, {}, 'performKnackLogout')`, then the 2 s `.kn-login` check with retry/reload). The inner `try { window.location.reload(); } catch (e) {}` at L20463 is dead - reload() does not throw - and the comment 'navigate to origin' at L20462 describes code that is not there.",
+        "L20401-20402 BUG: a second invocation removes the first dialog's elements but not its `autoLogoutTimeout` (L20504) or its resize listener (L20495); the first closure's performLogout still fires after 60 s even if the user pressed 'Stay Logged In' on the second dialog. Keep a module-level `activeIdleDialog` handle and call its `close()` (which aborts the signal and removes listeners) before opening a new one.",
+        "L20490-20495: replace the resize listener and `setDialogWidth` with zero-specificity CSS injected once via `ensureStyle('knack-idle-dialog-style', ':where(#ktl-idle-dialog){width:25%} @media (max-width:768px){:where(#ktl-idle-dialog){width:70%}}')`. Using `:where()` keeps specificity at zero so existing app CSS on `#ktl-idle-dialog` still wins; this also lets V2 supply default `position:fixed; inset:0; margin:auto; height:fit-content; z-index:2011; background:#fff; padding:24px` so the dialog is visible even in an app that never styled it (today it renders in normal flow under the overlay).",
+        "L20486: `try { ktl.scenes.resetIdleWatchdog(); } catch (e) { /* ignore */ }` swallows silently - `globalThis.ktl?.scenes?.resetIdleWatchdog?.()` expresses the optional dependency without hiding real errors.",
+        "L20497-20504: `Math.max(0, autoLogoutMinutes) * 60 * 1000` on a literal 1 -> `const IDLE_CONFIRM_TIMEOUT_MS = 60_000;` with the two explanatory comments folded into JSDoc (the function has none today).",
+        "L20407-20417: numeric `top: 0, left: 0` rely on CSSOM coercion; write `'0'` or use `inset: '0'` as showConfirmationDialog already does (L20571). Keep `backgroundColor: 'black', opacity: 0.8, zIndex: 2010` exactly (app CSS may expect the 0.8 black scrim).",
+        "L20427-20434: the static innerHTML template is fine (no interpolated user data) but the primitive builds nodes, so the `<p>` text becomes `message` and the heading becomes `title`.",
+        "Add JSDoc: `@returns {void}` and a note that KTL calls this global when `ktl.scenes` idle delay elapses (`idleWatchDogDelay` in `ktl.scenes.setCfg`), unverified against live KTL docs."
+      ],
+      "behaviourRisks": [
+        "App CSS dependency: the dialog element has no position/z-index/background in JS, so GAP-Track/Spot must be styling `#ktl-idle-dialog` (and probably `.ktl-dialog-buttons`) themselves. Any default styles V2 adds must be zero-specificity (`:where()`) or app styling silently changes.",
+        "`Knack.user.destroy()` (L20460, L20475) is an undocumented Backbone call, not a Knack-documented logout API (unverified against live docs). Isolating it in performKnackLogout limits the blast radius if Knack changes it; the fallback `location.reload()` when `.kn-login` is still absent after 2 s must stay.",
+        "Timer semantics: the 60 s confirmation window must stay fixed at 60 s and must not be read from `ktl.scenes.getCfg().idleWatchDogDelay` (the comment at L20498-20500 is explicit). AbortSignal.timeout gives the same wall-clock behaviour but fires `abort` instead of calling performLogout directly - the dialog result handler must map `null` (aborted) to logout, not to 'stay'.",
+        "Escape and overlay-click must NOT close this dialog (today they do nothing); when composing on the shared primitive pass `closeOnOverlay:false, closeOnEscape:false` or users will be able to dismiss the warning and then be logged out anyway.",
+        "Focus: `dialog.focus()` on a tabindex=-1 div is relied on for screen readers; keep. There is no focus trap today, so adding one is optional and should not block Tab-to-address-bar.",
+        "The `.kn-login` early return (L20392) and the `.kn-login` check in the fallback (L20458) key off Knack's login view class - unverified against live docs but used consistently in this file.",
+        "Button order (Logout first, Stay second) and both being `is-secondary` are visible; keep."
+      ],
+      "knackPractice": "This is KTL's idle-watchdog hook, not a Knack API: KTL's `ktl.scenes` idle timer calls the app-level global `idleWatchDogTimeout` after `idleWatchDogDelay` of inactivity and `ktl.scenes.resetIdleWatchdog()` re-arms it (unverified against live KTL docs). It fights nothing in Knack's render model because it lives on `document.body`, outside any `.kn-view`, so scene renders do not destroy it. The logout path relies on `Knack.user.destroy()` and the presence of `.kn-login`, both undocumented. Uses Knack's `kn-button is-secondary` theme classes, which is good practice.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 45,
+      "rationale": "Half of this 115-line, JSDoc-less function is dialog scaffolding that showConfirmationDialog already implements, and the other half mixes logout, fallback-reload and timer bookkeeping into closures that leak across invocations (L20401-20402 remove the DOM but not the first timer). Splitting into the shared `createModalDialog` primitive, a reusable `performKnackLogout`, and a 35-line orchestrator keeps the exact `idleWatchDogTimeout()` global, every id/class the apps style, and the 60 s / 2 s timings, while fixing the double-invocation bug and the invisible-dialog-without-app-CSS problem via zero-specificity defaults. Medium risk only because logout touches an undocumented Knack internal and app CSS."
+    },
+    {
+      "name": "showConfirmationDialog",
+      "kind": "function",
+      "startLine": 20526,
+      "endLine": 20711,
+      "currentSignature": "showConfirmationDialog(options = {})  // options: { title = 'Confirmation', message = 'Are you sure you want to continue?' (string | string[], HTML allowed), contentHtml = '', buttons = [{text:'Cancel', className:'kn-button is-secondary', value:'cancel'}, {text:'OK', className:'kn-button is-primary', value:'confirm'}] (each { text, className | class, value, action(result), closeOnClick }), styling = { overlayClass, containerClass, dialogClass, titleClass, messageClass, contentClass, buttonsClass }, closeOnOverlay = true, closeOnEscape = true }",
+      "currentReturns": "Promise<{ value: string, button: Object } | null> - resolves with the clicked button definition, or null on Escape / overlay click; never rejects. Side effects: appends an overlay div to document.body (inline centred-modal styles unless `styling.overlayClass` is set), dialog with `role=dialog aria-modal=true aria-labelledby=knack-confirm-title-<ts>-<rand> tabindex=-1`, optional container div when `styling.containerClass` is given, a document-level keydown listener while open, focus moved to the dialog and restored to the previous element on close.",
+      "verdict": "simplify",
+      "proposedSignature": "showConfirmationDialog(options = {})  // identical option names and defaults; additive only: `options.signal?: AbortSignal` (aborting closes the dialog and resolves null) and `options.dialogId? / titleId?` passthroughs used by idleWatchDogTimeout",
+      "proposedReturns": "Promise<{ value: string, button: Object } | null>, unchanged; still never rejects (an exception thrown by `button.action` is reported through errorHandler and the dialog still closes with the result).",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "idleWatchDogTimeout (L20391-20505) re-implements the overlay/dialog/focus-restore/cleanup scaffolding at L20400-20453 and L20482-20495; both should sit on one `createModalDialog` primitive",
+        "Quill `#quill-universal-modal` (L7307-7330, z-index 99999) and KnackBulkActions ensureModal (L5139) are further ad-hoc modals outside this chunk with different z-index and no focus management; candidates for the same primitive in later waves"
+      ],
+      "modernisations": [
+        "L20532-20543, L20669-20674: eleven `knackValueResolver.toStringSafe(...)` calls -> the file-level `toStringSafe` primitive proposed by C03 (identical semantics: '' for null/undefined, trimmed String otherwise). This removes the UI helper's dependency on the value-resolver singleton.",
+        "L20531-20547: `config` normalisation can be a single destructuring with defaults: `const { title = 'Confirmation', message = 'Are you sure you want to continue?', contentHtml = '', buttons, styling = {}, closeOnOverlay = true, closeOnEscape = true, signal } = options ?? {};` then `const btns = Array.isArray(buttons) && buttons.length ? buttons : DEFAULT_BUTTONS;`. Note `closeOnOverlay !== false` semantics (L20545) == default true with `false` the only opt-out; destructuring default keeps that for undefined, but `null` would differ - use `?? true` to be exact.",
+        "L20549-20710: move overlay/dialog/title/buttons construction, keydown, focus save/restore, overlay click and cleanup into the shared `createModalDialog(...)` primitive; showConfirmationDialog keeps only option normalisation, message/contentHtml rendering and the result mapping (`{ value: toStringSafe(btn.value) || toStringSafe(btn.text), button: btn }`).",
+        "L20549, L20554, L20610, L20666, L20671, L20692: `function (...)` expressions -> arrow functions; L20554-20556 filter -> `messages.filter((m) => String(m ?? '').trim() !== '')`.",
+        "L20568-20602, L20613-20618, L20626-20628, L20634-20642: the five default inline-style blocks (~45 lines) -> one `ensureStyle('knack-confirm-dialog-style', css)` with default class names (`knack-confirm-overlay`, `-dialog`, `-title`, `-message`, `-content`, `-buttons`) applied only when the corresponding `styling.*Class` is empty. Same visual result (CHANGELOG L281 'centred modal overlay by default' preserved); apps that pass a class keep skipping the defaults exactly as today.",
+        "L20550: `knack-confirm-title-${Date.now()}-${Math.random()...}` -> `knack-confirm-title-${crypto.randomUUID().slice(0, 8)}` or a module counter; same uniqueness goal, shorter.",
+        "L20678-20680: wrap `buttonConfig.action(result)` in try/catch -> `errorHandler.handle(err, { value: result.value }, 'showConfirmationDialog')`; today a throwing action leaves the dialog open and the promise pending forever.",
+        "L20682-20684: `closeOnClick === false` keeps the dialog open with no way to close it later; the new `signal` option (and the `close()` returned by the primitive internally) closes that gap without changing the public return type.",
+        "L20659-20664 + L20699: register the keydown listener with `{ signal }` from an internal AbortController so cleanup is `controller.abort()` instead of a manual removeEventListener; the Escape handler must still call `event.preventDefault()`.",
+        "JSDoc: keep every @param; add `@param {AbortSignal} [options.signal]` and `@example` with the interactive-table call shape from L10545-10561."
+      ],
+      "behaviourRisks": [
+        "Moving default styles from inline `style=` to a stylesheet lowers their precedence: today inline styles beat any app CSS, so an app rule like `[role=dialog] { padding: 0 }` is currently overridden and would start applying. Use plain class selectors (not `:where`) for these defaults so they behave like the inline styles for everything except `!important` app rules, or keep inline styles if the team prefers zero change.",
+        "`styling.containerClass` toggles both the extra wrapper div (L20700-20704) AND skips the dialog default styles (L20582) - an odd coupling that callers may rely on; preserve it exactly.",
+        "`buttonConfig.class` (L20669) is an undocumented alias for `className`; keep accepting it (accepted input shape is signature).",
+        "`message` and `contentHtml` are written with innerHTML by design (JSDoc L20511-20512: 'HTML is allowed'); renderInteractiveTable passes app-configured `clearConfirmMessage` (L10541). Do not switch to textContent.",
+        "Escape is handled on `document` (L20699): with two dialogs stacked, Escape closes both. The primitive should scope the listener to the overlay (focus is inside it) or guard on `document.activeElement`; both are behaviour changes, so document them.",
+        "The promise resolves `null` for Escape/overlay and `{value, button}` for buttons - renderInteractiveTable checks `confirmationResult?.value !== 'confirm'` (L10563), so any change to the null contract breaks the clear flow.",
+        "Focus restore to `previousActiveElement` after `overlay.remove()` (L20653-20655) matters for keyboard users inside Knack forms; keep ordering (remove, then focus)."
+      ],
+      "knackPractice": "Not tied to Knack's render model: the overlay lives on `document.body` so scene/view re-renders do not destroy it, and it does not use Knack's router-driven `.kn-modal` / `Knack.closeModal()`, which is correct for a programmatic confirm. It adopts Knack theme classes (`kn-button is-primary / is-secondary`) for consistent styling. Unverified against live docs but consistent with how this file treats Knack modals elsewhere.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 110,
+      "rationale": "Already modern (Promise, native DOM, JSDoc, used by renderInteractiveTable at L10545), so the port is a simplification: extract the dialog shell that idleWatchDogTimeout duplicates, replace eleven value-resolver calls with the shared toStringSafe, trade ~45 lines of Object.assign styles for one ensureStyle, and add an optional AbortSignal so dialogs can be closed programmatically. Public signature, defaults and the `{value, button} | null` contract stay byte-for-byte compatible. It is wave 1 despite its length because it is the foundation both the idle dialog and the interactive table depend on."
+    },
+    {
+      "name": "if (typeof globalThis.showConfirmationDialog === 'undefined') {",
+      "kind": "statement",
+      "startLine": 20713,
+      "endLine": 20715,
+      "currentSignature": "if (typeof globalThis.showConfirmationDialog === 'undefined') { globalThis.showConfirmationDialog = showConfirmationDialog; }",
+      "currentReturns": "n/a (statement). The condition is always false: the top-level `function showConfirmationDialog` declaration at L20526 installs `globalThis.showConfirmationDialog` at script instantiation, before this statement executes, so the assignment never runs.",
+      "verdict": "remove-dead",
+      "proposedSignature": "none - delete the block",
+      "proposedReturns": "n/a",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "Nothing to emit: the V2 `function showConfirmationDialog` declaration keeps the global defined and eslint/generate-globals.mjs harvests it from the declaration (L25-27). If V2 were ever wrapped in an IIFE/module, a single `globalThis.showConfirmationDialog = showConfirmationDialog;` belongs in the compatibility-shims section.",
+      "duplicatesOf": [
+        "Same guard spelling at L15 (errorHandler) and L17633; the inverse `typeof globalThis !== 'undefined'` spelling at L6893, L17116 and L20313"
+      ],
+      "modernisations": [
+        "L20713: in a classic script, FunctionDeclaration bindings are created on the global object during script instantiation (before the first statement runs), so `typeof globalThis.showConfirmationDialog` is 'function' here and the body is unreachable.",
+        "The pattern only makes sense in a module or IIFE; V2 is a classic script per policy, so it is deleted."
+      ],
+      "behaviourRisks": [
+        "None: the block never executed, so removing it changes nothing observable; `globalThis.showConfirmationDialog` stays defined by the declaration and remains listed at L309 of eslint/knack-functions-globals.json."
+      ],
+      "knackPractice": "Not Knack-related; inert export guard.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 0,
+      "rationale": "Function hoisting makes the `typeof === 'undefined'` test false before the statement runs, so this is provably dead code rather than merely redundant. Deleting it has no consumer impact and no shim is needed because the declaration itself is the global."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "createModalDialog",
+      "purpose": "One accessible modal shell used by showConfirmationDialog and idleWatchDogTimeout (and later the Quill and bulk-action modals): creates overlay + dialog with role/aria-modal/aria-labelledby/tabindex, optional container wrapper, renders title/message/contentHtml/buttons with optional explicit ids and classes, saves and restores focus, wires Escape/overlay-click/AbortSignal closing, removes listeners and nodes once, and exposes both an imperative close() and a promise.",
+      "replaces": [
+        "idleWatchDogTimeout L20400-20453 (overlay/dialog/focus/cleanup)",
+        "idleWatchDogTimeout L20482-20495 (button wiring, resize listener)",
+        "showConfirmationDialog L20549-20710 (everything inside the Promise executor)"
+      ],
+      "signature": "createModalDialog({ overlayId?, dialogId?, titleId?, title, message?: string|string[], contentHtml?, buttons: Array<{ id?, text, className?, value?, action?, closeOnClick? }>, classes?: { overlay, container, dialog, title, message, content, buttons }, closeOnOverlay = true, closeOnEscape = true, signal?: AbortSignal }): { overlay: HTMLElement, dialog: HTMLElement, close(result?: object|null): void, result: Promise<{ value: string, button: object } | null> }"
+    },
+    {
+      "name": "performKnackLogout",
+      "purpose": "Idempotent logout used by the idle dialog and reusable by apps: calls Knack.user.destroy() inside try/catch reported via errorHandler, then after a short delay verifies `.kn-login` is on screen and otherwise retries once or reloads. Isolates the undocumented Knack internal in one place.",
+      "replaces": [
+        "idleWatchDogTimeout L20455-20467 (ensureLoggedOutFallback)",
+        "idleWatchDogTimeout L20469-20480 (performLogout)"
+      ],
+      "signature": "performKnackLogout({ fallbackDelayMs = 2000 } = {}): void"
+    },
+    {
+      "name": "writeClipboard",
+      "purpose": "Single clipboard writer with both MIME types and the legacy fallback: tries navigator.clipboard.write with ClipboardItem({text/html, text/plain}) (or writeText when only text is given), falls back to a Range selection + document.execCommand('copy'), always clears the selection, resolves true/false instead of throwing.",
+      "replaces": [
+        "copyViewBodyToClipboard L20293-20304",
+        "copyTextToClipboard L11362-11372 (outside this chunk)"
+      ],
+      "signature": "writeClipboard({ text?: string, html?: string, selectionSource?: Element }): Promise<boolean>"
+    },
+    {
+      "name": "getKnackViewType",
+      "purpose": "Replace the KTL dependency `ktl.views.getViewType(viewId)` with the Knack model lookup this file already uses inline at L16129, so view-type-aware helpers work when KTL is absent (unverified against live Knack docs; `Knack.views[viewId].model.view.type` is the field used throughout this file).",
+      "replaces": [
+        "copyViewBodyToClipboard L20236",
+        "redirectToPopUp L20869 (C26)",
+        "buttonToUrl L20909 (C26)",
+        "inline `view.model.view.type` at L16129"
+      ],
+      "signature": "getKnackViewType(viewRef: string|number|{key: string}): '' | 'table' | 'search' | 'details' | 'list' | 'form' | 'menu' | 'rich_text' | 'calendar' | 'map' | 'report' | 'login' | 'registration' | 'checkout' | 'divider' | 'image'"
+    },
+    {
+      "name": "ensureStyle (reuse of C01 primitive)",
+      "purpose": "Inject the default dialog styles, the idle-dialog zero-specificity defaults and the copy-button styles once by id instead of per-element Object.assign(style, ...) blocks.",
+      "replaces": [
+        "copyViewBodyToClipboard L20260-20263, L20270, L20282",
+        "idleWatchDogTimeout L20490-20495 (resize-driven width)",
+        "showConfirmationDialog L20568-20602, L20613-20618, L20626-20628, L20634-20642"
+      ],
+      "signature": "ensureStyle(id: string, cssText: string): HTMLStyleElement"
+    },
+    {
+      "name": "toStringSafe (reuse of C03 primitive)",
+      "purpose": "File-level string coercion so UI helpers stop depending on the knackValueResolver singleton.",
+      "replaces": [
+        "showConfirmationDialog L20532-20543 (eight calls)",
+        "showConfirmationDialog L20669-20674 (three calls)"
+      ],
+      "signature": "toStringSafe(value: unknown): string  // '' for null/undefined, String(value).trim() otherwise"
+    }
+  ],
+  "crossCuttingFindings": [
+    "globalThis export blocks: the file carries six of them in four spellings (L15 and L20713 `typeof globalThis.X === 'undefined'`; L6893, L17116, L20313 `typeof globalThis !== 'undefined'`; L17633 both). In a classic script every top-level declaration is already a global, and the `typeof globalThis.fn === 'undefined'` variants after a function declaration are provably dead (hoisting defines the property first). eslint/generate-globals.mjs harvests names from declarations (L25-27) as well as from explicit assignments (L51-61), so deleting all six blocks leaves knack-functions-globals.json unchanged. V2 should contain none; only the errorHandler fallback at L15 is a genuine conditional (it checks for an app-provided object) and C01 already covers it.",
+    "KTL coupling in this chunk: `ktl.views.getViewType` (L20236; also L20869, L20909 in C26), `ktl.core.hasRoleAccess` (L20254; 6 more sites L7860-L21388), `ktl.core.timedPopup` (L20289, L20299, L20301), `ktl.core.selectElementContents` (L20293, L20303), `ktl.scenes.resetIdleWatchdog` (L20486). Only hasRoleAccess and resetIdleWatchdog are semantically KTL's; getViewType has a Knack-model equivalent (L16129) and selectElementContents a native Range equivalent. Recommend V2 access KTL only through `globalThis.ktl?.` optional chains so helpers degrade to no-ops instead of ReferenceErrors when KTL is not loaded.",
+    "Three KTL keyword-handler shapes coexist in the KTL section (L20220 onward): `(view, keywords)` reading `keywords[kw][0].options` (copyViewBodyToClipboard L20231-20254, redirectToPopUp L20864); `({ key: viewId })` plus `ktl.core.getKeywordsByType(viewId, kw)` (setViewMaxWidth L20717-20723, hideEmptyFields L20759); and the field-keyword shape `(viewId, viewType, fieldId, { params })` (updateLabelText L20340). V2 should document which KTL callback each is registered under (processViewKeywords vs processFieldKeywords - unverified against live KTL docs) and keep the signatures, but route keyword lookup through one helper.",
+    "Ad-hoc modal/overlay implementations across the file with inconsistent stacking: idle overlay z-index 2010 (L20415), confirm overlay 2010 (L20577), Quill modal 99999 (L7326), datepicker 10050 (L8282), two uses of 2147483000 (L4792, L19733), bulk-action modal (L5139) with no z-index in JS. Propose a single `createModalDialog` primitive (this chunk) and a `Z_INDEX` constants object so overlays layer predictably over Knack's own `.kn-modal`.",
+    "Clipboard: copyTextToClipboard (L11361-11372) and copyViewBodyToClipboard (L20293-20304) each carry their own execCommand fallback with different cleanup; both should use the proposed `writeClipboard` primitive, and the deprecated execCommand path should exist only there.",
+    "Error reporting by console in this chunk - console.log for a configuration error (L20245), console.warn for a missing view (L20344) and for a failed logout (L20477), plus a silently swallowed catch at L20486 and a dead try/catch at L20463 - contradicts the policy's errorHandler.handle convention used elsewhere (e.g. L20216). Expect the same pattern in the other KTL-section chunks (C26).",
+    "`Knack.user.destroy()` (L20460, L20475) is the only use of an undocumented Knack Backbone internal for logout in the entire file; isolating it in `performKnackLogout` means a Knack change touches one function. The `.kn-login` class checks (L20392, L20458) are likewise undocumented but used consistently.",
+    "App-CSS-dependent DOM: `#ktl-idle-dialog`, `#ktl-idle-overlay`, `#ktl-idle-title`, `#ktl-idle-logout-btn`, `#ktl-idle-stay-btn`, `.ktl-dialog-buttons` and `.knackCopyBodyButton` are styled (or positioned, in the idle dialog's case - it has no position in JS at all) by consuming apps. These ids/classes are signature under the policy and must be emitted unchanged by V2; any V2 default styling for them must be zero-specificity (`:where()`).",
+    "Inline capitalisation at L20297 duplicates capitaliseString (L19442, C24, `(str, { allCaps = true })`); the `allCaps:false` branch should be checked before pointing other call sites at it.",
+    "updateLabelText's fuzzy type filter (L20361, first-character `includes`) is a latent bug that may be silently relied upon by GAP-Track/Spot keyword strings such as `[['Label'], ['details']]`; the migration notes need a grep of consuming apps for the `_lbl`-style keyword that drives it (keyword name not visible in this file - the handler is invoked by the app, so the keyword is defined app-side)."
+  ]
+}

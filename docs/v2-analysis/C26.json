@@ -1,0 +1,490 @@
+{
+  "chunkId": "C26",
+  "chunkSummary": "Lines 20717-21765 hold seven KTL keyword handlers (_vmxw setViewMaxWidth, hideEmptyFields, _hebv hideElementsByValue, _rtp redirectToPopUp with its two helpers getRedirectToPopUpConfig/bindRedirectToPopUpCloseButtons, _btnurl buttonToUrl), two one-line factory wrappers (caQuickToggle, caMultiChoiceQuickToggle) and two quick-toggle controller classes (CAQuickToggle for boolean fields, 330 lines, jQuery-heavy; CAMultiChoiceQuickToggle for two-option multiple-choice fields, 438 lines, already native DOM). None of the eleven globals is called from inside the file (except the two wrappers calling their classes), so all are consumed by apps and must keep their names and signatures; no shims are needed because every proposed change keeps the signature. The small handlers are wave-1 jQuery removals with two real bugs to decide on: buttonToUrl reads `linkSelector` before its `const` declaration (20929 vs 20935, a TDZ ReferenceError for any user without role access) and hard-codes the app field `td.field_6087` (20952); hideElementsByValue calls `borderRadiusLastVisible()` without a viewId (20776) so the call is always a no-op. The two classes duplicate their whole lifecycle (constructor state, init, isValidInitialState, setupViewModel, startQtScanning, doQuickToggle, showProgress) and share a latent bug: after one failed PUT the failed entry stays in `quickToggleObj` with processed=true, so the 500 ms interval never advances and every later click on that view is silently queued forever (21307-21313, 21727-21733). V2 should extract a shared QuickToggleController base (async serial queue instead of setInterval polling, knackNavigator.getViewObject instead of Knack.router.scene_view.model.views._byId) and port both classes on top of it in wave 2, as the policy assigns quick toggles.",
+  "functions": [
+    {
+      "name": "setViewMaxWidth",
+      "kind": "function",
+      "startLine": 20717,
+      "endLine": 20742,
+      "currentSignature": "setViewMaxWidth({ key: viewId })",
+      "currentReturns": "undefined (side effect: sets inline max-width on #viewId)",
+      "verdict": "modernise",
+      "proposedSignature": "setViewMaxWidth({ key: viewId })",
+      "proposedReturns": "undefined (same inline style side effect)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L20719/L20740: replace `$(`#${viewId}`).css('max-width', maxWidth)` with `document.getElementById(viewId)?.style.setProperty('max-width', maxWidth)`; bail out early when the element is missing instead of calling .css on an empty collection.",
+        "L20725: `params[0][0]` throws TypeError when the keyword has no parameter group (e.g. a bare `_vmxw`); read `const width = String(params?.[0]?.[0] ?? '').trim()` and return with a console/errorHandler message when empty.",
+        "L20729-20738: the inner `if (!isNaN(parsedWidth))` at L20732 is always true because the outer condition already returned for NaN, so the else branch at L20734-20737 is unreachable; collapse to `const maxWidth = /^\\d+(\\.\\d+)?$/.test(width) ? `${width}px` : width;`.",
+        "L20729: `width.includes('%') || width.includes('px')` does not cover em/rem/vw/calc(); treating any non-pure-number as a literal CSS length (above) covers them without listing units.",
+        "L20720-20723: iterate keyword instances via the proposed shared `forEachKeywordInstance(viewId, '_vmxw', ...)` which applies `ktl.core.hasRoleAccess` once, like hideElementsByValue and buttonToUrl do.",
+        "Add JSDoc (none today) documenting `_vmxw=600` and `_vmxw=80%` forms.",
+        "Note the signature is inconsistent with sibling handlers: it takes only the view and does not accept `keywords`, relying on `ktl.core.getKeywordsByType` returning [] (keep the signature; document it)."
+      ],
+      "behaviourRisks": [
+        "jQuery `.css('max-width', '600px')` and `el.style.maxWidth = '600px'` are equivalent, but `.css()` silently ignores invalid values whereas setProperty also ignores them; neither throws, so parity holds.",
+        "If several `_vmxw` instances exist the last one wins today (L20722 loop overwrites); keep loop order.",
+        "An invalid numeric-looking value such as '12abc' is currently passed through verbatim (parseFloat gives 12, string includes neither % nor px, so maxWidth = '12abc'); keep passing through rather than inventing validation."
+      ],
+      "knackPractice": "Follows the KTL keyword model (view description keyword parsed by `ktl.core.getKeywordsByType`, role gating via `ktl.core.hasRoleAccess`). Consumers call it from their `knack-view-render` listener with the Knack `view` object; DOM lookup by `#view_x` is the documented view root convention. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 14,
+      "rationale": "Twenty-six-line handler whose only jQuery use is one `.css()` call; it contains an unreachable else branch (L20732-20737) and an unguarded `params[0][0]` that throws on a bare keyword. Rewriting to native style setting with a single regex test halves the body without changing the signature or the inline-style side effect."
+    },
+    {
+      "name": "hideEmptyFields",
+      "kind": "function",
+      "startLine": 20744,
+      "endLine": 20751,
+      "currentSignature": "hideEmptyFields(view)",
+      "currentReturns": "undefined (side effect: removes `.kn-detail-body` elements whose trimmed text is empty from the DOM)",
+      "verdict": "modernise",
+      "proposedSignature": "hideEmptyFields(view)",
+      "proposedReturns": "undefined (same DOM removal side effect)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L20746-20750: replace `$(...).each(function () { if ($.trim($(this).text()) === '') removeElement(this); })` with `document.querySelectorAll(`#${view.key} .kn-detail-body`).forEach((body) => { if (!body.textContent.trim()) body.remove(); })`; `$.trim` is deprecated since jQuery 3.5.",
+        "L20748: drop the `removeElement` indirection (L9618, a jQuery wrapper that V2 implementation code must not call) in favour of `Element.remove()`.",
+        "Destructure `{ key: viewId }` in the parameter like its siblings and guard `if (!viewId) return;` so a missing view does not query `#undefined .kn-detail-body`.",
+        "Move the L20745 inline comment ('used when label still needed but don't want extra space...') into JSDoc; note the function REMOVES the body (not display:none) despite its name."
+      ],
+      "behaviourRisks": [
+        "Only the `.kn-detail-body` is removed; the sibling `.kn-detail-label` stays (that is the stated intent at L20745). A rewrite must not remove the whole `.kn-detail` wrapper.",
+        "jQuery `.text()` on one element equals `textContent`, so bodies that contain only images/icons/empty links are removed today and must still be removed (textContent is empty for them).",
+        "Removal is permanent for the render; Knack re-creates the details view on the next render event so consumers re-run it. Do not switch to `hidden`/display:none without a policy decision because CSS in apps may rely on the element being absent (e.g. `:empty` or sibling selectors)."
+      ],
+      "knackPractice": "Operates on the documented details-view DOM (`.kn-detail .kn-detail-body`) scoped to `#view_x`, and is re-run by consumers on `knack-view-render`, which matches the Knack re-render model. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 8,
+      "rationale": "Eight lines of old-style jQuery (`$.trim`, `.each(function)`, `removeElement`) with a direct one-to-one native equivalent and no signature impact. The name/behaviour mismatch (hide vs remove) is worth documenting but not changing."
+    },
+    {
+      "name": "hideElementsByValue",
+      "kind": "function",
+      "startLine": 20754,
+      "endLine": 20780,
+      "currentSignature": "hideElementsByValue(view, keywords)",
+      "currentReturns": "undefined (side effect: jQuery .hide() on the selectors listed in params[2..])",
+      "verdict": "modernise",
+      "proposedSignature": "hideElementsByValue(view, keywords)",
+      "proposedReturns": "undefined (same inline display:none side effect)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L20768: `$(`.${fieldId} .kn-detail-body`).text()` is not scoped to the view; when the same field appears in two rendered views jQuery concatenates both texts and the comparison silently fails. Scope to `#${viewId} .${fieldId} .kn-detail-body` (flagged as a behaviour decision below).",
+        "L20768: `$.trim(...)` (deprecated) -> `element?.textContent.trim() ?? ''`.",
+        "L20775: `$(elesToHide.join()).hide()` -> `document.querySelectorAll(elesToHide.join(',')).forEach((el) => { el.style.display = 'none'; })`; make the implicit `join()` separator explicit.",
+        "L20776: `borderRadiusLastVisible()` is called with no arguments but its signature is `(viewId, delay)` (L18402) and it returns immediately when `document.getElementById(undefined)` is null, so the call is a no-op today. Either remove it (strict parity) or pass `viewId` (fixes the intended menu styling) - decide with the app owners.",
+        "L20759-20765: use the shared `forEachKeywordInstance(viewId, '_hebv', ({ params }) => ...)` primitive for role gating and param-group iteration; keep the `params.length < 3` guard.",
+        "L20770-20772: keep the `!value` negation syntax, but hoist it into a tiny `matchesKeywordValue(actual, expected)` helper that buttonToUrl/others could reuse.",
+        "Add JSDoc (currently only the L20753 one-line comment describes the parameter layout)."
+      ],
+      "behaviourRisks": [
+        "Scoping the field lookup to the view changes behaviour when the field exists only in another view on the page (today it would match that other view's text); treat scoping as an intentional fix and record it in the changelog.",
+        "jQuery `.hide()` records the previous display value in jQuery data so a later `$(sel).show()` in an app restores it; a native `style.display='none'` still works with jQuery `.show()` (jQuery clears the inline value and falls back to the default display), but any app code that reads `$(el).data()` internals would differ - unlikely.",
+        "`.hide()` on a selector list that contains an invalid selector throws a jQuery syntax error; `querySelectorAll` throws a DOMException instead. Wrap in try/catch and report via errorHandler rather than aborting the remaining param groups.",
+        "If `borderRadiusLastVisible(viewId)` is made to actually run, menu link border radii will change visibly in apps using `_hebv` on menu views."
+      ],
+      "knackPractice": "KTL keyword handler driven by the view description; reads a details-view field value from the DOM (`.field_x .kn-detail-body`) rather than from the render event's `data` argument, which is the less robust pattern. A V2 could read `data[fieldId]` when consumers pass it, but the current (view, keywords) signature does not receive data, so DOM reading stays. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 24,
+      "rationale": "Straightforward jQuery removal (three calls), but the body hides two latent defects: an unscoped selector that concatenates text across views and a `borderRadiusLastVisible()` call that can never do anything. Both need an explicit decision, so the risk is medium even though the code is short."
+    },
+    {
+      "name": "getRedirectToPopUpConfig",
+      "kind": "function",
+      "startLine": 20788,
+      "endLine": 20814,
+      "currentSignature": "getRedirectToPopUpConfig(keywordEntries = [])",
+      "currentReturns": "{ redirectOnClose: boolean, sceneToIgnore: string }",
+      "verdict": "simplify",
+      "proposedSignature": "getRedirectToPopUpConfig(keywordEntries = [])",
+      "proposedReturns": "{ redirectOnClose: boolean, sceneToIgnore: string }",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L20805: the `if (lowerCaseParam === 'true') return;` branch is redundant - 'true' matches neither the 'false' nor the 'scene_' test, so falling through has the same effect. Remove it.",
+        "L20794-20811: flatten the nested forEach into one pass: `const params = keywordEntries.flatMap((entry) => (entry?.params ?? []).flat()).map((p) => String(p ?? '').trim().toLowerCase()).filter(Boolean);` then `redirectOnClose = !params.includes('false')` and `sceneToIgnore = params.findLast?.((p) => p.startsWith('scene_')) ?? ''` (last one wins, as today).",
+        "L20808: `sceneToIgnore` keeps the original-case value today (`normalisedParam`), but scene keys are always lower-case `scene_123`, so normalising is safe; keep the original-case assignment if strict parity is preferred.",
+        "Pure function with no DOM access: add a node:test unit test (true/false/scene_1234/mixed params) in tests/ alongside truncateColumnsInGrid.test.cjs."
+      ],
+      "behaviourRisks": [
+        "`String(param || '')` at L20796 turns a numeric 0 into ''; `String(param ?? '')` would keep '0'. Neither value is meaningful for `_rtp`, so either is fine, but do not accidentally change which falsy values are dropped.",
+        "Multiple `scene_` params: the last one wins today (L20808 overwrites). Preserve that ordering."
+      ],
+      "knackPractice": "Pure parser for KTL keyword parameter groups (`{ params: [[...]] }` shape produced by KTL); no Knack API involvement. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 14,
+      "rationale": "Already modern (defaults, destructuring, JSDoc) but can lose a dead branch and a nesting level while keeping the exact return shape. It travels with redirectToPopUp, which is wave 1."
+    },
+    {
+      "name": "bindRedirectToPopUpCloseButtons",
+      "kind": "function",
+      "startLine": 20827,
+      "endLine": 20849,
+      "currentSignature": "bindRedirectToPopUpCloseButtons({ viewId, parentUrl, closeRedirectSelector, shouldSkipRedirect })",
+      "currentReturns": "undefined (side effect: capture-phase click listeners on modal close buttons, `data-rtp-close-bound=<viewId>` marker)",
+      "verdict": "keep",
+      "proposedSignature": "bindRedirectToPopUpCloseButtons({ viewId, parentUrl, closeRedirectSelector, shouldSkipRedirect = () => false })",
+      "proposedReturns": "undefined (same listeners and data attribute)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "handleRedirect L18611-18628: its `knack-scene-render`/`knack-view-render` branch (L18620-18627) binds `{ once: true }` click listeners on the very same selector without the capture flag or the data-attribute guard; it is an older duplicate of this helper."
+      ],
+      "modernisations": [
+        "L20831: give `shouldSkipRedirect` a default `() => false` so a caller omitting it does not throw inside the click handler.",
+        "L20836-20838: the guard `dataset.rtpCloseBound === viewId` only prevents double binding by the SAME view; two `_rtp` views rendered inside one modal each add a capture listener to the same button, producing two `handleRedirect` calls (two 300 ms timeouts to the same URL). Store a Set of bound view ids on the element via a module-level WeakMap, or bind once per button and look up the active config.",
+        "L20846: `handleRedirect(event, parentUrl)` is only used for its 'click' branch here (a 300 ms `location.href` assignment, L18614-18617); consider calling a shared `redirectAfterDelay(url)` so the dependency on handleRedirect's event-type switch disappears.",
+        "L20835: `closeButtons.forEach` -> `for (const button of ...)` for consistency with other V2 loops (cosmetic)."
+      ],
+      "behaviourRisks": [
+        "The capture-phase listener plus `stopImmediatePropagation()` (L20843-20844) deliberately prevents Knack's own close handler from closing the modal before the redirect; replacing capture with bubble, or with a jQuery `.on`, would reintroduce the race described in the L20816-20819 JSDoc.",
+        "The `data-rtp-close-bound` attribute is observable DOM state; apps or tests could depend on it, so keep the attribute name and value.",
+        "`parentUrl` is captured at bind time; if the hash changes while the modal stays open (nested modal navigation) the redirect goes to the original parent - current behaviour, keep."
+      ],
+      "knackPractice": "Works against Knack's modal DOM (`.kn-modal .close-modal`) and intercepts the close click before Knack's Backbone handler, which is fighting Knack's lifecycle slightly but intentionally. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 22,
+      "rationale": "Native DOM, dataset guard, capture-phase listener and JSDoc: already matches the V2 targets. The only changes worth making are a default for `shouldSkipRedirect` and tightening the double-bind guard, neither of which alters the signature."
+    },
+    {
+      "name": "redirectToPopUp",
+      "kind": "function",
+      "startLine": 20864,
+      "endLine": 20903,
+      "currentSignature": "redirectToPopUp(view, keywords)",
+      "currentReturns": "undefined (side effects: binds/unbinds jQuery `knack-form-submit.<viewId>.rtp` on document; binds close-button listeners via bindRedirectToPopUpCloseButtons)",
+      "verdict": "simplify",
+      "proposedSignature": "redirectToPopUp(view, keywords)",
+      "proposedReturns": "undefined (same event bindings)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L20872-20873 and L20897-20898: `$(document).off('knack-form-submit.<viewId>.rtp')` is executed twice; keep only the first (it must run before the early returns at L20875/L20879/L20884 so a stale handler is cleared when the modal is gone) and chain `.on` directly after it, or keep one `.off().on()` pair after the guards and accept that stale handlers stay bound until the next render.",
+        "L20869: `ktl.views.getViewType(viewId)` is computed before the `.kn-modal` guard at L20875; move it next to its only use at L20895.",
+        "L20882: `shouldSkipRedirect` returns `'' | Element | null` rather than a boolean; return `Boolean(sceneToIgnore && document.getElementById(`kn-${sceneToIgnore}`))` to match the JSDoc 'predicate' contract passed to bindRedirectToPopUpCloseButtons.",
+        "L20868: use `knackNavigator.normalizeViewId(view?.key)` and return early when empty, like copyViewBodyToClipboard (L20233) does.",
+        "L20877: `ktl.core.findParentURL(sanitiseURL(window.location.href), 1)`: keep, but note sanitiseURL (L18878) only strips the query string.",
+        "L20897-20902: bind through the policy-mandated `onKnackEvent(\"knack-form-submit\", viewId, handler, { namespace: \"rtp\" })` primitive (jQuery exception 1: Knack fires lifecycle events with jQuery trigger, so native addEventListener never sees them); no other jQuery remains in this function."
+      ],
+      "behaviourRisks": [
+        "`knack-form-submit` is a jQuery-triggered event; native `document.addEventListener(\"knack-form-submit\", ...)` does NOT fire for jQuery `.trigger()`. This is policy exception 1, so the binding goes through `onKnackEvent` (which wraps `$(document).off/on` with the `.rtp` namespace) and must keep namespaced unbinding so re-renders do not stack handlers.",
+        "The redirect itself is a 300 ms delayed `window.location.href` assignment inside handleRedirect (L18614-18617); shortening or removing the delay changes how Knack's submit confirmation and modal close interleave.",
+        "Early return at L20875 when no `.kn-modal` exists means `_rtp` on a non-modal page does nothing; keep that behaviour (apps rely on being able to put `_rtp` on a view used both inline and in a modal).",
+        "L20884: when the ignore scene is present at render time the function returns BEFORE binding the form-submit handler, so submits in that state never redirect; preserve this ordering."
+      ],
+      "knackPractice": "Uses Knack's documented `knack-form-submit.view_x` jQuery event and modal DOM, plus KTL helpers for view type and parent URL. Namespaced `.off/.on` on each render is the correct pattern for Knack's re-render model. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 30,
+      "rationale": "Recent (2026-07 changelog) and mostly modern; the only cleanup is a duplicated `.off`, a mis-typed predicate and ordering of early returns. Risk is medium because every change here affects navigation timing in modals, but the jQuery event binding is mandatory and the signature is untouched."
+    },
+    {
+      "name": "buttonToUrl",
+      "kind": "function",
+      "startLine": 20905,
+      "endLine": 20970,
+      "currentSignature": "buttonToUrl({ key: viewId }, keywords)",
+      "currentReturns": "undefined (side effects: rebinds click handlers on matching `<a>`/`<li>` elements, removes them for users without role access; throws ReferenceError in the no-access branch today)",
+      "verdict": "modernise",
+      "proposedSignature": "buttonToUrl({ key: viewId }, keywords)",
+      "proposedReturns": "undefined (same click-handler and removal side effects, no throw)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "BUG L20929 vs L20935: `removeElement(viewElement.find(linkSelector))` reads `linkSelector` before its `const` declaration in the same block, so any user WITHOUT role access triggers `ReferenceError: Cannot access 'linkSelector' before initialization`, which escapes the forEach and aborts the caller's render handler. Compute `linkText`/`linkSelector` first, then do the role check and removal.",
+        "BUG/APP COUPLING L20952: `row.find('td.field_6087')` hard-codes a consuming app's field id to read the record id; use the Knack row id (`tr#<recordId>`, i.e. `row.attr('id')`/`row.id`) or accept the field id as a keyword param. The library must not carry app field ids.",
+        "L20935: `li:textEquals(\"...\")`/`a:textEquals(\"...\")` relies on the jQuery pseudo-selector defined at L6996; under the updated policy the `:textEquals` pseudo-selector survives only as a compatibility shim for app code, so the V2 implementation must use the native exact-text matcher (`[...root.querySelectorAll(tag)].filter((el) => el.textContent.replace(\"*\", \"\").trim() === linkText)`, i.e. the canonical getElementByText/findElementByText primitive chosen in the dedupe chunk).",
+        "L20947: `linkElement.off('click').on('click', ...)` removes EVERY jQuery click handler on the element, including Knack's; in V2 use a `data-btnurl-bound` guard plus `addEventListener` and `event.preventDefault()` so other handlers are untouched (see risks).",
+        "L20951: `getTableRows(viewId, (i, row) => ...)` is a jQuery callback helper (L13791); iterate `root.querySelectorAll('tbody tr:not(.kn-table-group)')` directly.",
+        "L20911: stray 12-space indentation; L20918/L20924/L20944: console.error -> `errorHandler.handle(new Error(...), { viewId, params }, 'buttonToUrl')`.",
+        "L20934: `isChildPageParam`/`urlPartParam` are ignored for table/search views; document that or honour them for parity across view types.",
+        "L20963: `getRecordID(urlPart)` expects a numeric offset (`parts[parts.length - part]`, L18835-18840) but receives a keyword string; coerce with `Number(urlPartParam) || null` and document the parameter as 'URL part offset from the end'.",
+        "Split the body into `resolveButtonTargetUrl({ viewType, currentUrl, pageUrl, isChildPage, urlPart, recordId })` (pure, unit-testable) and the DOM binding loop.",
+        "Add JSDoc describing `_btnurl=[Link text, page-slug, isChildPage, urlPart]` and the per-view-type behaviour (menu -> li, table/search -> per-row a, others -> a).",
+        "Zero jQuery in the V2 body (policy rule): `viewElement.find`, `getTableRows` callback rows, `removeElement` and `.off/.on` at L20913, L20929, L20947, L20951-20953, L20959 all become native querySelectorAll/closest/remove/addEventListener; `removeElement` is itself a jQuery wrapper (L9618) and should not be called from V2 implementation code."
+      ],
+      "behaviourRisks": [
+        "Fixing the L20929 TDZ bug changes observable behaviour for unauthorised users: today the handler throws (and the link stays, possibly still working); after the fix the link is removed as intended. Record in the changelog.",
+        "Replacing `td.field_6087` with the row id changes the URL for the app that relied on that column holding the Knack record id only if the two differ; confirm with the GAP-Track/Spot owners before switching.",
+        "`.off('click')` today also strips Knack's own click handlers on the matched element (for menu `<li>` items Knack binds on the inner `<a>` via href, so usually nothing is lost); a native listener plus preventDefault keeps Knack's handlers but cancels navigation - verify menu links still do not double-navigate.",
+        "`:textEquals` strips a literal '*' (required marker) and trims before comparing (L6998); the native replacement must do the same or links whose text ends in '*' stop matching.",
+        "The `['list','form'].includes(viewType)` early return (L20911) and `['table','search']` row branch (L20950) define which view types are supported; keep both lists.",
+        "`currentUrl` is the full href including hash, so `targetUrl` depends on the hash ending in '/'; keep the string assembly exactly."
+      ],
+      "knackPractice": "Fights Knack's routing by assigning `window.location.href` inside click handlers instead of `Knack.router.navigate`; works because Knack hash routing picks up the change. Uses the KTL keyword/role model correctly but reads record ids from an app-specific column instead of Knack's `tr[id]` convention. Unverified against live docs.",
+      "risk": "high",
+      "wave": 2,
+      "estimatedV2Lines": 55,
+      "rationale": "Sixty-six lines of jQuery with a TDZ ReferenceError on the no-access path, an app-specific field id, a jQuery-only pseudo-selector and `.off('click')` semantics that a native rewrite cannot reproduce exactly. The rewrite is mechanical but every fix is a visible behaviour change for consuming apps, hence high risk and wave 2 despite the small size."
+    },
+    {
+      "name": "caQuickToggle",
+      "kind": "function",
+      "startLine": 20972,
+      "endLine": 20976,
+      "currentSignature": "caQuickToggle({ key: viewId }, data = [])",
+      "currentReturns": "undefined (constructs CAQuickToggle and calls init(); instance is not returned)",
+      "verdict": "keep",
+      "proposedSignature": "caQuickToggle({ key: viewId }, data = [])",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "caMultiChoiceQuickToggle L20985-20988 is the same two-line factory for the sibling class; both could delegate to one `initQuickToggle(ControllerClass, view, data)` helper."
+      ],
+      "modernisations": [
+        "L20974-20975: collapse to `new CAQuickToggle(viewId, data).init();` and drop the shadowing local variable named like the function.",
+        "Add JSDoc matching caMultiChoiceQuickToggle (L20978-20984).",
+        "Because the instance is discarded, `quickToggleParams.showNotification/showSpinner` (L21007-21008) can never be switched on through this entry point; consider returning the instance (additive, still compatible with callers ignoring the return) or documenting that the options are internal."
+      ],
+      "behaviourRisks": [
+        "Returning the instance would change `currentReturns` from undefined to CAQuickToggle; harmless for existing callers but technically a return-type change - only do it if the team agrees it is additive."
+      ],
+      "knackPractice": "Entry point consumers call from `knack-view-render.view_x`/`knack-records-render` with `(view, data)`, matching Knack's render-event signature. Unverified against live docs.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 4,
+      "rationale": "A two-statement factory; nothing to modernise beyond a one-liner and JSDoc. It ships with its class in wave 2."
+    },
+    {
+      "name": "caMultiChoiceQuickToggle",
+      "kind": "function",
+      "startLine": 20985,
+      "endLine": 20988,
+      "currentSignature": "caMultiChoiceQuickToggle({ key: viewId }, data = [])",
+      "currentReturns": "undefined (constructs CAMultiChoiceQuickToggle and calls init(); instance is not returned)",
+      "verdict": "keep",
+      "proposedSignature": "caMultiChoiceQuickToggle({ key: viewId }, data = [])",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "caQuickToggle L20972-20976 (same factory shape)."
+      ],
+      "modernisations": [
+        "L20986-20987: collapse to `new CAMultiChoiceQuickToggle(viewId, data).init();`.",
+        "Share one `initQuickToggle(ControllerClass, view, data)` helper with caQuickToggle if both remain."
+      ],
+      "behaviourRisks": [
+        "None beyond those of the class it constructs."
+      ],
+      "knackPractice": "Same render-event entry-point pattern as caQuickToggle. Unverified against live docs.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 4,
+      "rationale": "Already has JSDoc and a default parameter; only a cosmetic one-liner is possible. Ships with its class in wave 2."
+    },
+    {
+      "name": "CAQuickToggle",
+      "kind": "class",
+      "startLine": 20990,
+      "endLine": 21319,
+      "currentSignature": "class CAQuickToggle { constructor(viewId, data); init(); isValidInitialState(); setupKeywordInstances(); setupViewModel(); setupColors(); processFields(); updateTableColors(); setupCellClickHandlers(); handleCellClick(e); findCorrespondingField(fieldId, value); startQtScanning(); doQuickToggle(dt); showProgress() }",
+      "currentReturns": "init/setupColors/processFields/updateTableColors/setupCellClickHandlers/handleCellClick/startQtScanning/doQuickToggle/showProgress -> undefined; isValidInitialState -> truthy/falsy (string|boolean, not coerced); setupKeywordInstances/setupViewModel -> boolean; findCorrespondingField -> {[fieldId]: string|null}|null. Side effects: adds `caQtCellClickable` class to editable boolean cells, appends `background-color` to each cell's style attribute, sets `ktlProgress` class + pending colour on click, PUTs via getKnackApiClient().updateRecord, pauses/resumes ktl.views.autoRefresh, refreshes views via ktl.views.refreshViewArray, alert() on failure.",
+      "verdict": "modernise",
+      "proposedSignature": "class CAQuickToggle extends QuickToggleController { constructor(viewId, data); init(); isValidInitialState(); setupKeywordInstances(); setupViewModel(); setupColors(); processFields(); updateTableColors(); setupCellClickHandlers(); handleCellClick(e); findCorrespondingField(fieldId, value); startQtScanning(); doQuickToggle(dt); showProgress() } - same public method names; lifecycle methods inherited from the shared base.",
+      "proposedReturns": "Same per-method return types; isValidInitialState coerced to boolean (additive tightening).",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "CAMultiChoiceQuickToggle: constructor state L20991-21018 vs L21330-21353; init L21020-21041 vs L21359-21369; isValidInitialState L21043-21046 vs L21375-21377; setupViewModel L21072-21087 vs L21399-21412; startQtScanning L21244-21263 vs L21658-21677; doQuickToggle L21265-21314 vs L21684-21734 (identical except log strings and `additionalData`); showProgress L21316-21318 vs L21740-21742."
+      ],
+      "modernisations": [
+        "Policy rule: the V2 class body contains no jQuery at all - every `$()` at L21148, L21158, L21162-21167, L21175, L21179, L21183-21184, L21189, L21198-21202, L21254, L21267, L21288 is replaced with native DOM/Object helpers; none of the three jQuery exceptions (Knack lifecycle events, Chosen, jQuery UI pickers) applies here because cell clicks are ordinary DOM events.",
+        "Extract the duplicated lifecycle into a shared `QuickToggleController` base (see sharedPrimitivesProposed) and keep CAQuickToggle as the boolean specialisation (setupColors, processFields, findCorrespondingField, resolveNextValue).",
+        "L21073: `Knack.router.scene_view.model.views._byId[this.viewId]` reaches into Backbone private internals; use `knackNavigator.getViewObject(viewId)` (L176-199) which already falls back across scenes and is cached. Note getViewObject returns the attributes object, so `.attributes` reads at L21076/L21114 drop.",
+        "L21050: `ktlKeywords[this.viewId] && ktlKeywords[this.viewId][this.kw]` -> `ktlKeywords?.[viewId]?.[kw]?.[0]`.",
+        "L21057-21067: compute `hasOriginalQtKeyword` first and return before evaluating `hasCAQtKeyword`; replace the console.log at L21062 with a single console.warn or drop it.",
+        "L21082-21084: coerce `inlineEditing` with Boolean() as CAMultiChoiceQuickToggle does (L21407-21409).",
+        "L21113-21155: five levels of nesting -> early `return`s per column (`if (col.type !== 'field' || !col.field?.key) return; if (col.connection) return; ...`), `const fieldKeywords` instead of `let`, and move `this.fieldMap.set` (L21152) to the top of the loop so it is obviously independent of the boolean check.",
+        "L21148: `$(...).addClass('caQtCellClickable')` -> `root.querySelectorAll(`td.${fieldId}.cell-edit`).forEach((td) => td.classList.add('caQtCellClickable'))` with `root` resolved once.",
+        "L21157-21171 updateTableColors: stop string-appending to the `style` attribute (`cell.attr('style', currentStyle + '; ' + style)` grows the attribute with duplicate declarations every time the handler runs on the same render); set `cell.style.backgroundColor` like L21542. Replace `$.isEmptyObject` with `Object.keys(...).length`.",
+        "L21175: `$.fn.bindFirst` is not defined in this file or repo (only used here; presumably supplied by KTL) -> `cell.addEventListener('click', handler, true)` (capture phase runs before Knack's bubbling/delegated handlers) with a `dataset.caqtBound` guard like L21560-21561.",
+        "L21179: `$('.bulkEditCb:checked').length` -> `document.querySelector('.bulkEditCb:checked')`; L21183: `$(e.target).data('field-key')` -> `e.target.closest('td')?.dataset.fieldKey`; L21184-21189: `.closest()`/`.attr('id')` -> native closest/id; L21191: `value = (value === true ? false : true)` -> `const nextValue = record?.[`${fieldId}_raw`] !== true;` with a `record` null guard (L21190 throws when getDataFromRecId returns undefined).",
+        "L21198-21203: `cell.css(...)`/`addClass` -> `style.backgroundColor` / `classList.add`.",
+        "L21244-21263 startQtScanning + L21265-21314 doQuickToggle: replace the 500 ms `setInterval` polling of an object keyed by `Date.now()` (two clicks in the same millisecond overwrite each other, L21196) with an array queue drained by one async loop (`for (const job of queue) await apiClient.updateRecord(...)`), `async/await` instead of `.then/.catch`.",
+        "BUG L21307-21313: on a failed PUT the job is left in `quickToggleObj` with `processed: true`, the interval keeps running and `Object.keys(this.quickToggleObj)[0]` always returns the failed job, so every later click on that view is queued forever until reload; also `numToProcess` is never decremented and `autoRefresh` is re-enabled while the interval still runs. The async queue must `finally` remove the job and continue.",
+        "L21303: `.catch(() => { })` swallows refreshViewArray failures and leaves `Knack.showSpinner()` visible when `showSpinner` is on; report via errorHandler and always `hideSpinner()`/`autoRefresh()` in `finally`.",
+        "L21309-21312: `JSON.stringify(reason)` of an Error yields '{}'; use `reason?.message ?? String(reason)`. `errorHandler.handleError(...)` -> the policy's `errorHandler.handle(err, { viewId, fieldId, recId }, 'CAQuickToggle.doQuickToggle')` (fallback at L15-35 defines both names; app-configured handlers may not).",
+        "L21004-21009 / L21341-21346: hoist the hard-coded `#e2efda`/`#ffb557`/`#ffe699`/'ktlProgress' defaults into one shared frozen `QUICK_TOGGLE_DEFAULTS` constant.",
+        "L21218-21242 findCorrespondingField: `header.startsWith(`${fieldTitle} `)` false-positives on headers like 'Done Date' for a 'Done' toggle; tighten to `=== fieldTitle` or `=== `${fieldTitle} - Name`` plus an explicit documented suffix list, and document that this writes the current user's id/name into the sibling column (app convention baked into the library).",
+        "Add JSDoc to every method (class has none)."
+      ],
+      "behaviourRisks": [
+        "`bindFirst` (L21175) makes the toggle handler run before Knack's inline-edit click handler and `e.stopImmediatePropagation()` (L21181) then prevents the inline editor opening; a native capture-phase listener achieves the same ordering, but a bubbling listener would let Knack's editor open first - must use capture.",
+        "Class names `caQtCellClickable` (L21148, L21175) and `ktlProgress` (L21009) and the pending colour are observable DOM state that app CSS may style; keep them exactly.",
+        "Appending to the `style` attribute (L21167) vs setting `style.backgroundColor`: setting the property replaces an existing background-color on the cell (e.g. one set by another keyword) instead of appending a later declaration that wins anyway - net visual result is the same, but inspect apps that also colour these cells.",
+        "The 500 ms interval acts as crude rate limiting (max 2 PUTs/s against Knack's ~10 req/s limit); a sequential async queue without an artificial delay is still serial, but if KnackAPI retries are added later, bursts could hit 429s.",
+        "`ktl.views.autoRefresh(false)` / `autoRefresh()` pause and resume KTL's auto-refresh; the resume must happen on every exit path or views stop refreshing.",
+        "`findCorrespondingField` writes `Knack.getUserAttributes().id` or `.name` into a sibling field purely by header-name convention; any change to the matching rules changes which records get stamped.",
+        "`alert()` on failure (L21312) is blocking but is the user-visible error contract today; replacing it with a non-blocking message is a UX change to agree with the apps.",
+        "The `_qt` co-existence guard (L21060-21064) must stay or views carrying both KTL `_qt` and `_caqt` would double-toggle.",
+        "The `data` argument is the render event's records array (`row[fieldId + '_raw'] === true`, L21164); rows missing `_raw` are coloured as false today."
+      ],
+      "knackPractice": "Uses Knack's documented pieces (view-based `updateRecord` through KnackAPI, `Knack.objects.getField`, `Knack.getUserAttributes`, `Knack.showSpinner/hideSpinner`, `tr[id]`/`td.field_x` DOM) but reads the view model through the undocumented `Knack.router.scene_view.model.views._byId`, and relies on KTL (`ktlKeywords`, `ktl.views.getDataFromRecId`, `ktl.views.refreshViewArray`, `ktl.views.autoRefresh`, `ktl.core.infoPopup`) for data and refresh. Intercepting the cell click ahead of Knack's inline editor is intentionally fighting Knack's own inline-edit flow. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 130,
+      "rationale": "A 330-line, 2026-06 class that mixes jQuery and native DOM, duplicates roughly 150 lines with CAMultiChoiceQuickToggle and polls a Date.now()-keyed object with setInterval. Porting it onto a shared async-queue base removes the jQuery, the `bindFirst` plugin dependency and the stuck-queue-after-failure bug without touching the public class or method names. It writes records, so the policy's wave-2 'quick toggles' assignment and medium risk apply."
+    },
+    {
+      "name": "CAMultiChoiceQuickToggle",
+      "kind": "class",
+      "startLine": 21324,
+      "endLine": 21761,
+      "currentSignature": "class CAMultiChoiceQuickToggle { constructor(viewId, data); init(); isValidInitialState(); setupKeywordInstances(); setupViewModel(); processFields(); extractViewTargets(keywordInstance); resolveFieldColours(fieldKeywordInstances); matchesViewTarget(fieldId, headerText); resolveToggleChoices(fieldId); updateTableColors(); setupCellClickHandlers(); handleCellClick(e); resolveSemanticChoice(record, fieldId, fieldConfig); getNextChoiceValue(record, fieldId, fieldConfig); startQtScanning(); doQuickToggle(dt); showProgress(); getViewRoot(); isToggleQueueEmpty(value) }",
+      "currentReturns": "init/processFields/updateTableColors/setupCellClickHandlers/handleCellClick/startQtScanning/doQuickToggle/showProgress -> undefined; isValidInitialState -> truthy/falsy; setupKeywordInstances/setupViewModel/matchesViewTarget/isToggleQueueEmpty -> boolean; extractViewTargets -> string[]; resolveFieldColours -> {bgColorTrue, bgColorFalse}; resolveToggleChoices -> {activeValue, inactiveValue}|null; resolveSemanticChoice -> boolean|null; getNextChoiceValue -> string|string[]|undefined; getViewRoot -> HTMLElement|null. Side effects: `mqtCellClickable` class, `data-mqt-bound`, `ktlProgress` class, cell background colours, PUT via getKnackApiClient().updateRecord, autoRefresh pause/resume, refreshViewArray, alert() on failure.",
+      "verdict": "simplify",
+      "proposedSignature": "class CAMultiChoiceQuickToggle extends QuickToggleController { same 20 public method names and parameters } - lifecycle methods inherited from the shared base; getViewRoot/isToggleQueueEmpty kept as thin wrappers over shared primitives.",
+      "proposedReturns": "Identical per-method return types.",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "CAQuickToggle lifecycle (see that entry for the line pairs): constructor L21330-21353, init L21359-21369, isValidInitialState L21375-21377, setupViewModel L21399-21412, startQtScanning L21658-21677, doQuickToggle L21684-21734, showProgress L21740-21742.",
+        "isToggleQueueEmpty L21758-21760 is a generic isEmptyObject (policy dedupe list: bulkActionIsPlainObject L4239 / objectOrEmpty / `$.isEmptyObject` at L21158, L21254, L21267, L21288).",
+        "getViewRoot L21748-21751 is a fourth view-root resolver next to getViewRootElement L6931, bulkActionFindViewRoot L3689 and getViewMountElement L4186 (policy dedupe list)."
+      ],
+      "modernisations": [
+        "Move constructor state, init, isValidInitialState, setupViewModel, startQtScanning, doQuickToggle and showProgress into the shared `QuickToggleController` base; this class keeps extractViewTargets, resolveFieldColours, matchesViewTarget, resolveToggleChoices, resolveSemanticChoice, getNextChoiceValue and its processFields/updateTableColors.",
+        "L21400: replace `Knack.router.scene_view.model.views._byId[this.viewId]` with `knackNavigator.getViewObject(this.viewId)`.",
+        "L21452 and L21538: `this.getViewRoot()` is called inside the column loop and inside the per-row-per-field loop (one `document.getElementById` per cell); resolve the root once in `init()` and reuse it.",
+        "L21455, L21539, L21555, L21576, L21589, L21604: `instanceof HTMLElement` checks on results of `querySelector(All)`/`closest` in an HTML document are checks for impossible states; drop them (keep a plain null check).",
+        "L21455-21457 and L21556-21559: the `ktlNoInlineEdit` exclusion is applied twice (when adding the class and again when binding); apply it once when adding `mqtCellClickable`.",
+        "L21578: `e.stopImmediatePropagation()` runs before the `fieldConfig` check at L21586, so a click on a cell without config still suppresses Knack's inline editor; move the stop after the guards (behaviour-neutral in practice because the class is only added to configured cells).",
+        "L21580-21584: simplify fieldId resolution to `clickedCell?.dataset.fieldKey` (Knack puts `data-field-key` on the td) with the existing fallbacks only if a real case needs them.",
+        "L21436-21438: field-level `_mqt` keyword instances are accepted without a `hasRoleAccess` check (only the view-level instance is checked at L21388); apply the same role gate for consistency with view-level behaviour.",
+        "L21624 and L21644: `resolveSemanticChoice` is evaluated per click via getNextChoiceValue; fine, but hoist the lower-cased active/inactive labels into `fieldToggleConfig` at L21444 so they are not re-lower-cased per row in updateTableColors.",
+        "BUG L21727-21733 (same as CAQuickToggle L21307-21313): a failed PUT leaves the job in the queue with processed=true, the interval never advances and later clicks are never sent; fix via the shared async queue with `finally` cleanup.",
+        "L21723: `.catch(() => { })` swallows refresh errors; report through errorHandler and always resume autoRefresh/hide spinner.",
+        "L21731: `errorHandler.handleError` -> `errorHandler.handle(err, { viewId, fieldId, recId }, 'CAMultiChoiceQuickToggle.doQuickToggle')`; L21729: `JSON.stringify(reason)` -> `reason?.message ?? String(reason)`.",
+        "L21758-21760 isToggleQueueEmpty: keep the method name (public) but delegate to the shared `isEmptyObject` primitive; L21748-21751 getViewRoot: delegate to the canonical view-root resolver chosen in the dedupe chunk.",
+        "L21341-21346: use the shared `QUICK_TOGGLE_DEFAULTS` constant."
+      ],
+      "behaviourRisks": [
+        "Capture-phase listener plus `stopImmediatePropagation` (L21562, L21578) is what stops Knack's inline editor from opening; the shared base must keep capture semantics.",
+        "`mqtCellClickable`, `data-mqt-bound`, `ktlNoInlineEdit` and `ktlProgress` are observable DOM contracts (the 2026-07 changelog entry 'respect PSA no-inline-edit cells' depends on `ktlNoInlineEdit`); keep every class/attribute name.",
+        "Toggle choices are the FIRST two options from field metadata in order (L21519-21525); a field with a third option is silently ignored. Keep `options.length !== 2` semantics.",
+        "`getNextChoiceValue` preserves array vs scalar shape based on `field_x_raw` (L21647-21651); Knack rejects a scalar for multi-select fields, so this shape logic must survive the refactor.",
+        "Value comparison is case-insensitive and trimmed (L21627-21631); changing to strict comparison would stop recognising the current state for labels with different casing.",
+        "Role gating field-level keywords (proposed) would hide toggles from users who can use them today; agree before enabling.",
+        "`alert()` on failure and 500 ms refresh debounce are user-visible timing/UX contracts shared with CAQuickToggle."
+      ],
+      "knackPractice": "Best-practice-aligned for this library: resolves field type and choices from Knack object metadata via knackNavigator, resolves values with knackValueResolver (`field_x_raw` vs display), updates through the view-based API client and re-renders via KTL's refreshViewArray. Still reads the view model through `Knack.router.scene_view.model.views._byId` (undocumented) and intercepts Knack's inline-edit click. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 200,
+      "rationale": "Recent (2026-07), native-DOM, fully documented code whose main problems are duplication with CAQuickToggle, repeated `getViewRoot()` lookups inside loops, defensive `instanceof HTMLElement` noise and the shared stuck-queue bug. A simplify pass onto the shared base keeps every public method name and return type; it writes records so it stays medium risk and wave 2 per the policy."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "QuickToggleController",
+      "purpose": "Base class holding everything CAQuickToggle and CAMultiChoiceQuickToggle duplicate: constructor state, init pipeline, isValidInitialState, setupViewModel (via knackNavigator.getViewObject), an async serial toggle queue replacing the 500 ms setInterval + Date.now()-keyed object, doQuickToggle with finally-based cleanup (fixes the stuck-queue-after-failure bug), the 500 ms debounced refreshViewArray/autoRefresh resume, showProgress, and the capture-phase cell binding with a dataset guard. Subclasses implement processFields(), updateTableColors(), resolveNextValue(record, fieldId) and optionally extraData(fieldId, value).",
+      "replaces": [
+        "CAQuickToggle L20991-21018, L21020-21041, L21043-21046, L21072-21087, L21173-21176, L21244-21263, L21265-21314, L21316-21318",
+        "CAMultiChoiceQuickToggle L21330-21353, L21359-21369, L21375-21377, L21399-21412, L21551-21564, L21658-21677, L21684-21734, L21740-21742"
+      ],
+      "signature": "class QuickToggleController { constructor(viewId, data, { keyword, defaults = QUICK_TOGGLE_DEFAULTS } = {}); init(): void; isValidInitialState(): boolean; setupViewModel(): boolean; bindCells(selector: string, boundAttr: string): void; enqueueToggle({ viewId, fieldId, recId, value, additionalData }): void; async #drainQueue(): Promise<void>; #scheduleRefresh(): void; showProgress(): void; get viewRoot(): HTMLElement|null }"
+    },
+    {
+      "name": "QUICK_TOGGLE_DEFAULTS",
+      "purpose": "Single frozen object for the colours and class names both quick-toggle classes hard-code (`#e2efda`, `#ffb557`, `#ffe699`, `ktlProgress`, showNotification/showSpinner flags).",
+      "replaces": [
+        "CAQuickToggle L21003-21010",
+        "CAMultiChoiceQuickToggle L21340-21347"
+      ],
+      "signature": "const QUICK_TOGGLE_DEFAULTS = Object.freeze({ bgColorTrue: '#e2efda', bgColorFalse: '#ffb557', bgColorPending: '#ffe699', showNotification: false, showSpinner: false, pendingClass: 'ktlProgress' })"
+    },
+    {
+      "name": "forEachKeywordInstance",
+      "purpose": "Wraps `ktl.core.getKeywordsByType(viewId, kw)` + `ktl.core.hasRoleAccess(options)` + iteration over parameter groups so every keyword handler stops re-implementing the same three-line preamble (and stops forgetting the role check in some branches, as buttonToUrl does at L20916-20931).",
+      "replaces": [
+        "setViewMaxWidth L20720-20723",
+        "hideElementsByValue L20759-20765",
+        "buttonToUrl L20914-20931",
+        "copyViewBodyToClipboard L20231+ (other chunk, same preamble)"
+      ],
+      "signature": "forEachKeywordInstance(viewId: string, keyword: string, callback: (params: string[], instance: { options, params }) => void, { minParams = 0, requireRole = true } = {}): number /* instances processed */"
+    },
+    {
+      "name": "findElementsByExactText",
+      "purpose": "Native replacement for the jQuery pseudo-selector `$.expr[\":\"].textEquals` (L6996-7001: trims, strips a literal \"*\", exact match) used by buttonToUrl L20935 and by L11651 in another chunk. Per the updated policy the `:textEquals` pseudo-selector itself is retained only as a compatibility shim (deleted in V3) and must delegate to this helper; it should be the canonical getElementByText/findElementByText implementation chosen by the dedupe chunk rather than a new global.",
+      "replaces": [
+        "buttonToUrl L20935 (`li:textEquals` / `a:textEquals`)",
+        "L11651 (`th:textEquals`, other chunk)",
+        "$.expr[':'].textEquals L6996-7001"
+      ],
+      "signature": "findElementsByExactText(root: ParentNode, selector: string, text: string, { stripRequiredMarker = true } = {}): Element[]"
+    },
+    {
+      "name": "isEmptyObject",
+      "purpose": "Replace `$.isEmptyObject` and the misnamed CAMultiChoiceQuickToggle.isToggleQueueEmpty with one plain helper (policy dedupe list already names bulkActionIsPlainObject/objectOrEmpty).",
+      "replaces": [
+        "CAQuickToggle L21158, L21254, L21267, L21288 (`$.isEmptyObject`)",
+        "CAMultiChoiceQuickToggle L21758-21760 (isToggleQueueEmpty)"
+      ],
+      "signature": "isEmptyObject(value: unknown): boolean  // true when not an object or has no own enumerable keys"
+    },
+    {
+      "name": "redirectAfterDelay",
+      "purpose": "The one thing handleRedirect does for 'click' and 'knack-form-submit' events (L18614-18617): assign window.location.href after 300 ms. Exposing it lets redirectToPopUp/bindRedirectToPopUpCloseButtons stop depending on handleRedirect's event-type switch.",
+      "replaces": [
+        "handleRedirect L18614-18617 (click/submit branch), called from L20846 and L20901"
+      ],
+      "signature": "redirectAfterDelay(url: string, delayMs = 300): number /* timeout id */"
+    },
+    {
+      "name": "onKnackEvent (used, defined by the foundation chunk)",
+      "purpose": "redirectToPopUp is the only function in this chunk that needs jQuery exception 1 (Knack lifecycle event triggered through jQuery). It should consume the foundation `onKnackEvent` primitive rather than calling `$(document).off/on` itself, so the namespace handling (`knack-form-submit.<viewId>.rtp`) and the off-before-on re-render pattern live in one place.",
+      "replaces": [
+        "redirectToPopUp L20872-20873, L20897-20902"
+      ],
+      "signature": "onKnackEvent(eventName: string, viewOrSceneKey: string|\"any\", handler: (event, view, data) => void, { namespace = \"\" } = {}): () => void /* unbind */"
+    }
+  ],
+  "crossCuttingFindings": [
+    "APP CONSTANT IN LIBRARY: buttonToUrl L20952 hard-codes `td.field_6087` to read a record id from table rows. The library must not depend on a consuming app's field id; use the Knack `tr[id]` record id or a keyword parameter, and audit other chunks for `field_\\d+` literals.",
+    "RUNTIME BUG: buttonToUrl L20929 references `linkSelector` before its `const` declaration at L20935 (TDZ ReferenceError) whenever `ktl.core.hasRoleAccess(options)` is false; because the error escapes the forEach, the consuming app's `knack-view-render` handler aborts for that view. Any app with role-restricted `_btnurl` keywords is affected today.",
+    "NO-OP CALL: hideElementsByValue L20776 calls `borderRadiusLastVisible()` with no arguments; the helper (L18402) requires `(viewId, delay)` and returns immediately, so the only external call site of borderRadiusLastVisible in the file never does anything. The chunk owning L18402 should know its function is effectively unused.",
+    "UNDOCUMENTED KNACK INTERNALS: both quick-toggle classes read the view model via `Knack.router.scene_view.model.views._byId[viewId]` (L21073, L21400). KnackNavigator.getViewObject (L176-199) already resolves the same attributes via the documented `Knack.views[viewId].model.view` with a scene fallback and caching; V2 should route every view-model lookup through it.",
+    "EXTERNAL jQUERY PLUGIN: `$.fn.bindFirst` (L21175) is not defined anywhere in this repo; it comes from KTL. V2 must not depend on it (capture-phase addEventListener gives the same ordering). Check other chunks for other KTL-provided jQuery extensions.",
+    "KEYWORD STORE ACCESS: the quick-toggle classes read the `ktlKeywords` global directly (L21050, L21384) while the handlers in this chunk use `ktl.core.getKeywordsByType` (L20720, L20759, L20914) and `ktl.core.checkIfViewHasKeyword` (L21057, L21060). Pick one access path (the ktl.core API) for V2 so KTL internals changes land in one place.",
+    "ERROR HANDLER API DRIFT: this chunk calls `errorHandler.handleError` (L21311, L21731) while the policy and other code use `errorHandler.handle` (L9059, L20216). The fallback at L15-35 defines both, and the KnackError class (L21847) defines only `handleError`; V2 must settle on one method name and make KnackError/fallback expose both for compatibility.",
+    "DUPLICATE REDIRECT MECHANISM: handleRedirect L18611-18628 (other chunk) still contains a `knack-scene-render`/`knack-view-render` branch that binds `{ once: true }` click listeners on `.kn-modal .close-modal`, duplicating bindRedirectToPopUpCloseButtons L20827-20849 without the capture flag or dataset guard. The newer `_rtp` flow only needs the click/submit branch; handleRedirect's render branch is a dedupe candidate.",
+    "SILENT QUEUE STALL: both quick-toggle classes leave a failed job in `quickToggleObj` with processed=true (L21307-21313, L21727-21733), so after one failed PUT the 500 ms interval never advances, `autoRefresh` is re-enabled while the interval runs, and later clicks are queued forever. Any other setInterval-driven queue in the file (e.g. bulk actions) should be checked for the same pattern.",
+    "jQUERY-ONLY SELECTOR: `$.expr[':'].textEquals` (L6996) is used at L11651 and L20935; it strips '*' and trims before exact matching. The getElementByText (L7136) vs findElementByText (L17170) dedupe must produce a canonical helper with the same trimming/'*' semantics so both call sites can migrate.",
+    "KNACK-TRIGGERED EVENTS NEED jQUERY (policy exception 1): redirectToPopUp binds `knack-form-submit.<viewId>.rtp` with `$(document).on` (L20897-20902). All `knack-*` lifecycle events are fired via jQuery `.trigger()` and are invisible to native addEventListener, so the foundation chunk must ship `onKnackEvent` with namespace support before this chunk is ported; every chunk that listens to render/submit events depends on it.",
+    "HANDLER SIGNATURE INCONSISTENCY: keyword handlers in this chunk take `(view)` (hideEmptyFields), `({ key })` (setViewMaxWidth), `(view, keywords)` (hideElementsByValue, redirectToPopUp), `({ key }, keywords)` (buttonToUrl) or `({ key }, data)` (quick toggles), and none is registered inside the file - consuming apps wire them in their own `knack-view-render` listeners. Names and signatures must stay, but V2 could add one documented `runKeywordHandlers(view, keywords, data)` dispatcher so apps stop hand-wiring each handler.",
+    "VIEW ROOT RESOLVERS: CAMultiChoiceQuickToggle.getViewRoot (L21748) is a fourth implementation alongside getViewRootElement L6931, bulkActionFindViewRoot L3689 and getViewMountElement L4186; the dedupe chunk's canonical resolver should be what the quick-toggle base uses.",
+    "US/UK SPELLING: this chunk mixes `fieldsColor`/`updateTableColors`/`setupColors` (US) with `resolveFieldColours` (UK) and relies on `knackNavigator.normalizeViewId` (US). Existing names cannot change; new identifiers in the shared base should use UK spelling per the policy.",
+    "DEAD-BY-CONFIGURATION CODE: `quickToggleParams.showNotification` and `showSpinner` are hard-coded false (L21007-21008, L21344-21345) and the factory wrappers discard the instance, so `ktl.core.infoPopup`/`setInfoPopupText`/`removeInfoPopup`/`Knack.showSpinner` paths are unreachable through the public entry points; keep them (consumers can `new` the classes directly) but do not expand them.",
+    "jQUERY WRAPPER HELPERS STILL USED HERE: removeElement (L9618) and getTableRows (L13791) are jQuery-based helpers called from hideEmptyFields L20748 and buttonToUrl L20929/L20951. Under the no-jQuery rule V2 implementation code must not call them; their owning chunks should provide native equivalents (or make them shims) before this chunk is ported, otherwise the port silently re-introduces jQuery through helpers."
+  ]
+}

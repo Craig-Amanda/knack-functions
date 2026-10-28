@@ -1,0 +1,386 @@
+{
+  "chunkId": "C07",
+  "chunkSummary": "Lines 5092-6277: the bulk-actions UI layer (recent, 2026, already ES2020+, no jQuery). Two classes - BulkActionModal (basket modal DOM, 301 lines) and BulkActionGridController (grid <-> basket <-> runner wiring, 697 lines) - plus ensureBulkActionCheckboxes (KTL checkbox wiring), bulkActionMountToolbarGroup (toolbar placement) and an independent KTL `_ebo` helper group (two constants, an observer Map, a CSS text function, a style injector and preserveBulkEditSelectedRowColors). Nothing here needs a signature change; every item is keep/simplify. The bulk-action classes are wave 3 (port as-is, dead-code and consistency only). The `_ebo` group is wave 2 (modern-ish, KTL-coupled, port with targeted improvements and a shared ensureStyleOnce primitive). Only three real simplifications of substance: a tiny DOM-builder helper to collapse the 120-line ensureModal, a private row-checkbox helper to remove six repeated bulkActionGetSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass) calls in the controller, and one shared style injector replacing three identical copies in the file.",
+  "functions": [
+    {
+      "name": "BulkActionModal",
+      "kind": "class",
+      "startLine": 5096,
+      "endLine": 5396,
+      "currentSignature": "class BulkActionModal { constructor({ viewId, bulkActionConfig } = {}); syncOpenStateFromDom(); ensureModal(); render({ items = [], validationMessage = '' } = {}); renderActions(actions = []); setProgressState(runState = {}); open(); close(); public fields: viewId, title, emptyText, modalId, buttonClass, modalClass, isOpen, onClose, onRemove, onClear, onAction }",
+      "currentReturns": "constructor -> BulkActionModal; ensureModal() -> HTMLElement (the #knack-bulk-basket-<viewId> div, appended to document.body); render/renderActions/setProgressState/open/close/syncOpenStateFromDom -> undefined",
+      "verdict": "simplify",
+      "proposedSignature": "unchanged: class BulkActionModal { constructor({ viewId, bulkActionConfig } = {}); syncOpenStateFromDom(); ensureModal(); render({ items, validationMessage } = {}); renderActions(actions = []); setProgressState(runState = {}); open(); close() }",
+      "proposedReturns": "unchanged (ensureModal -> HTMLElement, all others -> undefined)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "ensureModal (5137-5255): 120 lines of createElement/className/dataset/appendChild. Replace with a shared `el(tag, { className, dataset, text, attrs }, children)` builder or one static template literal assigned via insertAdjacentHTML (no user data goes into the static skeleton; title is set with textContent afterwards) and then wire the two listeners by querySelector. Target ~35 lines. Must emit identical class names and data-knack-bulk-basket-* attributes because bulkActionGetBaseCssText (4784-5030) and the controller's querySelectors depend on them.",
+        "Line 5181 `    body.appendChild(validation);` is mis-indented (4 spaces inside an 8-space block) - cosmetic, shows this section is not run through a formatter.",
+        "syncOpenStateFromDom (5121-5129): collapse to `const modal = document.getElementById(this.modalId); this.isOpen = Boolean(modal) && modal.style.display !== 'none';` (note: `modal?.style.display !== 'none'` would be WRONG when modal is null because undefined !== 'none' is true).",
+        "render (5262-5313): `list.innerHTML = ''` -> `list.replaceChildren()`; the four `typeof this.onX === 'function'` guards (5154, 5236, 5296, 5339) -> `this.onX?.()`; build each row through the same `el()` helper; `items.forEach` -> `for...of` or `list.append(...items.map(buildRow))`.",
+        "renderActions (5320-5349): `bulkActionCreateButton(container, ...)` already appends the button to `container` via ktl.fields.addButton, so the trailing `container.appendChild(button)` (5347) is a redundant re-append (a no-op move to end); delete it. `(Array.isArray(actions) ? actions : [])` -> early return when not an array.",
+        "setProgressState (5356-5379): the five querySelector lookups can be one `const q = (name) => modal.querySelector(`[data-knack-bulk-basket-progress-${name}=\"1\"]`)`; `bar instanceof Element` check is redundant after querySelector (it is Element|null) -> `if (bar) bar.style.width = ...`.",
+        "Constructor: `this.onClose = null; this.onRemove = null; ...` -> class fields `onClose = null;` etc. (ES2022 public class fields, supported in evergreen browsers).",
+        "Keep `modal.style.display = 'flex'/'none'` (5388, 5395) exactly: `.knackBulkActionModal { display: none }` at 4784-4785 and syncOpenStateFromDom both key off the inline style, and the controller's basketStore `isOpen()` callback (5618) reads `this.isOpen`."
+      ],
+      "behaviourRisks": [
+        "CSS in bulkActionGetBaseCssText (4784-5030) targets every class name created here (knackBulkActionModal, ...Header, ...Title, ...Close, ...Body, ...Meta, knackBulkActionValidation, ...List, ...Footer, ...Actions, ...Progress, ...ProgressSummary/Title/Percent/Detail/Track/Bar/Meta, ...Clear, ...Empty, ...Item, ...ItemText, ...ItemFailure, ...Remove, knackBulkActionButton, knackBulkActionModalAction, is-active, is-disabled, is-visible plus the summary.stateClass values). Any template rewrite must be byte-identical in class/data attribute output.",
+        "The modal lives on document.body with id knack-bulk-basket-<viewId> and survives Knack view re-renders; a new controller instance per render re-adopts it via syncOpenStateFromDom (5119). Moving it inside the view root would make it disappear on every render.",
+        "Open state is read from inline style.display (5128), not a class; switching to `hidden` or a class would break syncOpenStateFromDom and consumer CSS.",
+        "Buttons come from ktl.fields.addButton (via bulkActionCreateButton 5067) so their markup/classes (kn-button, ktlButtonMargin) are KTL's; do not replace with plain document.createElement('button') or KTL theming is lost.",
+        "Close/remove buttons use textContent 'x' with aria-label; unchanged in V2 (any upgrade to an SVG icon is a V3 visual change)."
+      ],
+      "knackPractice": "Does not use Knack render events or Knack.views directly; it is pure DOM owned by the controller, and parks the modal outside the .kn-view so Knack re-rendering does not destroy it. That is the correct pattern given Knack replaces view DOM on every render (unverified against live docs). Depends on KTL (ktl.fields.addButton) rather than Knack itself for buttons.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 190,
+      "rationale": "Already modern (const, optional chaining, dataset, textContent, no jQuery) so the only gain is brevity: ensureModal is 40% of the class and is pure boilerplate that a 10-line element builder removes. Policy puts bulk actions in wave 3 with no signature changes; the public surface (constructor options, eight methods, onX callback fields, modalId) stays identical and no shim is needed. The one genuine bug-smell is the redundant appendChild in renderActions, which is harmless to delete."
+    },
+    {
+      "name": "ensureBulkActionCheckboxes",
+      "kind": "function",
+      "startLine": 5405,
+      "endLine": 5451,
+      "currentSignature": "ensureBulkActionCheckboxes(viewId, selectionConfig, handlers = {})",
+      "currentReturns": "undefined (early-returns undefined when ktl.views.addCheckboxesToTable is not a function)",
+      "verdict": "simplify",
+      "proposedSignature": "ensureBulkActionCheckboxes(viewId, selectionConfig, handlers = {}) (unchanged)",
+      "proposedReturns": "undefined (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Lines 5428-5442: three identical closures (onMasterChange, onRowChange, shiftClickChangeHandler) each doing `if (typeof handlers.onSelectionChange === 'function') handlers.onSelectionChange()`. Replace with `const notifySelectionChange = () => handlers.onSelectionChange?.();` and pass the same reference three times (12 lines -> 4).",
+        "Line 5407: `knackValueResolver.toStringSafe(selectionConfig?.scope || 'ktlCheckbox') || 'ktlCheckbox'` - double fallback; `toStringSafe(selectionConfig?.scope) || 'ktlCheckbox'` is equivalent. Better: read the default from BULK_ACTION_DEFAULT_CONFIG.selection.scope instead of a second hard-coded literal.",
+        "Lines 5447-5450: the forEach that calls bulkActionGetRowCheckboxRecordId purely for its side effect (it caches data-record-id on each checkbox, see 3714-3716) needs a one-line comment saying so, otherwise V2 reviewers will delete it as dead. Keep the call.",
+        "Combine the two `knackValueResolver.toStringSafe(selectionConfig?.rowCheckboxClass)` reads (5424, 5444) into one const at the top.",
+        "Remove the trailing comma after `shiftClickChangeHandler: ...` object member only for consistency with the rest of the file (file otherwise does not use trailing commas)."
+      ],
+      "behaviourRisks": [
+        "The option names passed to ktl.views.addCheckboxesToTable (withMaster, selectionScope, checkboxClasses, checkboxDataAttrs, masterCheckboxDataAttrs, rowCheckboxDataAttrs, rowCheckboxClasses, masterCheckboxClasses, enhanceExisting, onMasterChange, onRowChange, shiftClickChangeHandler) are a KTL contract that cannot be verified here; copy verbatim.",
+        "Hard-coded classes 'bulkEditCb' and 'ktlCheckbox-bulkops' (5412) and data attributes data-ktl-selection / data-ktl-bulkops (5414-5422) are shared with KTL's own `_ebo` bulk-edit feature; changing them would break KTL's shift-click and master-checkbox handling and the `td.bulkEditSelectedRow` marker that preserveBulkEditSelectedRowColors relies on.",
+        "Silently returns when KTL is absent (5406); callers (BulkActionGridController.init 6253) then render a toolbar with no checkboxes. That is existing behaviour; do not turn it into a throw."
+      ],
+      "knackPractice": "Delegates checkbox injection to KTL (ktl.views.addCheckboxesToTable) rather than touching Knack's table DOM itself, and is re-run on every render by the controller's init (called from the consumer's knack-view-render handler via mountBulkActionGrid). Follows the Knack model of rebinding after each render. Unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 30,
+      "rationale": "Modern code whose only waste is three copy-pasted handler closures and a double default. Same name, parameters and return, so no shim. Lives inside the bulk-actions module so it ports with the controller in wave 3."
+    },
+    {
+      "name": "KTL_BULK_EDIT_SELECTION_STYLE_ID",
+      "kind": "const Literal",
+      "startLine": 5453,
+      "endLine": 5453,
+      "currentSignature": "const KTL_BULK_EDIT_SELECTION_STYLE_ID = 'ktlBulkEditSelectionStyles'",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const KTL_BULK_EDIT_SELECTION_STYLE_ID = 'ktlBulkEditSelectionStyles' (unchanged)",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "None; it is a one-line const. Keep it adjacent to ensureBulkEditSelectionStyles in V2 and add a one-line JSDoc `/** @type {string} id of the injected <style> for the `_ebo` row outline */` so the global is documented."
+      ],
+      "behaviourRisks": [
+        "The value is a DOM id; consumer CSS or scripts may query #ktlBulkEditSelectionStyles. Value must not change."
+      ],
+      "knackPractice": "Not Knack-specific; supports the idempotent style-injection pattern (inject once by id), which is the recommended way to add CSS from Knack custom JS without duplicating <style> tags on each render.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 1,
+      "rationale": "Trivial constant, already const, already a public global listed in eslint/knack-functions-globals.json. Ported with the `_ebo` helper group in wave 2."
+    },
+    {
+      "name": "KTL_BULK_EDIT_ROW_MARKER_CLASS",
+      "kind": "const Literal",
+      "startLine": 5454,
+      "endLine": 5454,
+      "currentSignature": "const KTL_BULK_EDIT_ROW_MARKER_CLASS = 'ktlBulkEditRowSelected'",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const KTL_BULK_EDIT_ROW_MARKER_CLASS = 'ktlBulkEditRowSelected' (unchanged)",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "None beyond a one-line JSDoc. It is the class name applied to <tr> by preserveBulkEditSelectedRowColors and used in ktlBulkEditSelectionCssText."
+      ],
+      "behaviourRisks": [
+        "Consumer apps may style tr.ktlBulkEditRowSelected themselves (e.g. override --ktl-bulk-edit-outline-color); the class name is a DOM side effect and part of the signature per policy. Must not change."
+      ],
+      "knackPractice": "Not Knack-specific. Marking the whole <tr> rather than individual cells is sensible because Knack rows carry the record id (tr#<recordId>) and are the unit the user perceives.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 1,
+      "rationale": "Trivial constant, public global, ported unchanged with the `_ebo` group in wave 2."
+    },
+    {
+      "name": "ktlBulkEditRowColorObservers",
+      "kind": "const NewExpression",
+      "startLine": 5458,
+      "endLine": 5458,
+      "currentSignature": "const ktlBulkEditRowColorObservers = new Map()  // Map<normalisedViewId, MutationObserver>",
+      "currentReturns": "Map<string, MutationObserver>",
+      "verdict": "keep",
+      "proposedSignature": "const ktlBulkEditRowColorObservers = new Map() (unchanged)",
+      "proposedReturns": "Map<string, MutationObserver>",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Keep as a Map keyed by view id. A WeakMap keyed by the <tbody> was considered (auto-GC when Knack replaces the tbody) but preserveBulkEditSelectedRowColors needs to find and disconnect the PREVIOUS observer by view id (5508) before the new tbody exists, which a WeakMap keyed by element cannot do; and changing the global's type would be a signature change.",
+        "Trim the three-line comment (5455-5457) to one line; the JSDoc on preserveBulkEditSelectedRowColors already explains replacement-on-render."
+      ],
+      "behaviourRisks": [
+        "It is a mutable global; a consumer could in theory read or clear it. Leaving an observer connected to a detached tbody if a view is never re-rendered is a bounded leak (one per `_ebo` grid) that V1 explicitly accepts (comment 5455-5457).",
+        "If V2 ever moves to a single document-level observer, the per-view disconnect semantics change; keep per-view in wave 2."
+      ],
+      "knackPractice": "Exists precisely because Knack replaces the grid <tbody> on every knack-view-render / knack-records-render, so an observer attached to the old tbody goes stale; keying by view id lets each render swap the observer. Follows the 'never cache elements across renders' rule.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 1,
+      "rationale": "One-line module state, already a Map, correctly scoped. No change other than a shorter comment. Ported with preserveBulkEditSelectedRowColors in wave 2."
+    },
+    {
+      "name": "ktlBulkEditSelectionCssText",
+      "kind": "function",
+      "startLine": 5464,
+      "endLine": 5471,
+      "currentSignature": "ktlBulkEditSelectionCssText()",
+      "currentReturns": "string (CSS text for tr.ktlBulkEditRowSelected outline, with var(--ktl-bulk-edit-outline-color, #2a3f50))",
+      "verdict": "keep",
+      "proposedSignature": "ktlBulkEditSelectionCssText() (unchanged)",
+      "proposedReturns": "string (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Could be inlined into ensureBulkEditSelectionStyles, but it is a public global (eslint/knack-functions-globals.json:239) so it must remain callable; keep the 8-line function as-is. Optionally make it a single-line template literal without the leading/trailing newlines (the whitespace is not significant)."
+      ],
+      "behaviourRisks": [
+        "Consumers may override the outline via the CSS custom property --ktl-bulk-edit-outline-color; keep the var() fallback and the outline-offset: -2px so the outline does not change row height or overflow the table."
+      ],
+      "knackPractice": "Not Knack-specific; CSS for a KTL-driven feature. The custom-property hook is good practice for library CSS consumed by many apps.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 6,
+      "rationale": "Already minimal and modern. Public global so it cannot be folded away. Ports unchanged with the `_ebo` group in wave 2."
+    },
+    {
+      "name": "ensureBulkEditSelectionStyles",
+      "kind": "function",
+      "startLine": 5477,
+      "endLine": 5485,
+      "currentSignature": "ensureBulkEditSelectionStyles()",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "ensureBulkEditSelectionStyles() (unchanged; body becomes `ensureStyleOnce(KTL_BULK_EDIT_SELECTION_STYLE_ID, ktlBulkEditSelectionCssText())`)",
+      "proposedReturns": "undefined (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "ensureBulkActionBaseStyles (5034-5042) - identical body shape with a different id/css source",
+        "ensureMenuButtonActiveStyles (9505-9518) - identical body shape"
+      ],
+      "modernisations": [
+        "Replace the 9-line body with a one-line call to a new shared primitive `ensureStyleOnce(id, cssText)` (see sharedPrimitivesProposed). Same for ensureBulkActionBaseStyles and ensureMenuButtonActiveStyles in their own chunks.",
+        "Drop `if (typeof document === 'undefined') return;` (5478) - this library only runs as a browser classic script (policy: no defensive checks for impossible states). ensureBulkActionBaseStyles (5035) has the same dead guard; ensureMenuButtonActiveStyles does not, so the file is already inconsistent."
+      ],
+      "behaviourRisks": [
+        "Must stay idempotent by id - Knack calls render handlers many times per page and duplicated <style> blocks would accumulate.",
+        "Must append to document.head (not body) so consumer app CSS loaded later in the page can still override by source order."
+      ],
+      "knackPractice": "Textbook 'inject a style once by id' pattern for Knack custom JS; follows the policy's recommended idempotent ensure* style.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 3,
+      "rationale": "Three functions in the file inject a <style> with the same six lines; one primitive removes the duplication and the dead SSR guard. The public name and behaviour stay identical so no shim is needed. Wave 2 with the `_ebo` group, but ensureStyleOnce itself is a wave-1 foundation primitive."
+    },
+    {
+      "name": "preserveBulkEditSelectedRowColors",
+      "kind": "function",
+      "startLine": 5498,
+      "endLine": 5555,
+      "currentSignature": "preserveBulkEditSelectedRowColors(viewId)",
+      "currentReturns": "undefined (early-returns on unknown viewId or missing #view element; side effects: injects style, toggles tr.ktlBulkEditRowSelected, restores inline background-color/color on td.bulkEditSelectedRow, stores a MutationObserver in ktlBulkEditRowColorObservers)",
+      "verdict": "simplify",
+      "proposedSignature": "preserveBulkEditSelectedRowColors(viewId) (unchanged)",
+      "proposedReturns": "undefined (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Line 5503: `document.getElementById(normalizedViewId)` bypasses the shared view-root helper; use getViewRootElement(normalizedViewId) (6931) so it behaves like the rest of the library (and so `view_x` without the # prefix and Knack view objects both work).",
+        "Lines 5511-5520 syncRowOutline: the add/remove branches collapse to `row.classList.toggle(KTL_BULK_EDIT_ROW_MARKER_CLASS, hasSelectedCell)`; classList.toggle is a no-op when the class is already in the requested state so it does NOT fire an extra attribute mutation - the 'only touch the class when state changes' concern in the comment is satisfied by toggle's semantics (verified: DOMTokenList.toggle only mutates the attribute when the token set changes).",
+        "Line 5540 initial pass: `tableBody.querySelectorAll('td').forEach(restoreCell)` visits every cell and calls syncRowOutline once per cell. Replace with two targeted passes: `tableBody.querySelectorAll('td.bulkEditSelectedRow').forEach(restoreCellColours)` and `tableBody.querySelectorAll('tr').forEach(syncRowOutline)`.",
+        "Lines 5545-5547: `mutations.forEach((mutation) => restoreCell(mutation.target))` -> `for (const { target } of mutations) restoreCell(target)`.",
+        "Line 5527: `target.matches('td') ? target : target.closest('td')` -> `target.closest('td')` (closest includes the element itself).",
+        "Line 5508 `?.disconnect()` on the Map entry is already the modern form; keep.",
+        "Split restoreCell into restoreCellColours(cell) and the row-outline sync so each helper has one responsibility (policy)."
+      ],
+      "behaviourRisks": [
+        "Relies on KTL internals: class `bulkEditSelectedRow` on <td> and data attributes data-bulk-edit-saved-bg / data-bulk-edit-saved-color (dataset.bulkEditSavedBg / bulkEditSavedColor, 5530-5531). These are KTL implementation details; a KTL upgrade can silently change them. Unverified against KTL source.",
+        "The observer re-fires on its own `cell.style.backgroundColor = savedBg` write (a 'style' attribute mutation); the equality guard at 5532 stops the loop after one extra callback. Any rewrite must keep an equivalent guard or it will spin.",
+        "The observer is attached to the first <tbody> found (5539); Knack grids have one tbody, but a grouped grid still renders one tbody with kn-table-group rows, so this is fine. If a consumer passes a details/list view id the function silently observes the view root - existing behaviour.",
+        "Function is never called inside knackFunctions.js (brief calledBy: []) so it is consumer-called from app render handlers (GAP-Track/Spot). The US spelling 'Colors' is baked into the global name; do not rename, only alias if a UK-spelt V2 name is wanted.",
+        "Must be re-run after every knack-view-render / knack-records-render of the `_ebo` grid because Knack replaces the tbody; V2 could offer an opt-in auto-binding but that is additive, not a replacement."
+      ],
+      "knackPractice": "Correctly treats Knack's DOM as ephemeral: disconnects the old observer and rebinds per render, uses view-id keyed state rather than cached elements, and uses MutationObserver instead of polling - all in line with the policy and with Knack's render model. It fights KTL slightly by patching over KTL's `_ebo` colour stripping rather than configuring KTL, which is unavoidable if KTL has no option for it. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 45,
+      "rationale": "Modern and well commented, but can lose ~15 lines through classList.toggle, closest(), and targeted initial passes, and should use the shared getViewRootElement helper for consistency. Medium risk only because it depends on undocumented KTL class/data-attribute names and on observer self-trigger guarding; a behaviour test with a synthetic tbody mutation is cheap and recommended. Same signature, so no shim."
+    },
+    {
+      "name": "bulkActionMountToolbarGroup",
+      "kind": "function",
+      "startLine": 5564,
+      "endLine": 5576,
+      "currentSignature": "bulkActionMountToolbarGroup(container, wrapper, viewId)",
+      "currentReturns": "undefined (side effect: inserts wrapper after #bulkOpsControlsDiv-<viewId> / .bulkOpsControlsDiv when that group is a direct child of container, otherwise appends wrapper to container)",
+      "verdict": "simplify",
+      "proposedSignature": "bulkActionMountToolbarGroup(container, wrapper, viewId) (unchanged)",
+      "proposedReturns": "undefined (unchanged)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Line 5568 and renderButtonBar 6059 both compute `container.querySelector(`#bulkOpsControlsDiv-${viewId}`) || container.querySelector('.bulkOpsControlsDiv')`; extract `findKtlBulkOpsGroup(container, viewId)` (module-private) and use it in both places.",
+        "Line 5570: `bulkOpsGroup.nextSibling !== wrapper` uses nextSibling (counts text nodes) while the retry at 6061 uses nextElementSibling. Use nextElementSibling in both so the two checks agree; otherwise a whitespace text node between the two divs makes the mount re-insert on every call.",
+        "Lines 5569-5575: collapse to `if (bulkOpsGroup?.parentElement === container) { if (bulkOpsGroup.nextElementSibling !== wrapper) bulkOpsGroup.after(wrapper); return; } container.append(wrapper);` (Element.after === insertAdjacentElement('afterend')).",
+        "Line 5565 instanceof guards: keep (container comes from ktl.views.getKtlAddOnsDiv which may return jQuery/null) but they belong in the caller's bulkActionResolveElement; the controller already resolves (6017) so one guard here is enough."
+      ],
+      "behaviourRisks": [
+        "Placement order (bulk-action bar immediately after KTL's own bulkOps group) is a visual contract users of GAP-Track/Spot see; keep it.",
+        "KTL's bulkOps group is added asynchronously by KTL, hence the setTimeout retry in renderButtonBar (6058-6063); do not remove the retry when simplifying here."
+      ],
+      "knackPractice": "Mounts into KTL's add-ons div (ktl.views.getKtlAddOnsDiv) rather than Knack's view header, so it follows KTL's toolbar model; Knack itself has no documented toolbar slot. Unverified against KTL docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 9,
+      "rationale": "Small modern helper; the only defects are the nextSibling/nextElementSibling inconsistency with its retry site and a duplicated selector expression. Same signature, no shim. Ports with the controller in wave 3."
+    },
+    {
+      "name": "BulkActionGridController",
+      "kind": "class",
+      "startLine": 5581,
+      "endLine": 6277,
+      "currentSignature": "class BulkActionGridController { constructor({ viewId, rowRecords = [], labelFieldIds = [], actions = [], bulkActionsApi = KnackBulkActions, bulkActionConfig } = {}); rebuildRecordMaps(); resolveViewElement(); getSelectedRecordIds(); findRowCheckbox(recordId, viewElement = this.resolveViewElement()); buildBasketItems(recordIds = []); getBasketRecordIds(); refreshUi({ restoreSelection = false } = {}); replaceRunState(nextState = {}); patchRunState(statePatch = {}); addToBasket(recordIds = []); replaceBasketFromRecordIds(recordIds = []); removeFromBasket(recordIds = []); clearBasket(); clearBasketItemFailures(recordIds = []); setBasketItemFailure(recordId, error); resolveActiveAction(); setActiveActionKey(actionKey); getActionValidation(action); getBasketActionConfigs(); syncBasketUi(); restoreSelectionFromBasket(); syncMasterCheckboxState(viewElement = this.resolveViewElement()); syncSelectionFromDom(); updateButtonsDisabledState(); resolveButtonContainer(); removeExistingUi(); renderButtonBar(); openBasketAndAdd(recordIds = []); openBasket(); resetFormActionState(); async startFormAction(action); async runAction(actionKey); init(); public fields: viewId, rowRecords, labelFieldIds, actions, bulkActionsApi, bulkActionConfig, namespace, recordById, labelById, basketModal, basketStore, basketItems, activeActionKey, runState }",
+      "currentReturns": "constructor -> BulkActionGridController; init() -> this | null; resolveViewElement() -> Element|null; getSelectedRecordIds()/getBasketRecordIds() -> string[]; findRowCheckbox() -> HTMLInputElement|null; buildBasketItems()/addToBasket()/replaceBasketFromRecordIds()/removeFromBasket() -> Array<{recordId,label,sourceRecord,failureType?,failureMessage?}>; replaceRunState()/patchRunState() -> run-state object; resolveActiveAction() -> action|null; getActionValidation() -> {valid, message}; getBasketActionConfigs() -> Array<Object>; resolveButtonContainer() -> Element|null; startFormAction()/runAction() -> Promise<void>; everything else -> undefined",
+      "verdict": "simplify",
+      "proposedSignature": "unchanged - same constructor options, same 34 public methods and public fields; internal additions only (private helpers such as #rowCheckboxes(viewElement) and #readCheckedRecordIds(viewElement))",
+      "proposedReturns": "unchanged",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Six call sites repeat `bulkActionGetSelectableRowCheckboxes(viewElement, this.bulkActionConfig.selection.rowCheckboxClass)` (5653, 5670, 5938, 5956, 5975, plus removeNonSelectable at 5936/5974) -> private `#rowCheckboxes(viewElement)` and `#pruneRowCheckboxes(viewElement)`.",
+        "getSelectedRecordIds (5649-5657) and syncSelectionFromDom (5970-5978) compute the same 'checked -> recordId -> filter(Boolean)' list; syncSelectionFromDom should be `const viewElement = ...; if (!viewElement) return; this.#pruneRowCheckboxes(viewElement); this.replaceBasketFromRecordIds(this.getSelectedRecordIds());` (or share a #readCheckedRecordIds).",
+        "rebuildRecordMaps() is called in the constructor (5611) and again in init() (6252) with no mutation of rowRecords in between; drop the init() call (or the constructor call) - one is dead.",
+        "updateButtonsDisabledState (5984-6001): `this.resolveActiveAction()?.key` is evaluated inside the per-button loop; hoist `const activeKey = toStringSafe(this.resolveActiveAction()?.key)` and replace the if/else add/remove pairs with `button.classList.toggle('is-active', isActive); button.classList.toggle('is-inactive', !isActive);`.",
+        "getActionValidation (5839-5880): `Object.prototype.hasOwnProperty.call(result, 'message')` -> `Object.hasOwn(result, 'message')`; the duplicated literal 'This bulk action cannot be used with the selected records.' (5861, 5869) -> one module const; `const items = this.basketItems.slice()` copy is unnecessary (items are not mutated) -> use this.basketItems directly.",
+        "resolveActiveAction (5807-5817): `this.actions` is already filtered to key+label in the constructor (5595) so the inner `.filter((action) => action?.key)` is dead; body becomes `return this.actions.find((a) => a.key === this.activeActionKey) ?? this.actions[0] ?? null;`.",
+        "runAction (6188-6235): `this.actions.find((candidate) => toStringSafe(candidate?.key) === toStringSafe(actionKey))` - keys are already strings after the constructor filter; `find((a) => a.key === toStringSafe(actionKey))` suffices. `onStateChange: (state) => { this.replaceRunState(state); }` -> `onStateChange: (state) => this.replaceRunState(state)`.",
+        "patchRunState (5712-5717): `statePatch && typeof statePatch === 'object' ? statePatch : {}` -> reuse bulkActionObjectOrEmpty(statePatch) (4248), which exists for exactly this.",
+        "renderButtonBar (6016-6064): the bulkOps-group selector at 6059 duplicates bulkActionMountToolbarGroup 5568 -> shared findKtlBulkOpsGroup; `container.classList?.contains('ktlAddonsDiv')` - container is already an Element (bulkActionResolveElement) so `?.` is dead.",
+        "removeFromBasket (5756-5781): keep the two-path logic but comment it: path 1 unticks the row checkbox and lets syncSelectionFromDom rebuild the basket (so DOM stays the source of truth while the grid is visible); path 2 edits the store directly when the row is not on the current page.",
+        "startFormAction (6118-6165) is declared async but contains no await; keep `async` (callers await it and the Promise return is part of the signature) and note it in JSDoc. `String(action.operation || 'create').toLowerCase() === 'update' ? 'update' : 'create'` -> `toStringSafe(action.operation).toLowerCase() === 'update' ? 'update' : 'create'`.",
+        "Constructor (5589-5623): `this.labelFieldIds = Array.isArray(labelFieldIds) ? labelFieldIds : [labelFieldIds]` wraps null/'' into [null]; use `[labelFieldIds].flat().filter(Boolean)`. Arrow callbacks assigned to basketModal.onX (5617-5619) are fine; keep.",
+        "Replace repeated `knackValueResolver.toStringSafe` with a module-local `const toStringSafe = (v) => knackValueResolver.toStringSafe(v)` alias at the top of the bulk-actions section to shorten ~25 call sites across the class (no behaviour change).",
+        "init() (6244-6276): `this.actions.filter((action) => action?.targetType === 'form').forEach(...)` -> `for (const action of this.actions) if (action.targetType === 'form') registerBulkActionFormReplicateWorkflow({...})`."
+      ],
+      "behaviourRisks": [
+        "`bulkActionsApi = KnackBulkActions` default parameter (5589): KnackBulkActions is a `const` declared at 6875, AFTER this class. It works in V1 only because default params are evaluated at construction time, long after the script finished parsing. In V2 the file order must guarantee `const KnackBulkActions` is initialised before any consumer constructs the controller (TDZ ReferenceError otherwise) - keep the same relative ordering or hoist KnackBulkActions.",
+        "The controller holds `this.basketItems` as a mirror of basketStore (sessionStorage-backed, TTL-aware); syncBasketUi re-reads from the store (5908). Collapsing the mirror into store-only reads would change the observable `controller.basketItems` field, which validationCallback consumers receive via `context.controller` (5848). Keep the field.",
+        "DOM contracts used by CSS and other code: wrapper attributes data-knack-bulk-bar=<viewId>, id bulkActionControlsDiv-<viewId>, classes knackBulkActionBar / ktlFeatureGroup / knackBulkActionButton / knackBulkActionToolbarButton / is-active / is-inactive / is-disabled, button data-bulk-action-key. All must be emitted identically.",
+        "Toolbar buttons are created by KTL (ktl.fields.addButton) and may receive KTL's own click handling; adding listeners via addEventListener (6050) rather than onclick is deliberate so KTL handlers are not overwritten.",
+        "The setTimeout(0) re-mount (6058-6063) compensates for KTL inserting its bulkOps group after our render; removing it reorders the toolbar. A MutationObserver on the add-ons div would be the modern fix but is a wave-3+ behaviour change.",
+        "bulkActionControllerStore (3633) and ensureBulkActionControllerLifecycleBinding (3660) bind a jQuery `knack-view-render.any knack-scene-render` listener; Knack fires these with jQuery .trigger so a native addEventListener would NOT receive them - that binding must stay on window.jQuery.",
+        "runAction swallows per-item failures into basket items (6219-6224) and only notifies on a thrown error; validation failures route through bulkActionNotify. Keep both paths or UX changes.",
+        "getActionValidation calls consumer-supplied validationCallback(context) and treats `false`, a string, or `{valid:false, message?}` as failure; any other return (including undefined) is success. Preserve exactly - GAP-Track/Spot callbacks depend on it.",
+        "Master checkbox `indeterminate` (5962) is a property, not an attribute; keep property assignment.",
+        "clearBasket (5787-5793) relies on basketStore.clear() also wiping the stored active action key (verified in createBulkActionBasketStore.clear); if V2 swaps the store, keep that coupling."
+      ],
+      "knackPractice": "Follows the Knack model well: a new controller is built per knack-view-render via mountBulkActionGrid (6733), the view root is resolved fresh each call (resolveViewElement -> bulkActionFindViewRoot -> getViewRootElement, never cached), selection is re-read from the live DOM, and cross-render state lives in sessionStorage (basket store) and in the body-level modal rather than in view DOM. Navigation to the form scene uses bulkActionNavigateToSceneSlug (hash routing) and record ids come from tr#<recordId>, both consistent with Knack's documented conventions (unverified against live docs). It depends on KTL for checkboxes, buttons and the add-ons toolbar div, so it is KTL-coupled rather than Knack-coupled.",
+      "risk": "medium",
+      "wave": 3,
+      "estimatedV2Lines": 560,
+      "rationale": "Recent (2026), already ES2020+, no jQuery, well JSDoc'd; policy says port as-is with dead-code and consistency fixes only, and nothing in the 34-method public surface should change, so no shim. The concrete savings are the repeated row-checkbox lookups, the duplicated checked-id computation, the double rebuildRecordMaps, the per-button resolveActiveAction call, hasOwn, and classList.toggle pairs - roughly 130 lines without touching behaviour. Medium risk purely because of size and the number of KTL and sessionStorage interactions; a Playwright test driving a fake grid (checkboxes, master, basket add/remove, runAction with a stub runner) should gate the port."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "ensureStyleOnce",
+      "purpose": "Idempotently inject a <style id=...> into document.head once per page. Replaces three identical six-line bodies in the file.",
+      "replaces": [
+        "ensureBulkEditSelectionStyles (5477-5485)",
+        "ensureBulkActionBaseStyles (5034-5042, chunk C06)",
+        "ensureMenuButtonActiveStyles (9505-9518, other chunk)"
+      ],
+      "signature": "ensureStyleOnce(id: string, cssText: string): HTMLStyleElement  // returns the existing or newly created <style>"
+    },
+    {
+      "name": "el",
+      "purpose": "Tiny DOM builder so BulkActionModal.ensureModal and render can declare their tree in ~30 lines instead of 120 lines of createElement/className/dataset/appendChild. Also useful for toolbar wrappers and any other UI chunk (menu buttons, file carousel, notices).",
+      "replaces": [
+        "BulkActionModal.ensureModal (5137-5255) element construction",
+        "BulkActionModal.render (5262-5313) item rows",
+        "BulkActionGridController.renderButtonBar wrapper creation (6023-6029)"
+      ],
+      "signature": "el(tag: string, { className = '', dataset = {}, attrs = {}, text = '', hidden = false, on = {} } = {}, children: Array<Node|string> = []): HTMLElement"
+    },
+    {
+      "name": "findKtlBulkOpsGroup",
+      "purpose": "Single place for the KTL bulkOps group lookup (`#bulkOpsControlsDiv-<viewId>` falling back to `.bulkOpsControlsDiv`) used by both the mount helper and the setTimeout retry.",
+      "replaces": [
+        "bulkActionMountToolbarGroup line 5568",
+        "BulkActionGridController.renderButtonBar line 6059"
+      ],
+      "signature": "findKtlBulkOpsGroup(container: Element, viewId: string): Element|null"
+    },
+    {
+      "name": "readCheckedRecordIds",
+      "purpose": "Return the record ids of checked, selectable bulk-action row checkboxes in a view element - the computation duplicated by getSelectedRecordIds and syncSelectionFromDom. Can be a module-level bulk-action helper or a private #method on the controller.",
+      "replaces": [
+        "BulkActionGridController.getSelectedRecordIds (5649-5657)",
+        "BulkActionGridController.syncSelectionFromDom body (5970-5978)"
+      ],
+      "signature": "readCheckedRecordIds(viewElement: Element, rowCheckboxClass: string): string[]"
+    },
+    {
+      "name": "toStringSafe (module alias)",
+      "purpose": "Local alias `const toStringSafe = (v) => knackValueResolver.toStringSafe(v)` at the top of the bulk-actions section to shorten ~40 call sites in C06/C07/C08 without changing behaviour. Not a new global if V2 wraps the bulk-actions section in a block scope; if the file stays flat, name it bulkActionToStr to avoid colliding with any consumer global.",
+      "replaces": [
+        "knackValueResolver.toStringSafe(...) calls throughout BulkActionModal, ensureBulkActionCheckboxes and BulkActionGridController"
+      ],
+      "signature": "toStringSafe(value: unknown): string"
+    }
+  ],
+  "crossCuttingFindings": [
+    "Three identical idempotent style injectors exist in the file (ensureBulkActionBaseStyles 5034, ensureBulkEditSelectionStyles 5477, ensureMenuButtonActiveStyles 9505); V2 should ship one ensureStyleOnce(id, css) foundation primitive in wave 1 and make all three thin wrappers. Two of them carry a dead `typeof document === 'undefined'` guard and one does not - inconsistent.",
+    "bulkActionFindViewRoot (3689-3693) normalises the view id and then ignores the normalised value, passing the raw viewId to getViewRootElement (6931) which normalises again; it is a pure wrapper and a dedupe candidate already listed in the policy (getViewRootElement vs bulkActionFindViewRoot vs getViewMountElement). preserveBulkEditSelectedRowColors (5503) bypasses both and uses document.getElementById directly - a third way of doing the same thing in one chunk.",
+    "File-ordering constraint for V2: BulkActionGridController (5581) uses `bulkActionsApi = KnackBulkActions` as a default parameter, but `const KnackBulkActions` is declared at 6875, and a `globalThis.KnackBulkActions = {...}` merge follows it (6893-6900). With const/TDZ this only works because construction happens after script evaluation; V2 must keep KnackBulkActions (and knackNavigator 797 / knackValueResolver 1787, used at class-body evaluation time in other chunks) declared before anything that may run during script evaluation.",
+    "Knack lifecycle events (knack-view-render.any, knack-scene-render) are fired via jQuery .trigger, so ensureBulkActionControllerLifecycleBinding (3660) and every other render binding in the file MUST stay on window.jQuery(document).on(...); a native addEventListener will never receive them. This is the one jQuery dependency V2 cannot remove.",
+    "Spelling inconsistency inside the bulk-actions section itself: bulkActionSummarizeRunState / normalizeViewId / preserveBulkEditSelectedRowColors (US) vs bulkActionNormaliseLabelText (UK). All are public globals and cannot be renamed; policy says new identifiers are UK-spelt, so V2 will mix spellings permanently unless UK aliases are added as shims.",
+    "KTL coupling is pervasive and undocumented in-repo: ktl.views.addCheckboxesToTable option names, ktl.fields.addButton(parent, label, style, classes, id) positional signature, ktl.views.getKtlAddOnsDiv, the .ktlAddonsDiv / .ktlFeatureGroup / .bulkOpsControlsDiv class contract, and KTL `_ebo` internals (td.bulkEditSelectedRow, data-bulk-edit-saved-bg/color, class bulkEditCb). A short 'KTL contract' comment block (or a tests/fixtures stub of ktl) in V2 would let the bulk-action chunks be tested without KTL.",
+    "Timing hacks that should become MutationObserver-based in V3 but are kept in V2 per wave-3 rules: setTimeout(0) re-mount in renderButtonBar (6058-6063) and setTimeout(0) in ensureBulkActionControllerLifecycleBinding (3665).",
+    "Global state leaks: bulkActionControllerStore (Map), bulkActionWorkflowRegistry (Set), bulkActionControllerLifecycleBound (let), ktlBulkEditRowColorObservers (Map) are all mutable page globals. Harmless today but if V2 wraps module internals in a block scope these names must still be exposed because they are in eslint/knack-functions-globals.json.",
+    "Modal DOM (#knack-bulk-basket-<viewId>) is appended to document.body and never removed; bulkActionSyncControllerVisibility (3641) closes it but leaves the node. One node per bulk-action grid is bounded, but note it for the leak audit.",
+    "Line 5181 is mis-indented, confirming no formatter runs on this section; V2 should be formatted by the repo's ESLint config so such drift cannot recur."
+  ]
+}

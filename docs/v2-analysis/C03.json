@@ -1,0 +1,152 @@
+{
+  "chunkId": "C03",
+  "chunkSummary": "Lines 799-1787 hold one recent (2026) class, KnackValueResolver (803-1785, 36 methods), and its singleton `const knackValueResolver = new KnackValueResolver(knackNavigator)` (1787). The class is already ES2020+ (optional chaining, nullish coalescing, destructured option objects, no jQuery, no var, full JSDoc) and is a pure data-normalisation layer over Knack record payloads (`field_x` / `field_x_raw`) backed by KnackNavigator for field metadata. It is consumed from 170 call sites outside the chunk, 150 of which are `knackValueResolver.toStringSafe(...)`, making it a de-facto foundation primitive for the bulk-actions, KnackAPI, version-refresh and quick-toggle code. Per the policy this is a wave-3 class: port as-is with dead-code removal and consistency fixes only, no signature changes, no shims. Findings are small and local: one dead variable (1118), one identity ternary (1197), repeated HH:mm padding (1337/1348/1363/1397) and minutes-to-clock logic (1334-1338 vs 1343-1350), two near-identical branches in toConnectionRef (1575-1595), a double isReadOnlyFieldType call in getFieldShape (871/879), three parallel if-chains that should be lookup tables (1452-1497), redundant `?.` after null guards (1056-1057, 1035-1036, 1673 onward), and inconsistent trailing commas confined to getFieldValueMeta (947-997). Several public methods have zero in-file callers (toApiValue, getComparableFieldDisplay, toDateTimeRequestValueForFormat, the targetKey branch of toRequestValue) but two of them are documented in CHANGELOG.md lines 38-39, so all stay.",
+  "functions": [
+    {
+      "name": "KnackValueResolver",
+      "kind": "class",
+      "startLine": 803,
+      "endLine": 1785,
+      "currentSignature": "class KnackValueResolver { constructor(navigator); normalizeFieldId(fieldId); getFieldMeta(fieldKey); getFieldType(fieldKey); getFieldShape(fieldKey); describeFieldValue(record, fieldKey, { preferRaw = true } = {}); getFieldValueMeta(record, fieldKey, { preferRaw = true } = {}); getComparableFieldDisplay(record, fieldKey); buildRequestPayload(source, fieldKeys = []); resolve(record, fieldKey, { mode = 'typed', preferRaw = true, fallback = undefined } = {}); toTypedValue({ rawValue, displayValue, fieldType, preferRaw }); toApiValue({ rawValue, displayValue, fieldType }); toRequestValue({ rawValue, displayValue, fieldType, targetKey }); toDateTimeRequestValue(rawValue, displayValue); toDateTimeRequestValueForFormat(rawValue, targetFormat); _normalizeDateTimeRequestValue(value); _normalizeDateTimeTimeSegment(value); _buildTimeFromClockParts(hoursValue, minutesValue, amPmValue); toConnectionIds(value); isReadOnlyFieldType(fieldType); isStructuredFieldType(fieldType); getDisplayShapeForType(fieldType); getRawShapeForType(fieldType); getWriteShapeForType(fieldType); describeValueShape(value); toStructuredValue(primaryValue, fallbackValue); toBooleanValue(value); toNumberValue(value); toConnectionRef(value); extractResponseFieldValue(recordObj, fieldKey); toStringArray(value); toDisplayString(value, seen = new Set()); toStringSafe(value); normalizeComparableText(value); toJoinedString(value, separator = ', '); extractFieldLabel(recordObj, fieldKey); getRecordLabel(recordObj, fieldKeys) }",
+      "currentReturns": "Per method: normalizeFieldId -> string ('' when invalid); getFieldMeta -> Object|null; getFieldType -> string (lower-cased, '' when unknown); getFieldShape -> {fieldKey, rawKey, fieldType, readOnly, read:{...}, write:{...}}|null; describeFieldValue -> extended shape object|null; getFieldValueMeta -> {display: string, raw: string} (never null); getComparableFieldDisplay -> string; buildRequestPayload -> Object (always, {} on bad input); resolve -> * | fallback; toTypedValue -> *|undefined (connection: string|string[]; '' when zero ids); toApiValue -> string|string[]|undefined; toRequestValue -> string|number|boolean|Object|Array|undefined; toDateTimeRequestValue -> string|undefined; toDateTimeRequestValueForFormat -> string|undefined; _normalizeDateTimeRequestValue -> string|undefined; _normalizeDateTimeTimeSegment -> string ('' when empty, passthrough when unrecognised); _buildTimeFromClockParts -> string ('' on invalid); toConnectionIds -> string[]; isReadOnlyFieldType/isStructuredFieldType -> boolean; get*ShapeForType -> string label; describeValueShape -> string label; toStructuredValue -> Object|string|undefined|*; toBooleanValue -> boolean|undefined; toNumberValue -> number|undefined; toConnectionRef -> {id, identifier}|null; extractResponseFieldValue -> *|undefined; toStringArray -> string[]; toDisplayString -> string; toStringSafe -> string (never throws); normalizeComparableText -> string; toJoinedString -> string; extractFieldLabel -> string; getRecordLabel -> string (falls back to record.id or '').",
+      "verdict": "simplify",
+      "proposedSignature": "Unchanged: class KnackValueResolver with the identical constructor, the identical 36 method names, parameter lists, defaults and option-object keys. Internally add `static` lookup tables (READ_ONLY_FIELD_TYPES, STRUCTURED_FIELD_TYPES, DISPLAY_SHAPES, RAW_SHAPES, WRITE_SHAPE_OVERRIDES, DISPLAY_KEYS) on the class rather than new top-level consts, so no new page globals are introduced.",
+      "proposedReturns": "Unchanged per method (see currentReturns). Every quirk is preserved deliberately: toTypedValue returns '' (not undefined) for a connection with zero ids; toStringArray splits a plain string on commas; toBooleanValue(0) returns undefined while toBooleanValue('0') returns false; _normalizeDateTimeTimeSegment passes unrecognised text through unchanged.",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L1118 toApiValue: `const displayString = ...` is assigned and never read; delete the line.",
+        "L1197 toRequestValue: `return structuredValue === undefined ? undefined : structuredValue;` is an identity; replace with `return this.toStructuredValue(sourceValue, displayValue);`.",
+        "L1337, L1348, L1363, L1397: the same `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}` template appears four times; extract a private `_toClock(hours, minutes)` (or use the proposed shared `formatClock`) and call it from _normalizeDateTimeTimeSegment and _buildTimeFromClockParts.",
+        "L1334-1338 and L1343-1350 _normalizeDateTimeTimeSegment: the numeric-minutes-to-HH:mm block is written twice (once for typeof number, once for a digit string); coerce once with `const minutes = Number(value)` guarded by `/^\\d+$/.test(text)` and keep a single 0..1439 branch.",
+        "L1575-1595 toConnectionRef: the array branch and the object branch are identical except for `value[0]` vs `value`; collapse to `const item = Array.isArray(value) ? value[0] : value; if (!item || typeof item !== 'object') return null; const id = this.toStringSafe(item.id); return id ? { id, identifier: this.toStringSafe(item.identifier) } : null;`.",
+        "L1401-1418 toConnectionIds: three branches that all do `String(x.id || x || '').trim()`; rewrite as `[].concat(value ?? []).map((item) => this.toStringSafe(typeof item === 'object' ? item?.id : item)).filter(Boolean)` (same output for array, object and primitive inputs).",
+        "L871 and L879 getFieldShape: isReadOnlyFieldType(fieldType) is evaluated twice and `${key}_raw` built twice; compute `const readOnly = ...; const rawKey = ...;` once and reuse in both `readOnly` and `write.supported`.",
+        "L1425-1436 isReadOnlyFieldType / isStructuredFieldType: array literals are rebuilt on every call (isReadOnlyFieldType is called 4x per getFieldShape path and once per toRequestValue); hoist to `static READ_ONLY_FIELD_TYPES = new Set([...])` and `static STRUCTURED_FIELD_TYPES = new Set([...])` and use `.has(this.toStringSafe(fieldType).toLowerCase())`.",
+        "L1443-1497 getDisplayShapeForType / getRawShapeForType / getWriteShapeForType: three if-chains totalling ~55 lines; replace with static lookup objects (`RAW_SHAPES`, and `WRITE_SHAPES = { ...RAW_SHAPES, connection: 'recordId|array<recordId>', number: 'number', currency: 'number', date_time: 'object|string', name: 'object{first,middle,last,title}|string' }`) plus a one-line fallback; getWriteShapeForType keeps the readOnly -> 'unsupported' pre-check. These strings are descriptive only (used by getFieldShape/describeFieldValue) so no runtime branching depends on them.",
+        "L1673-1676 toDisplayString: `directKeys` array literal is allocated on every call (toDisplayString is recursive and called from toStringArray/toJoinedString in hot paths such as getRecordLabel); hoist to `static DISPLAY_KEYS`. Also drop `value?.[key]` -> `value[key]` since L1661 already guaranteed `value` is a non-null object.",
+        "L1055-1057 resolve and L1035-1036 buildRequestPayload: `record?.[rawKey]` / `source?.[...]` use optional chaining after an explicit `!record` / `typeof source !== 'object'` guard; drop the `?.` (no behaviour change, clearer intent).",
+        "L1062-1073 resolve: the mode dispatch is five sequential ifs; a small object map `{ raw: () => rawValue, display: () => displayValue, api: () => this.toApiValue(...), request: () => this.toRequestValue(...), typed: () => this.toTypedValue(...) }` with `(handlers[mode] ?? handlers.typed)() ?? fallback` reads better, but note the `?? fallback` must only apply to undefined for api/request/typed (current code uses `=== undefined`, and `?? ` would also catch null for those modes); keep `=== undefined` semantics for api/request/typed and `??` for raw/display exactly as today.",
+        "L1138-1141, L1159-1162, L1204-1207, L1526-1534: the 'trim a string and return undefined when empty' pattern appears four times; use the proposed shared `trimmedOrUndefined(value)` helper (private static or module-scoped inside the class body).",
+        "L943-999 getFieldValueMeta: uses trailing commas on object literals (947, 963, 970, 978, 986, 992, 996) while the rest of the class does not; normalise to the file convention. The array branch (955-968) can map through `toConnectionRef` once and reuse `refs` for both the display and raw joins, dropping the separate `joinedValue` recomputation.",
+        "L1604-1620 extractResponseFieldValue: replace the two `Object.prototype.hasOwnProperty.call(recordObj, k)` calls with `Object.hasOwn(recordObj, k)` (ES2022; evergreen browsers) and return via `??`-free ternary to preserve the display-before-raw precedence.",
+        "L1726-1728 normalizeComparableText: the final `.trim()` is redundant because toStringSafe already trimmed and `\\s+ -> ' '` cannot introduce edge whitespace; drop it.",
+        "L1764-1784 getRecordLabel: the manual `seen` Set + for loop can become `const parts = [...new Set(keys.map((k) => this.normalizeFieldId(k)).filter(Boolean))].map((id) => this.extractFieldLabel(recordObj, id)).filter(Boolean);` keeping the ' - ' join and the record.id fallback.",
+        "L817-828 normalizeFieldId: the fallback branch duplicates KnackNavigator.normalizePrefixedId (navigator is always supplied at L1787). Keep a fallback because `new KnackValueResolver(null)` is reachable by consuming apps, but delegate to the proposed shared `normalisePrefixedId(value, 'field_')` so the regex lives in one place.",
+        "L834-849 getFieldMeta / getFieldType: both normalise the key and then the navigator normalises it again (KnackNavigator L694-696, L725-727); simplify to `return this.navigator?.getFieldMeta?.(fieldKey) ?? null;` and `return this.navigator?.getFieldType?.(fieldKey) ?? '';` (identical results for KnackNavigator, which normalises internally).",
+        "JSDoc: keep every existing block; add `@private` tags already present on the `_` methods; add `@see` from toConnectionRef to the global `getConnectionRef` alias (L6990) so the duplicate relationship is documented."
+      ],
+      "behaviourRisks": [
+        "toStringSafe (L1712-1720) is called from 150 external sites plus 27 internal ones; its try/catch exists for values whose toString/valueOf throws (hostile objects, revoked Proxies). Any rewrite must keep the catch, keep returning '' for undefined/null, and keep trimming. Do not swap String(value) for a template literal: `${Symbol()}` throws a TypeError whereas String(Symbol()) does not, so a template literal would change which inputs reach the catch.",
+        "toTypedValue connection quirk (L1092-1093): zero connected ids yields '' not undefined, and resolve() then returns '' rather than fallback. CAMultiChoiceQuickToggle (L21624) relies on resolve({mode:'typed'}); changing '' to undefined would flip its empty-state handling.",
+        "toRequestValue (L1159) uses `rawValue !== undefined ? rawValue : displayValue`, NOT `rawValue ?? displayValue`; a null _raw deliberately wins over the display string and yields undefined (no write). bulkActionBuildSubmitEventRecordPayload (L4587-4594) depends on this to decide whether a field was cleared. Do not 'modernise' it to `??`.",
+        "toStringArray (L1639-1641) splits plain strings on commas; multiple_choice display values containing commas inside a single option would already be split today. Preserve, do not 'fix' in wave 3.",
+        "toBooleanValue (L1545) does `String(value || '')`, so numeric 0 returns undefined while '0' returns false; toNumberValue (L1562) strips every char except digits, dot, plus and minus, so '1,234.50' -> 1234.5 but '(100)' -> 100 (not -100). These are quirks consumers may rely on through buildRequestPayload; preserve.",
+        "_normalizeDateTimeTimeSegment (L1366) returns the input unchanged when unrecognised; callers chain `|| trimmed`. Tidying the duplicate minute branches must keep the 0..1439 bounds so a value like 2026 (a year) is not turned into a clock time.",
+        "toDateTimeRequestValueForFormat (L1241-1273) encodes Knack's rule that _raw.date is always mm/dd/yyyy regardless of field display format (CHANGELOG L38); the dd/mm swap logic must survive any refactor into lookup tables.",
+        "getFieldValueMeta is exposed through the KnackBulkActions public object (L6845, L6880) via .bind; method identity matters there, so methods must remain prototype methods (not arrow-function class fields) so `.bind(knackValueResolver)` keeps working the same way and subclass overrides still apply.",
+        "The class has no DOM or CSS side effects and no jQuery, so :visible / trigger / Chosen risks do not apply; the risk is purely data-shape regressions across 170 call sites.",
+        "Introducing static class fields instead of module-level consts avoids new page globals, but `static` fields require the V2 build target to accept ES2022 class fields; the existing esbuild/dist pipeline must not be set to a target that downlevels them into helper globals."
+      ],
+      "knackPractice": "Follows Knack's documented record payload model: reads `field_x` (HTML display) and `field_x_raw` (structured), understands the documented raw shapes for connections `[{id, identifier}]` and date_time `{date, date_formatted, hours, minutes, am_pm, ...}`, and writes only non-raw keys in POST/PUT payloads, which matches the view-based REST API contract. Field metadata comes from `Knack.objects.models[].fields.models[].attributes` via KnackNavigator rather than hard-coded types, which is the documented Knack.objects model. The mm/dd/yyyy-in-_raw rule used by toDateTimeRequestValueForFormat and the `_raw.hours` 12-hour-when-am_pm-present rule are empirical observations of Knack behaviour, unverified against live docs. It never touches the DOM, so render-event timing is irrelevant; it does not fight the Knack model.",
+      "risk": "medium",
+      "wave": 3,
+      "estimatedV2Lines": 820,
+      "rationale": "Already modern and jQuery-free, so the policy's wave-3 rule applies: port as-is, remove dead code (L1118), collapse duplicated branches (toConnectionRef, toConnectionIds, time padding, shape if-chains) and align formatting. The blast radius is large (170 external call sites, 150 of them toStringSafe, plus two public .bind exposures), which is why risk is medium despite each change being mechanical; a differential test using tests/v2/harness.cjs over a fixture record covering connection, multiple_choice, date_time (with am_pm and 24h), number, boolean, name, address and empty values should gate the port. No signature changes and therefore no shims."
+    },
+    {
+      "name": "knackValueResolver",
+      "kind": "const NewExpression",
+      "startLine": 1787,
+      "endLine": 1787,
+      "currentSignature": "const knackValueResolver = new KnackValueResolver(knackNavigator)",
+      "currentReturns": "KnackValueResolver instance (page global singleton)",
+      "verdict": "keep",
+      "proposedSignature": "const knackValueResolver = new KnackValueResolver(knackNavigator)",
+      "proposedReturns": "KnackValueResolver instance (page global singleton)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "No code change. In V2 the declaration must stay physically after `const knackNavigator = new KnackNavigator()` (V1 L797) and after the class body, because `const` is in the temporal dead zone until evaluated in a classic script.",
+        "Add a one-line JSDoc `/** Shared KnackValueResolver bound to the shared knackNavigator. @type {KnackValueResolver} */` (the brief flags jsdoc: false)."
+      ],
+      "behaviourRisks": [
+        "55 functions reference this global (brief calledBy), including wave-1 candidates such as validateUkMobileNumber (L13892), getConnectionRef (L6990), elementHasMeaningfulValue, hiddenInputHasMeaningfulValue and showConfirmationDialog. If those are ported to V2 before the class, V2 will throw ReferenceError at call time; tests/v2/v2-structure.test.cjs only checks declarations, not runtime references.",
+        "KnackBulkActions (L6880) and createKnackBulkActions (L6845) capture `.bind(knackValueResolver)` at load time, so the singleton must exist before those objects are evaluated in V2 as well."
+      ],
+      "knackPractice": "A load-time singleton over Knack.objects metadata is fine because Knack.objects is populated before custom JavaScript runs; KnackNavigator caches field meta lazily so nothing is read at construction. Consistent with the Knack single-script model. Unverified against live docs.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 2,
+      "rationale": "A trivial singleton whose only job is to wire the resolver to the shared navigator. It must ship in the same V2 step as the class and after knackNavigator. The real decision is ordering: either port KnackNavigator + KnackValueResolver early (they are standalone, jQuery-free, low-risk) or give wave-1 functions a module-level toStringSafe so they do not depend on this global; see crossCuttingFindings."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "toStringSafe",
+      "purpose": "Top-level foundation helper (wave 1) returning String(value).trim() or '' for null/undefined/throwing values. Lets wave-1 rewrites stop depending on the knackValueResolver singleton; KnackValueResolver.prototype.toStringSafe delegates to it when the class is ported so the 150 existing method call sites keep working unchanged.",
+      "replaces": [
+        "KnackValueResolver.toStringSafe (L1712) body",
+        "150 external `knackValueResolver.toStringSafe(...)` calls in wave-1/2 functions can switch to the free function",
+        "ad-hoc `String(x || '').trim()` at L1405-1407, L1412, L1416, L1577, L1586, L1545, L1562"
+      ],
+      "signature": "function toStringSafe(value) -> string"
+    },
+    {
+      "name": "normalisePrefixedId",
+      "purpose": "Single implementation of the `field_123` / `123` / `view_12` / `scene_4` normalisation currently duplicated in KnackNavigator.normalizePrefixedId and the fallback branch of KnackValueResolver.normalizeFieldId (L822-827). Used by both classes and by wave-1 helpers that take a fieldId/viewId.",
+      "replaces": [
+        "KnackValueResolver.normalizeFieldId fallback (L822-827)",
+        "KnackNavigator.normalizePrefixedId",
+        "the `/^field_\\d+$/` test at L1026"
+      ],
+      "signature": "function normalisePrefixedId(value, prefix) -> string ('' when invalid)"
+    },
+    {
+      "name": "trimmedOrUndefined",
+      "purpose": "Return a trimmed non-empty string, else undefined. The pattern is written out four times in the class and will recur in any payload-building helper.",
+      "replaces": [
+        "toApiValue L1138-1141",
+        "toRequestValue L1159-1162 and L1204-1207",
+        "toStructuredValue L1526-1534"
+      ],
+      "signature": "const trimmedOrUndefined = (value) => (typeof value === 'string' && value.trim()) || undefined"
+    },
+    {
+      "name": "formatClock",
+      "purpose": "Zero-padded `HH:mm` from numeric hours and minutes, with optional minutes-since-midnight overload, replacing four hand-written padStart templates and the duplicated 0..1439 branch.",
+      "replaces": [
+        "_normalizeDateTimeTimeSegment L1334-1338, L1343-1350, L1363",
+        "_buildTimeFromClockParts L1397",
+        "toDateTimeRequestValueForFormat L1267-1269 (military branch)"
+      ],
+      "signature": "function formatClock(hours, minutes) -> string  /  formatClock.fromMinutes(totalMinutes) -> string|''"
+    },
+    {
+      "name": "toConnectionRefs",
+      "purpose": "Normalise any Knack connection value (array, object, primitive id) to an array of {id, identifier}. toConnectionIds, toConnectionRef and the array branch of getFieldValueMeta (L955-968) all re-derive this; a single mapper removes three branch sets.",
+      "replaces": [
+        "toConnectionIds L1401-1418",
+        "toConnectionRef L1574-1596",
+        "getFieldValueMeta L955-968 and L976-982",
+        "global getConnectionRef L6990 (already a one-line alias)"
+      ],
+      "signature": "toConnectionRefs(value) -> Array<{id: string, identifier: string}>; then toConnectionIds = refs.map(r => r.id), toConnectionRef = refs[0] ?? null"
+    }
+  ],
+  "crossCuttingFindings": [
+    "Ordering dependency for the V2 file: 55 functions use the knackValueResolver singleton and 150 call sites use .toStringSafe (e.g. validateUkMobileNumber L13892, getConnectionRef L6990, bulkActionUniqueStrings L1794, bulkActionNormaliseLabelText L3107, elementHasMeaningfulValue, showConfirmationDialog). Wave-1 rewrites must either land KnackNavigator + KnackValueResolver + both singletons first (they are standalone and jQuery-free, so porting them verbatim early is low-risk even though the policy labels them wave 3) or use the proposed free `toStringSafe` so V2 is runnable before the classes arrive. tests/v2/v2-structure.test.cjs checks declarations only, so a dangling runtime reference would not be caught; a smoke test that evaluates each ported function once is needed.",
+    "Global `getConnectionRef` (L6990) is a one-line alias of knackValueResolver.toConnectionRef; it is already the shim shape the policy wants. Mark it @deprecated in V2 and move it to the compatibility-shims section; canonical implementation stays on the class.",
+    "KnackAPI._isAssetField (L14805-14818) re-implements field-type lookup by calling knackNavigator directly and then falling back to Knack.objects.getField; it should call knackValueResolver.getFieldType (or the navigator) once and drop the fallback, which duplicates KnackNavigator.getFieldMeta (L694-717). Same for KnackAPI._extractResponseValueFromRecord (L16250-16262), which re-derives `${id}_raw` and the hasOwnProperty check that extractResponseFieldValue already does.",
+    "bulkActionNormaliseLabelText (L3107) and normalizeComparableText (L1726) are both 'collapse whitespace' normalisers differing only in HTML stripping; the bulk-actions chunk should express the former as strip-HTML + normalizeComparableText rather than re-collapsing whitespace.",
+    "bulkActionUniqueStrings (L1794) is `[...new Set(values.map(toStringSafe).filter(Boolean))]`; with a free toStringSafe it becomes a one-liner and belongs with the foundation helpers rather than in the bulk-actions namespace.",
+    "Naming: the class uses US spelling for public method names (normalizeFieldId, normalizeComparableText, _normalizeDateTime*) while the JSDoc and newer code use UK spelling (normalises). Policy forbids renaming existing members, so V2 keeps the US names; do not add UK-spelled aliases on the class (that would double the surface). New free helpers proposed here use UK spelling (normalisePrefixedId).",
+    "New top-level consts in a classic script become page globals and would need adding to eslint/knack-functions-globals.json; this chunk should use `static` class fields for its lookup tables instead of file-level consts. Other chunks proposing constants (field-type sets, selectors) should follow the same rule or attach them to an existing namespace object.",
+    "Public-but-unused API in this chunk: toApiValue (only reachable via resolve({mode:'api'}), no in-file caller), getComparableFieldDisplay (no caller at all), toDateTimeRequestValueForFormat and toRequestValue's targetKey branch (documented in CHANGELOG L38-39, no in-file caller). All must survive V2 because consuming apps may call them; flag them in the migration plan as V3 removal candidates to be confirmed against GAP-Track and Spot.",
+    "The resolver has no automated tests despite being the data layer under bulk actions and KnackAPI; tests/v2 already has a Playwright differential harness, so a fixture-record test (connection, multiple_choice, date_time with am_pm and 24h, number, currency, boolean, name, address, empty/null _raw) comparing V1 and V2 method outputs should be the acceptance gate for this chunk and would also protect the KnackAPI chunk."
+  ]
+}

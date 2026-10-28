@@ -1,0 +1,248 @@
+{
+  "chunkId": "C20",
+  "chunkSummary": "The KnackAPI class (2,887 lines, already modern async/fetch code with a write queue, 429 backoff, usage/rate-limit tracking and asset upload) plus its tiny access layer (getKnackApiClient singleton, resolveKnackApiUsageClient, the KnackApiUsage helper object and the globalThis alias statement). Nothing here uses jQuery or var, so the V2 work is wave-3 \"port as-is\": delete four dead private methods and one unreachable throw, fold the two near-identical pagination loops and three batch-write scaffolds into shared private helpers, merge the duplicated header builders, fix two real bugs (uploadAsset builds a relative URL when Knack.api_dev is absent; updateRecord verifies against the un-prepared payload so asset uploads always log a spurious failure), correct the continueOnError JSDoc (documented false, actually true), and keep every public signature, error shape, queue semantic and window/globalThis side effect unchanged.",
+  "functions": [
+    {
+      "name": "KnackAPI",
+      "kind": "class",
+      "startLine": 14161,
+      "endLine": 17047,
+      "currentSignature": "class KnackAPI { static get DEFAULT_WRITE_CONCURRENCY (6); constructor(options = {}); getRecords(sceneId, viewId, options = {}); getAllRecords(sceneId, viewId, options = {}); getRecordChildren(sceneId, viewId, recordId, parentSceneSlug, options = {}); getAllRecordChildren(sceneId, viewId, recordId, parentSceneSlug, options = {}); createRecord(sceneId, viewId, recordData, options = {}); createRecords(sceneId, viewId, recordsData, options = {}); uploadAsset(file, options = {}); updateRecord(sceneId, viewId, recordId, recordData, options = {}); updateRecords(sceneId, viewId, recordIds, recordData, options = {}); updateRecordsWithDelay(sceneId, viewId, recordIds, recordData, options = {}); deleteRecord(sceneId, viewId, recordId, options = {}); deleteRecords(sceneId, viewId, recordIds, options = {}); refreshView(viewId); getRecord(sceneId, viewId, recordId); forceLog(message, data); isDeveloper(); setDebug(enabled); setWriteConcurrency(writeConcurrency); getApiUsageStats(); getRunApiCallCount(); getRateLimitStatus(); resetApiUsageStats(options = {}); refreshApiUsageStats(sceneId, viewId, options = {}); logApiUsageStats(options = {}); buildFilters(filters); buildSorters(sorters); formatConnectedFields(records, connectedFields); plus ~65 underscore-prefixed private methods }",
+      "currentReturns": "KnackAPI instance. getRecords/getRecordChildren: Promise<Array<Object>|Object> (raw response when options.rawResponse); getAllRecords/getAllRecordChildren: Promise<Array<Object>>; createRecord/updateRecord/deleteRecord/getRecord/uploadAsset: Promise<Object> (parsed JSON, or raw text when the body is not JSON, or {} when empty); createRecords: Promise<{total, created, failed, records}>; updateRecords: Promise<{total, updated, failed}>; deleteRecords: Promise<{total, deleted, failed}>; updateRecordsWithDelay: Promise<Array<Object|{error, recordId}>>; refreshView: Promise<void|void[]>; getApiUsageStats/resetApiUsageStats/refreshApiUsageStats/logApiUsageStats: {run, daily} (refresh is a Promise); getRunApiCallCount: number; getRateLimitStatus: Object; buildFilters/buildSorters: Object; formatConnectedFields: Array<Object>; isDeveloper: boolean; setDebug/setWriteConcurrency/forceLog: undefined. Failures reject with Error carrying .status (number) and .body (string|null) and message `API error ${status}: ${message}`.",
+      "verdict": "simplify",
+      "proposedSignature": "Unchanged: same class name, same constructor options (both the documented retry429* names and the undocumented maxRetries/retryDelayBase/retryDelayMax overrides at 14185-14199 stay accepted), same public method names, parameters, defaults and option keys.",
+      "proposedReturns": "Unchanged, including the Error shape (.status, .body, `API error N: msg`), the batch summary objects and the {run, daily} usage snapshots.",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Delete dead private methods with no callers anywhere in the file: _createAbortController (15835-15847), _handleResponse (15886-15893) and _executeRequest (15903-15905; it also passes a timeout only when signal is absent, which is nonsensical). Keep _scheduleWrite (16628-16630) as a one-line @deprecated alias because its JSDoc promises backward compatibility for \"older internals\"; delete it in V3.",
+        "Remove the unreachable `throw new Error('Max retries exceeded')` at 16902: every path through the for-loop at 16845-16897 either returns outcome.result or throws normalizedError.",
+        "Extract a private `_fetchAllPages(fetchPage, { rows, pageConcurrency, failOnPageError, onProgress, timeout, filters, sorters }, logContext)`: getAllRecords (14256-14305) and getAllRecordChildren (14373-14427) are line-for-line identical apart from the page fetcher and the log label (~55 lines saved).",
+        "Extract a private `_runBatchWrite({ operation, code, target, items, execute, options })` that owns the counters, the `_buildBatchContext` call, the try/finally with `_logBatchSummary`, the `_refreshAfterWrite` + `_logBatchFailures` + rethrow-of-firstError tail: createRecords (14509-14575), updateRecords (14923-15006) and deleteRecords (15094-15158) repeat that scaffold three times (~90 lines saved). Keep the three public result shapes ({created}|{updated}|{deleted}) by passing the counter key name.",
+        "Merge _buildUploadHeaders (15963-15977) into `_buildHeaders(withAuth = true, { json = true } = {})`; the only difference is the Content-Type line. _requestInner (16770) and uploadAsset (14611) call the merged helper.",
+        "Bug: uploadAsset builds its URL from `String(Knack?.api_dev || '')` at 14600, so when api_dev is absent the request goes to the relative path `/applications/...`; use `this._getApiBaseUrl()` (17033-17035) like every other request.",
+        "Bug: updateRecord verification (14870-14893) iterates `Object.keys(recordData)` and compares `recordData[key]` (the un-prepared payload, which holds a Blob when autoUploadAssets is on) with the response; use `preparedRecordData` so asset updates stop logging a spurious \"Field update verification: failures detected\". Also log `preparedRecordData` rather than the Blob at 14857.",
+        "JSDoc correction: createRecords/updateRecords/deleteRecords document `[options.continueOnError=false]` (14500, 14916, 15090) but _buildBatchContext sets `continueOnError = opts.continueOnError !== false` (16474), so the real default is true. V2 keeps the true default (bulk actions at 6453-6462 depend on partial success) and fixes the three doc lines.",
+        "getRecord (15203-15218): replace the `console.error` + rethrow at 15215 with `this._log(..., 'error')` + rethrow so it respects the debug/developer gate like every other method. Keep the three-parameter signature; an optional trailing options object is a V3 candidate (document in tests/v2/signature-exceptions.json if added earlier).",
+        "_log (15781-15795): `data || ''` hides falsy data such as 0/false; use `data ?? ''` and collapse the switch to `console[level === 'warn' || level === 'error' ? level : 'log'](prefix, data ?? '')`.",
+        "Constructor (14179-14216): extract `resolveRetryOptions(options)` so the three nested ternaries (14185-14199) become a flat lookup that documents both option spellings in JSDoc (currently only retry429* is documented at 14174-14176 while the code prefers maxRetries/retryDelayBase/retryDelayMax).",
+        "_refreshSingleView (16119-16213): convert from a hand-rolled Promise with try/catch to `async`, wrap only the Backbone `view.model.fetch` callback pair in a Promise, and replace the four `typeof view.X === 'function' ? call : reject` blocks with a lookup table {form: 'reloadForm', calendar: 'renderRecords', search: 'renderResults', menu: 'postRender'}. Preserve the per-type side calls exactly (form also calls view.render(); calendar also calls Knack.hideSpinner?.(); search first triggers model change and renderForm/renderView).",
+        "_formatParams (16099-16113): `new URLSearchParams(params)` accepts a plain object directly, so the body is `return Object.keys(params ?? {}).length ? `?${new URLSearchParams(params)}` : ''`.",
+        "_normalizeResponseHeaders (15531-15547): `Object.fromEntries(Array.from(headersLike.entries?.() ?? Object.entries(headersLike), ([k, v]) => [String(k).toLowerCase(), v]))`.",
+        "Use `Object.hasOwn` at 16257 (and in the resolver helper it calls) instead of `Object.prototype.hasOwnProperty.call`.",
+        "_buildBatchContext (16471-16494) spreads every batch option (onProgress, staggerMs, requireRecordId, continueOnError) into the per-record `requestOptions`; pass only the keys the single-record methods read ({ timeout, autoUploadAssets, assetFieldIds, assetTypesByField, onAssetProgress, _on429 }).",
+        "Share the inline JSON-or-text parse IIFE (14697-14703 and 16788-16794) and the `new Promise(resolve => setTimeout(resolve, ms))` sleeps (15035, 16546, 16895) via the module-level `parseJsonOrText` and `sleep` primitives proposed below.",
+        "Add the missing JSDoc on _normaliseDateTimeForCompare (16306), _normaliseDisplayForCompare (16347) and _valuesEffectivelyEqualForField (16364); normalise the mis-indented @param/@example lines (14174, 14340-14341, 14451-14461, 14836-14844, 15785).",
+        "updateRecordsWithDelay (15023-15043): keep the signature and sequential, error-collecting semantics (it returns per-record results including {error, recordId}, which updateRecords does not), but add `@deprecated Use updateRecords(..., { staggerMs, continueOnError: true })` and run `this._assertWriteOptions(options, 'updateRecordsWithDelay')` for consistency with the other writers.",
+        "Replace the stale class header `@version 1.0.1` (14159) and the `//*************** Helpers ...` banner (16240) with a plain JSDoc section comment; the CHANGELOG already tracks versions.",
+        "Spelling: the class mixes _normalizeRefreshViews/_normalizeResponseHeaders/_normalizeExternalRateLimitSnapshot (US) with _normaliseForCompare/_normaliseDateTimeForCompare (UK). Do not rename in wave 3 (private methods are still reachable on a public class instance); any NEW helper uses UK spelling."
+      ],
+      "behaviourRisks": [
+        "Write-queue semantics (16397-16720): default concurrency 6, 9 dispatches per rolling second, drop to writeMinConcurrency and pause on 429, ramp +1 per completed job once writeRampDelayMs has elapsed, `Infinity` bypass at 16612 that still defers the task to a microtask. Bulk actions (6453-6462) and the version refresh controller depend on this ordering and throttling; a refactor that changes dispatch order or the per-second window will surface as 429 storms in production.",
+        "_request (16723-16747) deduplicates in-flight GETs by `url::timeout`; two callers share one promise, so a timeout or abort affects both. Keep the key format and the finally-delete.",
+        "Non-OK responses are thrown as plain objects {status, statusText, responseText, headers} (16777-16782, 14707-14712) and normalised by _buildRequestError (16911-16934) into an Error with .status, .body and the message `API error ${status}: ${message}`; KnackError and bulk actions may inspect .status/.body or match the message text. Keep both the intermediate shape (used for Retry-After via error.headers.get at 16987) and the final Error shape.",
+        "continueOnError defaults to true (16474) despite the JSDoc saying false; batch methods only rethrow firstError when it is explicitly false. Flipping the default to match the docs would make bulk replication abort on the first failure.",
+        "_runBatchWorkers (16531-16584): when continueOnError is false, scheduling stops but already-running workers finish, so counts can exceed the failing index; tests must not assume an exact stop.",
+        "refreshView/_refreshSingleView (15184-15196, 16119-16213) rely on undocumented Backbone internals (view.model.fetch, reloadForm, renderRecords, renderResults, postRender, model.trigger('change')); view types outside {form, calendar, search, menu, details, table} (list, map, report) fetch but never re-render (16179-16195) and resolve silently. Port verbatim; any \"improvement\" needs a live-app check. Unverified against live docs.",
+        "Logging gate: _log prints only when options.debug AND (developer role OR forceLog) (15782), so forceLog() still needs debug: true. _initLogSettings (15983-16004) calls Knack.getUserRoleNames() in the constructor; a client constructed before Knack is ready logs a console.warn (16001) and never shows logs. Keep the gate exactly or non-developer consoles get spammed.",
+        "Rate-limit snapshot header names (x-planlimit-*, x-rate-limit-*, 15616-15618) are speculative; browsers only expose CORS-safelisted headers unless Knack sends Access-Control-Expose-Headers, which the code's own fallback reason strings (15624-15626) admit. refreshApiUsageStats also POSTs the user session token to http://localhost:3001 by default (15358, 15661-15720). Unverified against live docs.",
+        "uploadAsset uses XMLHttpRequest (14673-14741) specifically for upload progress events; fetch has no upload progress, so do not \"modernise\" it to fetch. The endpoint `/applications/{id}/assets/{type}/upload` with view-based auth headers is undocumented (unverified against live docs).",
+        "The class reads the top-level `const knackNavigator` (797) and `const knackValueResolver` (1787) at call time (14810-14816, 16251-16252, 16350, 16365-16366); V2 must declare those instances before any KnackAPI instance is constructed (KnackError constructs one at 21804, getKnackApiClient lazily) or hit the temporal dead zone.",
+        "Error reporting deliberately uses console via _log rather than errorHandler.handle: KnackError (21772) wraps a KnackAPI to write error records, so routing KnackAPI failures into errorHandler would recurse (KnackError -> createRecord -> 429 -> errorHandler -> KnackError). Keep console-based logging here as a documented exception to the policy.",
+        "buildFilters (16011-16056) accepts both the documented `{match, rules}` JSON form (16016-16021) and a bracket form `filters[0][field]=...` (16029-16055) that the view-based records API probably ignores (same failure class as the sort[0][field] bug recorded in CHANGELOG line 29). Converting the bracket form to JSON is a behaviour change for any caller that currently passes an array and silently gets unfiltered results; do it only as a deliberate, changelog-noted fix after a live test. Unverified against live docs."
+      ],
+      "knackPractice": "Follows the documented view-based REST model: URL `/pages/{scene}/views/{view}/records[/{id}]` (15867-15880), headers X-Knack-Application-ID / X-Knack-REST-API-Key: knack / Authorization: Knack.getUserToken() (15939-15951, 15855-15857), `page` + `rows_per_page` (15913-15920), `filters` as JSON (16016-16021), `sort_field` + `sort_order` (16072-16094, fixed per CHANGELOG), child records via `{sceneSlug}_id` (14350-14355, unverified against live docs), 429 backoff with Retry-After. Uses Knack.showSpinner/hideSpinner, Knack.application_id, Knack.getUserRoleNames() and Knack.objects.getField() as documented. It fights the model in _refreshSingleView (Backbone internals instead of letting Knack re-render and listening to knack-view-render), in the bracket-form filters, and in reading rate-limit headers the browser cannot see; Knack.api_dev (14600, 17034) is an undocumented internal. No object-based (secret key) API is used, which is correct for browser code.",
+      "risk": "high",
+      "wave": 3,
+      "estimatedV2Lines": 2450,
+      "rationale": "Already ES2020+ async code with no jQuery, so it meets the wave-3 \"port as-is with dead-code removal and consistency fixes\" rule and must not change signatures: it is the write path for bulk actions (4356, 6453-6507), KnackError (21804, 22819), the version refresh controller (2066), quick toggles (21278, 21697) and two older helpers (12157-12167, 13120-13145). The savings are real but mechanical: four dead methods, one unreachable throw, two copy-pasted pagination loops, three copy-pasted batch scaffolds and a duplicated header builder, plus two genuine bugs (relative upload URL, verification against the un-prepared payload). Risk is high because the rate limiter, retry/error shapes and Backbone-based refresh are production-critical and only testable against a live app."
+    },
+    {
+      "name": "getKnackApiClient",
+      "kind": "function",
+      "startLine": 17054,
+      "endLine": 17078,
+      "currentSignature": "getKnackApiClient()",
+      "currentReturns": "KnackAPI (window.knackAPI if it is a KnackAPI, else window.__knackFunctionsApiClient if it is a KnackAPI, else a new fallback client that is cached on window.__knackFunctionsApiClient and also assigned to window.knackAPI when that is null/undefined)",
+      "verdict": "simplify",
+      "proposedSignature": "getKnackApiClient()",
+      "proposedReturns": "KnackAPI (same resolution order and same window side effects)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Drop the three `typeof window !== 'undefined'` guards (17055, 17059, 17070) in favour of `globalThis`, which the ES2020 target and the sibling statement at 17116 already assume; the tests/v2 harness stubs a global, so no node guard is needed.",
+        "Read the two candidates with one expression: `const existing = [globalThis.knackAPI, globalThis.__knackFunctionsApiClient].find(c => c instanceof KnackAPI); if (existing) return existing;`.",
+        "Keep the fallback options literal (17063-17068) exactly: showSpinner false, debug false, developerOnly true, developerRoles ['Developer'] (these are the defaults KnackAPI already applies, so the literal can shrink to `new KnackAPI()` with a comment, but the explicit object documents intent and costs nothing).",
+        "Keep `window.knackAPI ??= fallbackClient` semantics (17072-17074 only assigns when undefined or null) using `??=`."
+      ],
+      "behaviourRisks": [
+        "The assignment to window.knackAPI (17073) is observable: eslint/knack-functions-globals.json line 234 lists `knackAPI` as a global generated from this assignment, and consumer apps may rely on `knackAPI` existing after the first utility call. V2 must keep both assignments (knackAPI and __knackFunctionsApiClient).",
+        "`instanceof KnackAPI` (17055, 17059) means a consumer-supplied `window.knackAPI` that is a duck-typed client or an instance from another copy of the class is ignored and silently replaced by the fallback; keep this check unchanged.",
+        "The fallback client is constructed lazily on first call; if that happens before Knack has a session, _initLogSettings disables logs for the lifetime of the shared client (see KnackAPI risks)."
+      ],
+      "knackPractice": "Library convention, not a Knack construct: one shared client so the write queue and rate limiter are page-wide. Note that KnackError (21804) bypasses it with its own `new KnackAPI`, giving two independent write queues in the same page.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 14,
+      "rationale": "Modern, 25 lines, and the single entry point used by six other functions (2066, 4356, 12157, 13120, 21278, 21697). Only the redundant window guards and the three-step fallback can be tightened; signature and side effects must stay. It ships with KnackAPI in wave 3 because it cannot exist without the class (see the ordering note in crossCuttingFindings)."
+    },
+    {
+      "name": "resolveKnackApiUsageClient",
+      "kind": "function",
+      "startLine": 17085,
+      "endLine": 17087,
+      "currentSignature": "resolveKnackApiUsageClient(apiClient = null)",
+      "currentReturns": "KnackAPI (apiClient when it is a KnackAPI instance, otherwise getKnackApiClient())",
+      "verdict": "keep",
+      "proposedSignature": "resolveKnackApiUsageClient(apiClient = null)",
+      "proposedReturns": "KnackAPI",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "None; it is already a one-line expression. Keep the JSDoc."
+      ],
+      "behaviourRisks": [
+        "Public global (listed in eslint/knack-functions-globals.json) even though only KnackApiUsage (17093-17112) calls it; must remain."
+      ],
+      "knackPractice": "Library plumbing; not Knack-specific.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 3,
+      "rationale": "Three modern lines with a single responsibility. Nothing to change; ported verbatim alongside KnackApiUsage."
+    },
+    {
+      "name": "KnackApiUsage",
+      "kind": "const object",
+      "startLine": 17092,
+      "endLine": 17114,
+      "currentSignature": "const KnackApiUsage = { getClient(apiClient = null), getStats(apiClient = null), getCallCount(apiClient = null), getRateLimit(apiClient = null), resetStats(options = {}, apiClient = null), logStats(options = {}, apiClient = null), refreshStats(sceneId, viewId, options = {}, apiClient = null) }",
+      "currentReturns": "Object; getClient: KnackAPI; getStats/resetStats/logStats: {run, daily}; getCallCount: number; getRateLimit: Object; refreshStats: Promise<{run, daily}>",
+      "verdict": "keep",
+      "proposedSignature": "Unchanged",
+      "proposedReturns": "Unchanged",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Add a one-line JSDoc per method (currently only the object has a comment at 17089-17091) so the generated globals documentation shows return types.",
+        "Optionally mark the object `Object.freeze(...)` so consumers cannot monkey-patch the helpers; not required and would be a (minor) behaviour change, so leave unfrozen unless the owner wants it."
+      ],
+      "behaviourRisks": [
+        "Every method takes an optional trailing apiClient so callers can point at their own client; keep the parameter order (options before apiClient on resetStats/logStats/refreshStats).",
+        "refreshStats triggers a real API call plus, by default, the localhost dev-server probe (see KnackAPI risks); consumers calling it in production incur one request and a failed localhost fetch."
+      ],
+      "knackPractice": "Developer tooling on top of the view-based API; not a Knack construct.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 23,
+      "rationale": "Seven one-line delegators, already modern. Keep verbatim; it is exported under two global names (KnackApiUsage and knackAPIUsage) that consumers may use from the console."
+    },
+    {
+      "name": "if (typeof globalThis !== 'undefined') {",
+      "kind": "statement",
+      "startLine": 17116,
+      "endLine": 17119,
+      "currentSignature": "if (typeof globalThis !== 'undefined') { globalThis.KnackApiUsage = KnackApiUsage; globalThis.knackAPIUsage = KnackApiUsage; }",
+      "currentReturns": "undefined (side effect: defines window.KnackApiUsage and window.knackAPIUsage)",
+      "verdict": "simplify",
+      "proposedSignature": "globalThis.KnackApiUsage = KnackApiUsage; globalThis.knackAPIUsage = KnackApiUsage;",
+      "proposedReturns": "undefined (same two global properties)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Drop the `typeof globalThis !== 'undefined'` guard: globalThis is guaranteed in the ES2020 target and in the node test harness, and getKnackApiClient already assumes a global object.",
+        "Keep both assignments. A top-level `const` in a classic script is a global lexical binding, NOT a property of window, so `globalThis.KnackApiUsage = ...` is what makes `window.KnackApiUsage` work from modules, iframes and the console; `knackAPIUsage` is the camelCase alias. Both names are in eslint/knack-functions-globals.json (line 235 and the KnackApiUsage entry), which eslint/generate-globals.mjs derives from exactly this kind of assignment (its comment at line 51).",
+        "Place the two assignments directly after the const so V2 keeps the same declaration order; if V2 adopts a single \"globals export\" block, this is one of the entries."
+      ],
+      "behaviourRisks": [
+        "Removing either assignment changes the generated globals list and breaks consumer lint and any `window.knackAPIUsage` console usage.",
+        "Must run after `const KnackApiUsage` is initialised (temporal dead zone); keep it adjacent."
+      ],
+      "knackPractice": "Standard classic-script export pattern; no Knack interaction.",
+      "risk": "low",
+      "wave": 3,
+      "estimatedV2Lines": 2,
+      "rationale": "Two necessary side-effect assignments wrapped in a guard that cannot fail in the supported runtimes. Keep the effect, drop the guard."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "KnackAPI#_fetchAllPages",
+      "purpose": "Single batched-pagination loop (first page, then Promise.allSettled batches of pageConcurrency, failOnPageError, onProgress) used by both getAllRecords and getAllRecordChildren.",
+      "replaces": [
+        "KnackAPI#getAllRecords body (14256-14305)",
+        "KnackAPI#getAllRecordChildren body (14373-14427)"
+      ],
+      "signature": "_fetchAllPages(fetchPage: (page: number) => Promise<Object>, { rows = 1000, pageConcurrency = 5, failOnPageError = false, onProgress, timeout }, logContext: Object): Promise<Array<Object>>"
+    },
+    {
+      "name": "KnackAPI#_runBatchWrite",
+      "purpose": "Shared scaffold for the three bulk writers: counters, _buildBatchContext, _runBatchWorkers, try/finally summary log, refresh after write, failure log with KNF_ code, rethrow of firstError unless continueOnError.",
+      "replaces": [
+        "KnackAPI#createRecords (14509-14575)",
+        "KnackAPI#updateRecords tail (14960-15006)",
+        "KnackAPI#deleteRecords (15094-15158)"
+      ],
+      "signature": "_runBatchWrite({ operation: 'create'|'update'|'delete', code: string, sceneId, viewId, items: Array, options, execute: (item, index, requestOptions) => Promise<Object|void>, counterKey: 'created'|'updated'|'deleted', collectRecords = false }): Promise<{ total, [counterKey], failed, records? }>"
+    },
+    {
+      "name": "isPlainObject",
+      "purpose": "Module-level plain-object check shared by KnackAPI._assertWriteOptions and the bulk-actions helpers, per the policy dedupe list.",
+      "replaces": [
+        "KnackAPI#_isPlainObject (16586-16590)",
+        "bulkActionIsPlainObject (4239)",
+        "objectOrEmpty (per policy list; owned by another chunk)"
+      ],
+      "signature": "isPlainObject(value: unknown): boolean"
+    },
+    {
+      "name": "sleep",
+      "purpose": "Promise-based delay used for stagger, retry backoff and updateRecordsWithDelay; other chunks have the same inline pattern.",
+      "replaces": [
+        "inline new Promise(resolve => setTimeout(resolve, ms)) at 15035, 16546, 16895"
+      ],
+      "signature": "sleep(ms: number): Promise<void>"
+    },
+    {
+      "name": "parseJsonOrText",
+      "purpose": "Parse a response body as JSON when possible, otherwise return the raw text ({} for empty), replacing the two inline try/JSON.parse IIFEs.",
+      "replaces": [
+        "KnackAPI#_uploadAssetRequestOnce (14697-14703)",
+        "KnackAPI#_requestInner (16788-16794)",
+        "KnackAPI#_buildRequestError parse (16919)"
+      ],
+      "signature": "parseJsonOrText(text: string): Object|string"
+    },
+    {
+      "name": "KnackAPI#_buildHeaders",
+      "purpose": "One header builder for JSON and multipart requests; multipart omits Content-Type so the browser sets the boundary.",
+      "replaces": [
+        "KnackAPI#_buildHeaders (15939-15955)",
+        "KnackAPI#_buildUploadHeaders (15963-15977)"
+      ],
+      "signature": "_buildHeaders(withAuth = true, { json = true } = {}): Object"
+    }
+  ],
+  "crossCuttingFindings": [
+    "Build order: getKnackApiClient is called from functions that other chunks will likely rate wave 1 or 2 (updateWeekNumberObject 12157-12167, addConnectionIdToRecord 13120-13145, CAQuickToggle 21278, CAMultiChoiceQuickToggle 21697, bulkActionResolveReplicationApi 4356, createVersionRefreshController 2066). Because V2 is built progressively, the KnackAPI class, getKnackApiClient, knackNavigator (797) and knackValueResolver (1787) must be copied into knackFunctionsV2.js as-is BEFORE those functions are ported, with the wave-3 clean-up applied later in place.",
+    "Generated globals: `knackAPI` (eslint/knack-functions-globals.json line 234) and `knackAPIUsage` (line 235) exist only because of the window/globalThis assignments at 17073 and 17117-17118; eslint/generate-globals.mjs detects explicit `globalThis.x = ...` / `window.x = ...` assignments (its comment at line 51). V2 must keep those exact assignments or regenerate and re-publish the globals file for consumers.",
+    "KnackError (21804) constructs its own `new KnackAPI({ debug: false, showSpinner: false })` instead of using getKnackApiClient(), so a page has two independent write queues and rate limiters. The KnackError chunk should decide whether to share the client; if it does, note that KnackAPI logging must stay console-based (not errorHandler.handle) to avoid the recursion KnackError -> createRecord -> error -> errorHandler -> KnackError. This is a documented exception to the \"report via errorHandler\" policy line.",
+    "Development-only code in the production bundle: _getDevServerUrls (15512-15523) hard-codes http://localhost:3001 and reads the undocumented global `globalThis.__knackFunctionsDevServerUrl`; _refreshRateLimitFromDevServer (15661-15720) POSTs the user session token (Knack.getUserToken()) to that localhost endpoint, and refreshApiUsageStats runs it by default (`useDevServerProxy !== false`, 15358). server.js provides the matching `/api/knack/rate-limit` route. Recommend V2 flips the default to opt-in (`useDevServerProxy === true`) as a deliberate, changelog-noted change, or moves the probe behind a build flag; keep the option name either way.",
+    "buildFilters bracket format (16029-16055, `filters[0][field]`) is almost certainly ignored by the view-based records API, which expects URL-encoded JSON `{match, rules}` (policy Knack facts; CHANGELOG line 29 records the identical class of bug for sorters). Line 12163 (updateWeekNumberObject) passes `{ filters: filter }`; the owner of that chunk should check the shape of `filter`. If a live test confirms the bracket form is ignored, V2 should convert array/single-rule input into `{ match: 'and', rules }` and record it in the CHANGELOG. Unverified against live docs.",
+    "Two view-refresh mechanisms coexist: KnackAPI#_refreshSingleView (16119-16213, Backbone internals per view type) and `ktl.views.refreshView(viewId)` at 11533/11537 (KTL dependency). V2 could expose a module-level `refreshKnackView(viewId)` that _refreshSingleView delegates to, so non-API code can refresh without instantiating a client and without KTL; the chunk owning 11533 should be told.",
+    "Spelling drift inside one class: _normalizeRefreshViews / _normalizeResponseHeaders / _normalizeExternalRateLimitSnapshot (US) versus _normaliseForCompare / _normaliseDateTimeForCompare / _normaliseDisplayForCompare (UK), and knackNavigator.normalizeFieldId (US) used throughout. Not renaming existing names (policy), but new primitives must use UK spelling and the glossary should list the accepted US-spelled survivors.",
+    "KnackAPI._isPlainObject (16586) duplicates bulkActionIsPlainObject (4239) and the policy-listed objectOrEmpty; one module-level isPlainObject should serve all three (bulk-actions chunk to confirm).",
+    "`Knack.api_dev` (14600, 17034) is an undocumented Knack internal used as the API base URL; V2 should centralise it in one `_getApiBaseUrl()` with the https://api.knack.com/v1 fallback and have uploadAsset use it (currently it does not, producing a relative URL when api_dev is missing). Unverified against live docs.",
+    "updateRecords accepts per-record items in two shapes, `{id, data}` and the legacy `{recordId, recordData}` (14929-14934, 14946-14949). Bulk actions (6453) pass `preparedOperations`; the bulk-actions chunk should state which shape it uses so the other can be marked @deprecated in JSDoc (not removed).",
+    "The stale `@version 1.0.1` header at 14159 (and any similar per-class version tags elsewhere) should be dropped in V2; the CHANGELOG and the jsDelivr tag are the version sources."
+  ]
+}
