@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-28
+
+<!-- pr:110 fix/chosen-listeners-coexist - amandajane-mo -->
+- `addInputEventListener` no longer drops earlier listeners on a Chosen select or timepicker. Each listener now runs, as native listeners already do. Registering a callback with the same code on the same element again still replaces it, so re-renders don't stack duplicates, and `.off('change.ktl_chosen')` still removes them all.
+
 ## 2026-10-27
 
 <!-- pr:109 fix/copybody-same-cell-line-breaks - CSWinnall -->
