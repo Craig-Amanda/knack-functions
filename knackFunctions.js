@@ -2079,14 +2079,26 @@ function createVersionRefreshController(options = {}) {
         refreshHoldEventName = 'kf-version-refresh-hold',
         refreshReleaseEventName = 'kf-version-refresh-release',
         reloadDelayMs = 1200,
-        recentReloadWindowMs = 15000,
     } = options;
+
+    // A page loaded after a target version was first seen already runs that version's code, so it
+    // never reloads for it. This is what stops a reload loop: each page reloads at most once per target.
+    // performance.timeOrigin is when the page started loading, before this script was fetched.
+    const pageLoadedAt = typeof performance !== 'undefined' && performance?.timeOrigin
+        ? Math.floor(performance.timeOrigin)
+        : Date.now();
+    // Per-tab record of the target this tab last reloaded for. sessionStorage survives the reload,
+    // so a clock that moves backwards cannot make the reloaded page reload again.
+    const reloadedTargetKey = `${storageKey || 'kf-version-refresh'}:reloadedTarget`;
 
     const internalState = {
         deferredNoticeTargetVersion: '',
         iframeCurrentUserRecord: null,
         iframeTargetRecords: [],
         pendingRequestActive: false,
+        // The user version this window's own iframe last reported. Kept in memory, not in the shared
+        // stored state, so another tab's stale iframe cannot change it.
+        userVersion: '',
         reloadTimerId: 0,
         pendingObserver: null,
         refreshHoldIds: new Set(),
@@ -2120,15 +2132,14 @@ function createVersionRefreshController(options = {}) {
 
     /**
      * Merges a partial stored-state update with the current persisted state.
-     * @param {{ targetVersion?: string, lastReloadedTarget?: string, lastReloadedAt?: string, userVersion?: string }} [state={}] - Partial stored state.
-     * @param {{ targetVersion: string, lastReloadedTarget: string, lastReloadedAt: string, userVersion: string }} [baseState=readState()] - Base stored state.
-     * @returns {{ targetVersion: string, lastReloadedTarget: string, lastReloadedAt: string, userVersion: string }} Merged stored state.
+     * @param {{ targetVersion?: string, targetSeenAt?: number, userVersion?: string }} [state={}] - Partial stored state.
+     * @param {{ targetVersion: string, targetSeenAt: number, userVersion: string }} [baseState=readState()] - Base stored state.
+     * @returns {{ targetVersion: string, targetSeenAt: number, userVersion: string }} Merged stored state.
      */
     function mergeStoredState(state = {}, baseState = readState()) {
         return {
             targetVersion: state?.targetVersion ?? baseState.targetVersion,
-            lastReloadedTarget: state?.lastReloadedTarget ?? baseState.lastReloadedTarget,
-            lastReloadedAt: state?.lastReloadedAt ?? baseState.lastReloadedAt,
+            targetSeenAt: state?.targetSeenAt ?? baseState.targetSeenAt,
             userVersion: state?.userVersion ?? baseState.userVersion,
         };
     }
@@ -2239,7 +2250,7 @@ function createVersionRefreshController(options = {}) {
 
     /**
      * Reads the persisted version-refresh state.
-     * @returns {{ targetVersion: string, lastReloadedTarget: string, lastReloadedAt: string, userVersion: string }} Stored state.
+     * @returns {{ targetVersion: string, targetSeenAt: number, userVersion: string }} Stored state; targetSeenAt is when this browser first saw targetVersion, in epoch milliseconds.
      */
     function readState() {
         let stored = null;
@@ -2252,15 +2263,14 @@ function createVersionRefreshController(options = {}) {
 
         return {
             targetVersion: normalizeVersion(stored?.targetVersion),
-            lastReloadedTarget: normalizeVersion(stored?.lastReloadedTarget),
-            lastReloadedAt: knackValueResolver.toStringSafe(stored?.lastReloadedAt),
+            targetSeenAt: Number(stored?.targetSeenAt) || 0,
             userVersion: normalizeVersion(stored?.userVersion),
         };
     }
 
     /**
      * Persists the supplied version-refresh state when it has changed.
-     * @param {{ targetVersion?: string, lastReloadedTarget?: string, lastReloadedAt?: string, userVersion?: string }} state - State to persist.
+     * @param {{ targetVersion?: string, targetSeenAt?: number, userVersion?: string }} state - State to persist.
      * @returns {void}
      */
     function writeState(state) {
@@ -2270,14 +2280,12 @@ function createVersionRefreshController(options = {}) {
 
         const nextState = {
             targetVersion: normalizeVersion(state?.targetVersion),
-            lastReloadedTarget: normalizeVersion(state?.lastReloadedTarget),
-            lastReloadedAt: knackValueResolver.toStringSafe(state?.lastReloadedAt),
+            targetSeenAt: Number(state?.targetSeenAt) || 0,
             userVersion: normalizeVersion(state?.userVersion),
         };
         const currentState = readState();
         if (currentState.targetVersion === nextState.targetVersion
-            && currentState.lastReloadedTarget === nextState.lastReloadedTarget
-            && currentState.lastReloadedAt === nextState.lastReloadedAt
+            && currentState.targetSeenAt === nextState.targetSeenAt
             && currentState.userVersion === nextState.userVersion) {
             return;
         }
@@ -2349,7 +2357,7 @@ function createVersionRefreshController(options = {}) {
 
         if (internalState.pendingRequestActive) {
             ensurePendingRefreshWatch();
-            showDeferredRefreshNotice(readState().targetVersion);
+            showDeferredRefreshNotice(getReloadTarget());
         }
 
         return normalizedHoldId;
@@ -2442,12 +2450,12 @@ function createVersionRefreshController(options = {}) {
         const storedState = readState();
         writeState(mergeStoredState({
             targetVersion: '',
-            lastReloadedTarget: '',
-            lastReloadedAt: '',
+            targetSeenAt: 0,
             userVersion: storedState.userVersion,
         }, storedState));
         internalState.deferredNoticeTargetVersion = '';
         internalState.pendingRequestActive = false;
+        internalState.userVersion = '';
         internalState.refreshHoldIds.clear();
         stopPendingRefreshWatch();
         if (internalState.reloadTimerId) {
@@ -2500,22 +2508,56 @@ function createVersionRefreshController(options = {}) {
     }
 
     /**
-     * Determines whether the same target was already reloaded recently.
-     * @param {{ lastReloadedTarget: string, lastReloadedAt: string }} storedState - Stored state.
-     * @param {string} targetVersion - Requested target version.
-     * @returns {boolean} True when the same target was reloaded recently.
+     * Returns the stored target version when this page was loaded before the target was first seen.
+     * @param {{ targetVersion: string, targetSeenAt: number }} [storedState=readState()] - Stored state.
+     * @returns {string} Target this page is behind, or '' when the page is already current.
      */
-    function wasTargetReloadedRecently(storedState, targetVersion) {
-        if (!targetVersion || !storedState || storedState.lastReloadedTarget !== targetVersion) {
-            return false;
+    function getOutdatedTarget(storedState = readState()) {
+        return storedState.targetVersion
+            && pageLoadedAt < storedState.targetSeenAt
+            && readReloadedTarget() !== storedState.targetVersion
+            ? storedState.targetVersion
+            : '';
+    }
+
+    /**
+     * Reads the target this tab last reloaded for.
+     * @returns {string} Target version, or '' when unknown or sessionStorage is unavailable.
+     */
+    function readReloadedTarget() {
+        try {
+            return normalizeVersion(window.sessionStorage?.getItem(reloadedTargetKey));
+        } catch (error) {
+            return '';
+        }
+    }
+
+    /**
+     * Records the target this tab is about to reload for.
+     * @param {string} targetVersion - Target version.
+     * @returns {void}
+     */
+    function writeReloadedTarget(targetVersion) {
+        try {
+            window.sessionStorage?.setItem(reloadedTargetKey, targetVersion);
+        } catch (error) {
+            // Without sessionStorage the timestamp check alone still limits reloads.
+        }
+    }
+
+    /**
+     * Returns the target this page should reload to now, or '' when it should not reload.
+     * @returns {string} Target version to reload to.
+     */
+    function getReloadTarget() {
+        const targetVersion = getOutdatedTarget();
+        // With a sync field set, wait until this window's own iframe reports the saved version: if the
+        // save failed, the reloaded page would still see the old version.
+        if (!targetVersion || (normalizedSyncUserVersionFieldId && internalState.userVersion !== targetVersion)) {
+            return '';
         }
 
-        const lastReloadedAt = Date.parse(storedState.lastReloadedAt);
-        if (Number.isNaN(lastReloadedAt)) {
-            return false;
-        }
-
-        return (Date.now() - lastReloadedAt) < recentReloadWindowMs;
+        return targetVersion;
     }
 
     /**
@@ -2597,6 +2639,7 @@ function createVersionRefreshController(options = {}) {
             || !targetVersion
             || currentUserVersion === targetVersion
             || internalState.syncInFlight
+            || !normalizedSyncUserVersionFieldId
             || typeof syncUserVersion !== 'function'
         ) {
             return;
@@ -2609,18 +2652,23 @@ function createVersionRefreshController(options = {}) {
         };
         internalState.syncInFlight = true;
         try {
-            const syncedVersion = normalizeVersion(
-                await syncUserVersion(targetVersion, syncContext) || targetVersion
-            );
-            if (internalState.iframeCurrentUserRecord && normalizedSyncUserVersionFieldId) {
-                internalState.iframeCurrentUserRecord[normalizedSyncUserVersionFieldId] = syncedVersion || targetVersion;
+            // undefined counts as a save of the target. Anything else that is not a version string
+            // ('' from the default when the view, field or scene is missing, false, null) means
+            // nothing was written, so the main window must not reload.
+            const result = await syncUserVersion(targetVersion, syncContext);
+            const syncedVersion = result === undefined ? targetVersion : (typeof result === 'string' ? normalizeVersion(result) : '');
+            if (!syncedVersion) {
+                throw new Error('syncUserVersion did not write the user version (check syncUserVersionViewId and syncUserVersionFieldId).');
             }
-            storeUserVersion(syncedVersion || targetVersion);
+            if (internalState.iframeCurrentUserRecord) {
+                internalState.iframeCurrentUserRecord[normalizedSyncUserVersionFieldId] = syncedVersion;
+            }
+            storeUserVersion(syncedVersion);
             if (typeof onUserVersionSynced === 'function') {
-                onUserVersionSynced(syncedVersion || targetVersion, syncContext);
+                onUserVersionSynced(syncedVersion, syncContext);
             }
-            postRefreshMessage('', syncedVersion || targetVersion);
-            return syncedVersion || targetVersion;
+            postRefreshMessage('', syncedVersion);
+            return syncedVersion;
         } catch (error) {
             if (typeof onSyncError === 'function') {
                 onSyncError(error, syncContext);
@@ -2670,9 +2718,10 @@ function createVersionRefreshController(options = {}) {
             return;
         }
 
-        const storedState = readState();
-        const targetVersion = storedState.targetVersion;
+        const targetVersion = getReloadTarget();
         if (!targetVersion) {
+            internalState.pendingRequestActive = false;
+            stopPendingRefreshWatch();
             return;
         }
 
@@ -2688,22 +2737,20 @@ function createVersionRefreshController(options = {}) {
 
         stopPendingRefreshWatch();
         internalState.deferredNoticeTargetVersion = '';
+        const userVersion = internalState.userVersion;
         if (typeof showRefreshNow === 'function') {
-            showRefreshNow(targetVersion, storedState.userVersion);
+            showRefreshNow(targetVersion, userVersion);
         }
 
+        // The stored target is left in place: other tabs loaded before it still need it, and the
+        // reloaded page loads after targetSeenAt, so it will not reload for this target again.
         internalState.reloadTimerId = window.setTimeout(function () {
             internalState.reloadTimerId = 0;
             internalState.pendingRequestActive = false;
             stopPendingRefreshWatch();
-            writeState(mergeStoredState({
-                targetVersion: '',
-                lastReloadedTarget: targetVersion,
-                lastReloadedAt: new Date().toISOString(),
-                userVersion: storedState.userVersion,
-            }, storedState));
+            writeReloadedTarget(targetVersion);
             if (typeof reload === 'function') {
-                reload(targetVersion, storedState.userVersion);
+                reload(targetVersion, userVersion);
             }
         }, reloadDelayMs);
     }
@@ -2731,59 +2778,30 @@ function createVersionRefreshController(options = {}) {
             return;
         }
 
-        const storedState = readState();
         const userVersion = normalizeVersion(payload.userVersion);
         const targetVersion = normalizeVersion(payload.targetVersion);
-        const shouldWaitForUserVersionSync = Boolean(
-            normalizedSyncUserVersionFieldId
-            && userVersion
-            && targetVersion
-            && userVersion !== targetVersion
-        );
         if (userVersion) {
             storeUserVersion(userVersion);
+            internalState.userVersion = userVersion;
         }
 
-        if (!targetVersion) {
-            if (userVersion && storedState.targetVersion && userVersion === storedState.targetVersion && !internalState.reloadTimerId) {
-                internalState.pendingRequestActive = true;
-                if (canRefreshPageNow()) {
-                    runRefreshIfSafe();
-                } else {
-                    ensurePendingRefreshWatch();
-                }
-            }
+        const storedState = readState();
+        // A missing targetSeenAt is state written by an older knack-functions version.
+        if (targetVersion && (targetVersion !== storedState.targetVersion || !storedState.targetSeenAt)) {
+            writeState(mergeStoredState({ targetVersion, targetSeenAt: Date.now() }, storedState));
+        }
+
+        if (internalState.reloadTimerId) {
             return;
         }
 
-        if (wasTargetReloadedRecently(storedState, targetVersion)) {
-            return;
-        }
-
-        if (internalState.pendingRequestActive && storedState.targetVersion === targetVersion) {
-            if (shouldWaitForUserVersionSync) {
-                ensurePendingRefreshWatch();
-                showDeferredRefreshNotice(targetVersion);
-                return;
-            }
-
-            ensurePendingRefreshWatch();
-            runRefreshIfSafe();
+        if (!getReloadTarget()) {
+            // Behind, but this window's iframe has not reported the saved version yet.
+            showDeferredRefreshNotice(getOutdatedTarget());
             return;
         }
 
         internalState.pendingRequestActive = true;
-        writeState(mergeStoredState({
-            targetVersion,
-            userVersion: userVersion || storedState.userVersion,
-        }, storedState));
-
-        if (shouldWaitForUserVersionSync) {
-            ensurePendingRefreshWatch();
-            showDeferredRefreshNotice(targetVersion);
-            return;
-        }
-
         ensurePendingRefreshWatch();
         runRefreshIfSafe();
     }
