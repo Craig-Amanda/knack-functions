@@ -19,7 +19,8 @@
         "dev": "node server.js",
         "start": "npm run dev",
         "simple": "node simple-server.js",
-        "build:eslint-globals": "node eslint/generate-globals.mjs"
+        "build:eslint-globals": "node eslint/generate-globals.mjs",
+        "test": "node --test tests/*.test.cjs"
     },
     "devDependencies": {
         "chokidar": "3.5.3",

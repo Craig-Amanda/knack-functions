@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-18
+
+<!-- pr:111 fix/version-refresh-reload-loop - CSWinnall -->
+- `createVersionRefreshController` no longer reloads a user on an old version until the iframe has saved their new version. Before, a failed save still reloaded the page, and the iframe's auto-refresh then reloaded it again about once a minute.
+- Each page now reloads at most once per target version: the stored state records when the browser first saw the target (`targetSeenAt`), and only a page loaded before that (`performance.timeOrigin`) reloads. Each tab also records in `sessionStorage` the target it reloaded for, so a clock moved backwards cannot restart the loop. The stored target is no longer cleared on reload, so every tab open in that browser at the time reloads once, including a tab whose iframe only reports the save made by another tab.
+- Stored state is now `{ targetVersion, targetSeenAt, userVersion }`. `lastReloadedTarget` and `lastReloadedAt`, and the `recentReloadWindowMs` option, are gone. State written by an older version (no `targetSeenAt`) is upgraded the next time the target is announced.
+- `syncUserVersion` must resolve to the saved version string, or `undefined` or `true` to mean the target was saved. A custom `syncUserVersion` with no `syncUserVersionFieldId` logs a console warning, since it would never run. `resetState()` also clears the tab's reloaded-target marker. Anything else (`''`, which the default returns when it cannot find the view, field or scene, `false`, `null`) now counts as a failed save, not a success.
+- Without a `syncUserVersionFieldId`, the iframe no longer calls `syncUserVersion` at all. A refresh message the app posts itself then reloads the page once without waiting for a save.
+- The save gate uses the user version this window's own iframe reported, so another tab's stale iframe cannot block or trigger it.
+- New test: `tests/versionRefreshController.test.cjs`, and an `npm test` script.
+- Spot in-app changelog: entry #61, Spot version 1.3.8 (Development until `PROD_PINNED_VERSION` is bumped).
+
 ## 2026-10-28
 
 <!-- pr:110 fix/chosen-listeners-coexist - amandajane-mo -->
