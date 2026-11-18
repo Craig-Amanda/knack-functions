@@ -1,0 +1,667 @@
+{
+  "chunkId": "C23",
+  "chunkSummary": "A grab-bag of 17 small globals in three families: (1) a KTL (Knack Toolkit Library) secure-storage trio (initSecureStorage/setSecureStorage/getSecureStorage) written as .then chains inside async functions, only consumed by the app-specific setupLocalStorageMinutes and worth collapsing onto one awaitable secureJsonStore primitive built on the KTL-aware adapter that already exists at L1857; (2) the jQuery single-view show/hide module (showHideViewContent + toggleShowHideViewContent/shrinkContent/appendShrinkLink/replaceTitleWithButton/wrapContentForShowHide) which is a near-duplicate of the native group version at L13330-13585 but with a different CSS class vocabulary, so V2 should share native slideToggle/bindShowHide/wrapElements primitives while keeping both class sets and both global names (wave 2, medium risk because of jQuery slide semantics, a duplicate arrow_ id and app CSS hooks); (3) misc helpers: checkAllRadioAnswered and changeCellTextBasedOnCellContent (jQuery, buggy edge cases, modernise), toggleElements (dedupe onto toggleVisibility), splitAndTrimField (dedupe onto csvToArray), getFormId (trivial native port), and three already-native 2026-era functions (syncTextInputs, createButton, addModalNavigationButtons) that only need tightening. Ten items are wave 1, seven wave 2; no signature changes anywhere, with four thin dedupe/deprecate shims (toggleShowHideViewContent, shrinkContent, toggleElements, splitAndTrimField) kept under their old names.",
+  "functions": [
+    {
+      "name": "initSecureStorage",
+      "kind": "function",
+      "startLine": 18895,
+      "endLine": 18931,
+      "currentSignature": "async initSecureStorage(storageKey)",
+      "currentReturns": "Promise<object> (resolves to parsed storage object or {}; rejects with Error on invalid key, KTL init failure or lsGetItem failure)",
+      "verdict": "modernise",
+      "proposedSignature": "async initSecureStorage(storageKey)",
+      "proposedReturns": "Promise<object> (same resolution/rejection contract)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L18900-18931: replace the .then/.catch chain inside an async function with straight await: `await ktl.storage.initSecureLs(); const raw = store.get(storageKey); ...` - one try/catch instead of three nested ones.",
+        "L18929-18930 re-wrap L18924's already-wrapped error ('Secure storage initialization failed: Failed to get item from secure storage: ...'); throw once with a single message and report via errorHandler.handle(err, {storageKey}, 'initSecureStorage').",
+        "L18907 console.log on first initialisation is noise - drop it; L18917 console.warn on corrupt JSON becomes errorHandler.handle(parseError, {storageKey}, 'initSecureStorage') before the reset write (resetting user data must not be silent).",
+        "L18903/18909/18919 hard-code the KTL flags (noUserId=false, session=false, secure=true) three times; route through the proposed secureJsonStore(storageKey) primitive built on a generalised createStorageAdapter (L1857-1930 already does the KTL detection and try/catch wrapping).",
+        "L18896-18898: `return Promise.reject(new Error(...))` inside an async function is identical to `throw new Error(...)`; use throw.",
+        "Guard `globalThis.ktl?.storage?.initSecureLs` and reject with a clear 'KTL not loaded' Error instead of the implicit ReferenceError that surfaces today when KTL is absent."
+      ],
+      "behaviourRisks": [
+        "Error message text changes if the double wrapping (L18924 + L18930) is collapsed; any consumer matching on error.message would notice.",
+        "The three boolean flags passed to lsGetItem/lsSetItem (L18903, L18909, L18919) mean per-user, non-session, encrypted storage; using the wrong adapter options silently reads a different key namespace and loses existing data.",
+        "Callers at L13282 and L18941 call this without .catch, so any rejection is an unhandled promise rejection today; V2 must not turn that into a synchronous throw.",
+        "Returning {} and resetting the store on a JSON parse failure (L18919) destroys the user's saved minutes; keep the reset but report it."
+      ],
+      "knackPractice": "Not part of Knack's JS model; it uses KTL's encrypted, user-scoped local storage (ktl.storage.initSecureLs/lsGetItem/lsSetItem). Knack itself offers no storage API, so this is the right layer, but the library takes a hard dependency on KTL being loaded first. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 18,
+      "rationale": "Small async function with a clear async/await gain and triple-nested error handling that violates the error-reporting policy. Only in-file consumers are the two sibling storage functions and setupLocalStorageMinutes (L13282). Medium risk only because the behaviour cannot be exercised without a KTL stub and the flag semantics are easy to get subtly wrong."
+    },
+    {
+      "name": "setSecureStorage",
+      "kind": "function",
+      "startLine": 18940,
+      "endLine": 18949,
+      "currentSignature": "setSecureStorage(storageKey, recordKey, fieldId, valueToStore, daysUntilExpiry = 5)",
+      "currentReturns": "undefined (JSDoc at L18939 wrongly claims {object}; the promise is discarded)",
+      "verdict": "modernise",
+      "proposedSignature": "setSecureStorage(storageKey, recordKey, fieldId, valueToStore, daysUntilExpiry = 5)",
+      "proposedReturns": "undefined (fire-and-forget; failures reported through errorHandler instead of surfacing as unhandled rejections)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L18941-18948: implement as `void secureJsonStore(storageKey).update(store => { ... }).catch(err => errorHandler.handle(err, {storageKey, recordKey, fieldId}, 'setSecureStorage'))` so the read-modify-write is one call and errors are reported.",
+        "L18942-18943: `Date.now() + daysUntilExpiry * 86_400_000` instead of mutating a Date via setDate.",
+        "L18944-18946: `const entry = (store[recordKey] ??= {}); Object.assign(entry, { [fieldId]: valueToStore, expirationDate: expiresAt })`.",
+        "Serialise writes per storageKey inside the primitive (promise chain keyed by storageKey): two blur events in quick succession (L13288/L13293) each read the store independently today and the second write clobbers the first field's value.",
+        "Fix the @returns JSDoc (currently claims an object is returned). A future V3 can return the Promise; keeping undefined now avoids a return-type signature change."
+      ],
+      "behaviourRisks": [
+        "Expiry is stored inside the record object under the literal key 'expirationDate' next to field ids (L18945), and is refreshed on every write; getSecureStorage depends on that exact key - keep it.",
+        "recordKey comes from getRecordID() at L13281 and may be null when no record is in the URL, producing a 'null' key; preserve rather than throw.",
+        "Serialising writes changes timing (a later write waits for the earlier one) but not results; a rewrite that keeps parallel read-modify-write keeps the existing lost-update bug.",
+        "Any rejection today is an unhandled promise rejection (no .catch); surfacing it via errorHandler is additive but will make previously invisible failures visible in consumer logs."
+      ],
+      "knackPractice": "KTL storage, not Knack API. Pattern (persist draft form input per record for a few days) is a sensible companion to Knack forms, which otherwise lose unsaved input on re-render. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 10,
+      "rationale": "Ten lines whose only problems are a lost-update race, unhandled rejections and a wrong JSDoc return. Keeping the undefined return respects the policy's preference for unchanged signatures; the awaitable form lives on the shared secureJsonStore primitive."
+    },
+    {
+      "name": "getSecureStorage",
+      "kind": "function",
+      "startLine": 18955,
+      "endLine": 18966,
+      "currentSignature": "getSecureStorage(storageKey, recordKey)",
+      "currentReturns": "Promise<object | ''> (resolves to the record's object, or the empty string '' when the record key is absent/expired; rejects if initSecureStorage rejects)",
+      "verdict": "modernise",
+      "proposedSignature": "getSecureStorage(storageKey, recordKey)",
+      "proposedReturns": "Promise<object | ''> (unchanged - the '' sentinel is kept because L13301 relies on a falsy check)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L18957: `const now = Date.now()`; L18958-18962: `for (const [id, entry] of Object.entries(store)) if (now > entry?.expirationDate) delete store[id]` (also guards non-object entries that would throw today).",
+        "L18963 writes the whole store back on every read even when nothing expired; only write when at least one entry was deleted (same observable state, fewer encrypted writes).",
+        "L18964: `return store[recordKey] ?? ''`.",
+        "Implement on secureJsonStore(storageKey).update(...) so purge + write are serialised with setSecureStorage writes."
+      ],
+      "behaviourRisks": [
+        "Must keep resolving to '' (not null/undefined) for missing records; L13301 `if (!minutes) return;` tolerates either, but external callers may compare to ''.",
+        "Entries without an expirationDate never expire (`now > undefined` is false) - keep that leniency rather than treating missing expiry as expired.",
+        "Skipping the write when nothing expired is unobservable to callers but means a corrupt-then-reset store is only persisted by initSecureStorage; make sure the reset path still writes."
+      ],
+      "knackPractice": "KTL storage, not Knack API. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 12,
+      "rationale": "Twelve lines, already promise-based, only needs Object.entries/Date.now tidy-ups and to share the storage primitive. The odd '' sentinel is public behaviour and is kept."
+    },
+    {
+      "name": "checkAllRadioAnswered",
+      "kind": "function",
+      "startLine": 18972,
+      "endLine": 18990,
+      "currentSignature": "checkAllRadioAnswered(viewId, fieldToExclude = [])",
+      "currentReturns": "boolean",
+      "verdict": "modernise",
+      "proposedSignature": "checkAllRadioAnswered(viewId, fieldToExclude = [])",
+      "proposedReturns": "boolean",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L18976 and L18984 both walk the DOM and both parse the parent field id; do one pass: `for (const radio of root.querySelectorAll('input[type=radio]'))` building a Map<name, checked:boolean>, then `return [...groups.values()].every(Boolean)`.",
+        "Replace jQuery `:visible` (L18976, L18984) with the proposed isElementVisible(el) (`el.checkVisibility?.() ?? el.getClientRects().length > 0`) so semantics match jQuery's layout-box test.",
+        "L18977/L18985: `$(this).closest('[id^=\"kn-input-field_\"]').attr('id').split('_')[1]` throws a TypeError when a radio is not inside a kn-input wrapper; use the proposed fieldIdFromInputWrapper(el) which returns null safely.",
+        "Accept exclusions as numbers or 'field_123' strings by normalising both sides (`String(x).replace(/^field_/, '')`) - today a string exclusion silently never matches because of parseInt (L18977).",
+        "Use getViewRootElement(viewId) (C01 primitive) instead of the `#${viewId}` template, and INPUT_RADIO_SELECTOR (L5) instead of the jQuery `:radio` pseudo."
+      ],
+      "behaviourRisks": [
+        "jQuery :visible is true when the element has any layout box; a native rewrite using `hidden`/style.display checks would differ for radios hidden via an ancestor's display:none or via CSS classes - use the layout-box test.",
+        "Radio inputs that Knack or app CSS hide (e.g. custom-styled radios with opacity 0 but still laid out) count as visible in both versions; do not switch to opacity/visibility checks.",
+        "Current code counts checked radios vs distinct group names; the Map-based version is equivalent only if groups with zero checked are still recorded - ensure every visible group is entered in the Map.",
+        "Behaviour when a group's radios are split between visible and hidden members (only visible ones are considered) must be preserved."
+      ],
+      "knackPractice": "Follows Knack's form DOM: radios render as input[type=radio] with name = field key inside #kn-input-field_x. Intended to be run on knack-view-render.form or before submit; the function itself is render-agnostic, which is correct. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 18,
+      "rationale": "Nineteen lines of old-style jQuery with duplicated parsing, a latent TypeError and a silent type mismatch on exclusions; a native single-pass rewrite is shorter and safer. Medium risk purely because :visible semantics are subtle. No in-file callers; public API."
+    },
+    {
+      "name": "changeCellTextBasedOnCellContent",
+      "kind": "function",
+      "startLine": 19000,
+      "endLine": 19012,
+      "currentSignature": "changeCellTextBasedOnCellContent(viewId, records, fieldIdToMatch, fieldIdToChange, textToMatch, newText, bkgColor = 'success')",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "changeCellTextBasedOnCellContent(viewId, records, fieldIdToMatch, fieldIdToChange, textToMatch, newText, bkgColor = 'success')",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19002: `record[fieldIdToMatch].includes(textToMatch)` throws when the field is missing or non-string (connection fields are arrays, numbers are numbers); use `String(record[fieldIdToMatch] ?? '').includes(textToMatch)`.",
+        "L19003: `$(`tr[id=${record.id}]`)` is document-wide and unquoted; use the proposed getRowById(viewId, record.id) (`#${viewId} tr[id=\"${CSS.escape(id)}\"]`) so a record shown in two grids only changes in the target view.",
+        "L19004: resolve the column index once outside the loop (`knackNavigator.getRenderedViewColumnIndex(viewId, fieldIdToChange)` or `th.${fieldIdToChange}` cellIndex) instead of re-querying the header for every record; then `row.cells[index]`.",
+        "L19005-19009: `Object.assign(cell.style, { backgroundColor: `var(--${bkgColor})`, fontWeight: '700', color: 'black' })` and `cell.querySelector('.knViewLink__label')?.textContent = newText`; also fall back to the cell's own textContent when the cell is not a link (today non-link cells are styled but never retexted).",
+        "Fix the JSDoc (L18992-18999 documents `view` object and omits viewId/bkgColor); use template parameter names that match."
+      ],
+      "behaviourRisks": [
+        "Scoping the row lookup to the view is a behaviour change (bug fix): today every grid on the page showing that record id is recoloured; a consumer may unknowingly rely on that.",
+        "Retexting non-link cells would also be new behaviour; if kept strictly compatible, only .knViewLink__label content changes.",
+        "Inline `var(--success)` (L19006) depends on the consuming app's CSS custom properties; the library ships none. Also used at L11384 and L18208.",
+        "jQuery `td:eq(n)` ignores nothing, but Knack grids with grouping rows or the checkbox column from addCheckboxes shift indices only if the header does not shift too; using cellIndex from the actual th keeps parity.",
+        "Must be called from knack-records-render.view_x (records argument); re-running after inline edit is the caller's job - unchanged."
+      ],
+      "knackPractice": "Fits the knack-records-render.view_x (event, view, records) model: records carry field_x HTML strings and record.id matches tr[id]. Reading the header index from th.field_x and writing into td cells is standard Knack grid practice; the unscoped row selector fights it. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 14,
+      "rationale": "Thirteen jQuery lines with a per-record header re-query, an unscoped row selector and a crash path on non-string fields. Seven positional parameters would normally justify an options object, but there are no in-file callers to simplify and the policy prefers unchanged signatures, so keep the positional form and fix the body."
+    },
+    {
+      "name": "toggleShowHideViewContent",
+      "kind": "function",
+      "startLine": 19020,
+      "endLine": 19027,
+      "currentSignature": "toggleShowHideViewContent(buttonSelector, hiddenSelector, arrowSelector, delay, flexOn = false)  // all three 'Selector' params are jQuery objects, not selector strings",
+      "currentReturns": "undefined",
+      "verdict": "deprecate",
+      "proposedSignature": "toggleShowHideViewContent(buttonSelector, hiddenSelector, arrowSelector, delay, flexOn = false)  // shim over bindShowHide; accepts jQuery object, Element or selector string",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "/** @deprecated Use bindShowHide */ function toggleShowHideViewContent(button, section, arrow, delay, flexOn = false) { bindShowHide({ button: resolveElement(button), section: resolveElement(section), arrow: resolveElement(arrow), duration: delay, display: flexOn ? 'flex' : 'block', classes: { active: 'active', up: 'up', down: 'down' } }); }",
+      "duplicatesOf": [
+        "showHideViewGroupContent (L13425-13585, button.onclick block at L13567-13575)"
+      ],
+      "modernisations": [
+        "L19021: jQuery namespaced `.off('click.showHide').on('click.showHide')` idempotence becomes a WeakMap<Element, AbortController> in bindShowHide (abort previous binding, bind again).",
+        "L19022: `hiddenSelector.slideToggle(delay)` -> shared native slideToggle(el, duration, display) hoisted from L13445-13546.",
+        "L19023-19024: `toggleClass('down up')` / `toggleClass('active')` -> `classList.toggle('down'); classList.toggle('up'); classList.toggle('active')` with class names supplied as options so the ktl* vocabulary of the group version can reuse the same primitive.",
+        "L19025: `flexOn && hiddenSelector.css('display','flex')` is applied even when hiding; in the primitive pass display:'flex' to slideToggle so it is only applied when revealing."
+      ],
+      "behaviourRisks": [
+        "jQuery slideToggle animates height, padding and margin with 'swing' easing and restores the element's pre-hide display; the native slideToggle at L13445 uses a cubic-bezier and hard-codes marginTop 13px (L13513, L13542) - the shared primitive must not impose that margin on single-view sections.",
+        "jQuery `.off('click.showHide')` only removes jQuery-bound handlers; consumers that bound their own `click.showHide` namespaced handler on the button would have had it removed too - unlikely but note.",
+        "Setting display:flex on the hide path today (L19025) is immediately overridden by jQuery's final display:none; the primitive must end hidden with display:none for CSS parity.",
+        "Arguments are jQuery objects today; the shim must unwrap them (resolveElement) and tolerate empty jQuery sets (jQuery no-ops on empty sets; native code must early-return)."
+      ],
+      "knackPractice": "Pure DOM behaviour on library-owned markup; no Knack API involvement. Because Knack re-renders views, the caller re-runs showHideViewContent on knack-view-render, so idempotent binding matters. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 4,
+      "rationale": "An eight-line jQuery event binder that duplicates the onclick block in showHideViewGroupContent with a different class vocabulary. V2 should own one native bindShowHide primitive and keep this global as a @deprecated shim. Wave 2 with the rest of the show/hide module per the policy's wave table."
+    },
+    {
+      "name": "shrinkContent",
+      "kind": "function",
+      "startLine": 19035,
+      "endLine": 19041,
+      "currentSignature": "shrinkContent(shrinkLinkSelector, hiddenSelector, arrowSelector, delay, buttonSelector)  // jQuery objects; note buttonSelector is LAST, unlike toggleShowHideViewContent",
+      "currentReturns": "undefined",
+      "verdict": "deprecate",
+      "proposedSignature": "shrinkContent(shrinkLinkSelector, hiddenSelector, arrowSelector, delay, buttonSelector)  // shim over bindShowHide's shrinkLink option",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "/** @deprecated Use bindShowHide({shrinkLink}) */ function shrinkContent(shrinkLink, section, arrow, delay, button) { bindShrinkLink({ shrinkLink: resolveElement(shrinkLink), section: resolveElement(section), arrow: resolveElement(arrow), button: resolveElement(button), duration: delay, classes: { active: 'active', up: 'up', down: 'down' } }); }",
+      "duplicatesOf": [
+        "showHideViewGroupContent shrinkLink.onclick block (L13577-13584)"
+      ],
+      "modernisations": [
+        "L19036: namespaced jQuery off/on -> AbortController-based rebinding inside the primitive.",
+        "L19037: `hiddenSelector.slideUp(delay)` -> shared native slideUp(el, duration) hoisted from L13548-13565.",
+        "L19038: `removeClassFromSelector(arrowSelector, 'up').addClass('down')` -> `arrow.classList.replace('up', 'down')` (or add/remove when 'up' is absent, since replace is a no-op then).",
+        "L19039: `removeClassFromSelector(buttonSelector, 'active')` -> `button.classList.remove('active')`.",
+        "Drop the dependency on removeClassFromSelector (L9645, old jQuery layer that returns undefined for array inputs)."
+      ],
+      "behaviourRisks": [
+        "classList.replace('up','down') does nothing if 'up' is missing, whereas removeClass('up').addClass('down') always ends with 'down'; use remove+add to keep parity.",
+        "Parameter order differs from toggleShowHideViewContent (button last); the shim must keep this order exactly.",
+        "jQuery slideUp ends with display:none and restores height/overflow; the native slideUp at L13548 does the same but with different easing/duration curve - visual difference only."
+      ],
+      "knackPractice": "Pure DOM; no Knack API. Unverified against live docs.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 4,
+      "rationale": "Seven lines that mirror the shrink-link branch of the native group implementation. Becomes a @deprecated shim over the shared primitive; only in-file caller is showHideViewContent (L19053)."
+    },
+    {
+      "name": "showHideViewContent",
+      "kind": "function",
+      "startLine": 19047,
+      "endLine": 19054,
+      "currentSignature": "showHideViewContent(showHideId, delay, flexOn = false)",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "showHideViewContent(showHideId, delay, flexOn = false)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "showHideViewGroupContent (L13425-13585) - same mechanic with ktl* class names and a different button id scheme (id = showHideId vs show-hide_${showHideId})"
+      ],
+      "modernisations": [
+        "L19048-19051: `document.getElementById(`show-hide_${showHideId}`)`, `getElementById(`arrow_${showHideId}`)`, `getElementById(`shrink-link_${showHideId}`)`, `document.querySelector(`.${CSS.escape(showHideId)}`)`; early-return when button or section is missing (mirrors L13431).",
+        "L19052-19053: one call to bindShowHide({ button, section, arrow, shrinkLink, duration: delay, display: flexOn ? 'flex' : 'block', classes: { active: 'active', up: 'up', down: 'down' } }).",
+        "Keep this global as the public entry point for the single-view flavour; showHideViewGroupContent becomes the entry point for the ktl* flavour, both over the same primitive."
+      ],
+      "behaviourRisks": [
+        "`$(`.${showHideId}`)` (L19051) is a collection and slideToggle animates every matching section; the native version must iterate all matches, not just querySelector's first.",
+        "Duplicate DOM id: both replaceTitleWithButton (L19079) and appendShrinkLink (L19060) create `#arrow_${showHideId}`, so `$('#arrow_x')` only ever toggles the title arrow and the shrink-link arrow stays static. getElementById preserves that first-match behaviour; 'fixing' it changes visuals.",
+        "Initial visibility is whatever the app's CSS gives `.show-hide-section` (no inline display:none is set here, unlike the group version at L13402); V2 must not hide the section on bind.",
+        "Must stay idempotent across knack-view-render re-runs (today via namespaced off/on)."
+      ],
+      "knackPractice": "Caller is expected to run wrapContentForShowHide/replaceTitleWithButton/appendShrinkLink then this on knack-view-render.view_x, because Knack rebuilds the view DOM on each render. The function follows that model (pure DOM, no cached elements). Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 12,
+      "rationale": "Eight lines of jQuery lookups feeding two binders. Native port over the shared bindShowHide primitive keeps the signature and the CSS class contract; the group version at L13425 is the native blueprint. Wave 2 per the policy's 'show/hide groups' listing."
+    },
+    {
+      "name": "appendShrinkLink",
+      "kind": "function",
+      "startLine": 19059,
+      "endLine": 19071,
+      "currentSignature": "appendShrinkLink(wrapperId, showHideId, showHideGroup = false)",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "appendShrinkLink(wrapperId, showHideId, showHideGroup = false)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "showHideGroup inline shrink-link markup (L13344, L13360-13362) - same anchor with ktlShrinkLink/ktlArrow classes"
+      ],
+      "modernisations": [
+        "L19061-19064: `if (document.getElementById(`shrink-link_${showHideId}`)) return;` early return.",
+        "L19066-19068: `const host = showHideGroup ? document.getElementById(wrapperId) : document.getElementById(wrapperId)?.querySelector('.show-hide-section'); host?.insertAdjacentHTML('beforeend', html)`.",
+        "L19060: build the markup via a shared showHideMarkup.shrinkLink(showHideId, classes) template used by both this and the group version (L13344), parameterised by class vocabulary.",
+        "Fix the JSDoc (L19057 documents appendToId, the parameter is wrapperId) and the stray 4-space indent on the declaration line (L19059).",
+        "Give the shrink-link arrow its own id suffix (e.g. arrow-shrink_) only if the duplicate-id issue is to be fixed deliberately - see behaviourRisks."
+      ],
+      "behaviourRisks": [
+        "Creates a second element with id `arrow_${showHideId}` (the first is created by replaceTitleWithButton L19079) - invalid HTML but relied upon implicitly; changing the id changes which arrow toggles.",
+        "Markup classes `show-hide-btn shrink-link` and `arrow up`, the `&nbsp;` and the U+25C0 glyph are CSS/visual contract with consuming apps; keep byte-for-byte.",
+        "The showHideGroup=true branch is no longer used in-file (showHideGroup at L13330 inlines its own markup) but the global is public; keep the branch."
+      ],
+      "knackPractice": "Pure DOM insertion into library-owned wrapper markup; must be re-run per knack-view-render since Knack rebuilds the view. Idempotency via id check follows good Knack practice. Unverified against live docs.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 10,
+      "rationale": "Thirteen lines of jQuery append with an existence guard; a direct native port with a shared markup template. Low risk as long as the markup string is unchanged."
+    },
+    {
+      "name": "replaceTitleWithButton",
+      "kind": "function",
+      "startLine": 19076,
+      "endLine": 19084,
+      "currentSignature": "replaceTitleWithButton(viewId, showHideId)",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "replaceTitleWithButton(viewId, showHideId)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "showHideGroup title-to-button block (L13347-13353) - hides h2.kn-title and inserts a ktlHideShowButton div instead of replacing the title's innerHTML"
+      ],
+      "modernisations": [
+        "L19077-19078: `const title = getViewRootElement(viewId)?.querySelector('h2.kn-title'); if (!title || document.getElementById(`show-hide_${showHideId}`)) return;`.",
+        "L19079-19083: build the button with createElement/textContent for the title text (today the text is re-inserted through a template literal via .html(), so a title containing '<' or '&' is re-parsed as HTML) and insert the arrow span; then `title.replaceChildren(button)`.",
+        "Share the markup template with showHideGroup (L13348) parameterised by class names (show-hide-btn/arrow down vs ktlHideShowButton/ktlArrow ktlDown)."
+      ],
+      "behaviourRisks": [
+        "Uses textContent of the whole h2 (jQuery .text()), which flattens any nested nodes Knack puts in the title; same in V2.",
+        "Places a div inside an h2 (invalid nesting that browsers tolerate); CSS targets `#view_x h2.kn-title .show-hide-btn`, so the nesting must stay.",
+        "Switching from HTML re-parse to textContent changes rendering only when the title text contains HTML special characters (today they would be interpreted) - strictly a fix but observable."
+      ],
+      "knackPractice": "Operates on Knack's view title element (h2.kn-title) which Knack re-renders on every knack-view-render, so the id-based idempotence check is the right approach. Unverified against live docs.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 10,
+      "rationale": "Nine lines; trivial native port that also closes a small HTML-injection hole. Grouped into wave 2 with the rest of the show/hide module so the CSS contract is verified visually in one pass."
+    },
+    {
+      "name": "wrapContentForShowHide",
+      "kind": "function",
+      "startLine": 19090,
+      "endLine": 19113,
+      "currentSignature": "wrapContentForShowHide(viewId, viewType, showHideId)",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "wrapContentForShowHide(viewId, viewType, showHideId)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "wrapContentForShowHideGroup (L13394-13422) - native, wraps whole views in a section with ktlBoxWithBorder/ktlHideShowSection"
+      ],
+      "modernisations": [
+        "L19091-19095: keep the type->selector map as a module-level const (WRAPPERS_BY_VIEW_TYPE) so it is not rebuilt per call.",
+        "L19104-19105: replace jQuery wrapAll with the proposed wrapElements(elements, wrapper): create the section, insert it before the first matched element, append all matched elements (same semantics as wrapAll for sibling elements).",
+        "L19104: idempotence `!wrapperElement.parent().is('section')` -> `!first?.parentElement?.matches(`section.${CSS.escape(showHideId)}`)` (checks the specific wrapper, not any section).",
+        "L19109-19110: `hasClass('a b c')` tests for the literal space-joined substring and is order-sensitive; use `section.classList.add(showHideId, 'show-hide-section', 'box-with-border')` unconditionally (classList.add is idempotent).",
+        "L19099/L19101: use getViewRootElement(viewId) and `querySelectorAll` of the mapped selector; no-op when the view is missing."
+      ],
+      "behaviourRisks": [
+        "For 'table' the wrapper selects `.kn-table-wrapper, .kn-records-nav` - two siblings; wrapAll moves both into one section placed at the first one's position. If Knack ever renders them non-adjacent, wrapAll still groups them (moving the second); wrapElements must do the same.",
+        "No inline display:none is applied (unlike L13402 in the group version); content stays visible until the app's CSS for `.show-hide-section` hides it. Do not add a hidden default.",
+        "Falls back to decorating the view's existing `section` for other view types (details, rich text, menu); `viewElement.find('section')` may match several sections and addClass hits all of them - iterate all matches in V2.",
+        "Class names `show-hide-section` and `box-with-border` plus the showHideId class are the CSS hook and the selector used by showHideViewContent (L19051); must remain."
+      ],
+      "knackPractice": "Restructures Knack's rendered view DOM (kn-table-wrapper, kn-records-nav, form, kn-form-confirmation, kn-list-content). Knack re-creates these on knack-view-render so the wrapper disappears and must be re-applied each render; the idempotence checks exist for that. Moving Knack's elements inside a new section is generally safe but any Knack code that assumes `.kn-records-nav` is a direct child of the view would break (not observed). Unverified against live docs.",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 18,
+      "rationale": "Twenty-four lines whose only hard part is replicating jQuery wrapAll and fixing the fragile multi-class hasClass check. Shares wrapElements with wrapContentForShowHideGroup. Medium risk because it reshapes Knack's DOM and CSS depends on the result."
+    },
+    {
+      "name": "toggleElements",
+      "kind": "function",
+      "startLine": 19119,
+      "endLine": 19128,
+      "currentSignature": "toggleElements(selectors, show)",
+      "currentReturns": "undefined",
+      "verdict": "dedupe",
+      "proposedSignature": "toggleElements(selectors, show)  // shim over toggleVisibility (canonical)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "/** @deprecated Use toggleVisibility */ function toggleElements(selectors, show) { const list = Array.isArray(selectors) ? selectors : [selectors]; list.forEach((sel, i) => toggleVisibility(sel, Array.isArray(show) ? show[i] : show)); }",
+      "duplicatesOf": [
+        "toggleVisibility (L7112-7126) - canonical",
+        "setVisibility (L7051-7059)",
+        "showIf (L7066-7069)",
+        "showHideEleBasedOnString (L17862-17867) and the select-driven toggle at L17854 - same `$(sel).toggle(bool)` idiom"
+      ],
+      "modernisations": [
+        "L19121-19126: collapse both branches into one forEach over a normalised array (the per-index boolean array is the only feature toggleVisibility lacks, and the shim supplies it).",
+        "Requires toggleVisibility/resolveElements (C01) to accept jQuery objects as input, since consumers may pass `$(...)` collections here (JSDoc L19116 says jQuery is allowed).",
+        "Non-boolean `show` values: jQuery toggles when `typeof show !== 'boolean'` (undefined, 1, 'yes'), toggleVisibility toggles only for undefined and coerces anything else with !!; the shim should map `typeof show !== 'boolean' ? undefined : show` to keep jQuery semantics."
+      ],
+      "behaviourRisks": [
+        "jQuery .toggle()/.show() restores an explicit display (e.g. 'block', 'inline', or the pre-hide value) and treats elements hidden by stylesheet rules as hidden; toggleVisibility sets display='' and decides 'hidden' from inline style only (L7120), so an element hidden by a CSS class will not be shown and a CSS-hidden element will be considered visible. Canonical toggleVisibility should switch to a layout-box check (isElementVisible) and set an explicit display when the computed display is still none.",
+        "jQuery .toggle(true) on an element with display:none from a stylesheet forces display:block; native display='' leaves it hidden - the most likely silent regression for consumers.",
+        "Array inputs may contain jQuery objects, Elements, NodeLists or selector strings mixed; resolveElements must flatten all of them."
+      ],
+      "knackPractice": "Generic DOM visibility helper; Knack-agnostic. Knack hides inputs with inline style/`.kn-hidden`-style classes, so the display-restore semantics matter when toggling Knack-rendered elements. Unverified against live docs.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 5,
+      "rationale": "Ten lines that are a jQuery variant of toggleVisibility with a per-index boolean array. Policy names this cluster explicitly; toggleVisibility is already native and becomes canonical, with this global kept as a 5-line @deprecated shim. Medium risk because jQuery's display-restoring show() is not what toggleVisibility does today."
+    },
+    {
+      "name": "getFormId",
+      "kind": "function",
+      "startLine": 19132,
+      "endLine": 19134,
+      "currentSignature": "getFormId(viewId)",
+      "currentReturns": "string | undefined (jQuery .val() on an empty set)",
+      "verdict": "modernise",
+      "proposedSignature": "getFormId(viewId)",
+      "proposedReturns": "string | undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19133: `return getViewRootElement(viewId)?.querySelector('.kn-submit input[name=\"id\"]')?.value;` - returns undefined when missing, matching .val() on an empty jQuery set.",
+        "JSDoc: add @returns {string|undefined} and note it reads the hidden record-id input of a Knack edit form (not the form element's id attribute, which the name suggests)."
+      ],
+      "behaviourRisks": [
+        "Name is misleading (returns the record id held by the form, not a form element id); do not 'fix' by returning the form's id attribute.",
+        "Knack may not render `input[name=\"id\"]` on add forms; undefined in both versions.",
+        "If the hidden input is outside .kn-submit in some Knack layouts the selector misses it in both versions - keep selector identical."
+      ],
+      "knackPractice": "Reads Knack's hidden record-id input inside an edit form rather than using Knack.views[viewId].model.id or Knack.hash_id, which would be the documented model-based route; works but is DOM-coupled. Related record-id helpers: getRecordID (L18835, URL-based). Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "One-liner; a mechanical jQuery-to-native port with identical return semantics. No in-file callers; public API."
+    },
+    {
+      "name": "splitAndTrimField",
+      "kind": "function",
+      "startLine": 19141,
+      "endLine": 19144,
+      "currentSignature": "splitAndTrimField(fieldValue)",
+      "currentReturns": "string[] ([] for falsy input; throws TypeError for non-string truthy input such as a number)",
+      "verdict": "dedupe",
+      "proposedSignature": "splitAndTrimField(fieldValue)  // shim over csvToArray (canonical)",
+      "proposedReturns": "string[]",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "/** @deprecated Use csvToArray */ function splitAndTrimField(fieldValue) { return fieldValue ? csvToArray(String(fieldValue)) : []; }",
+      "duplicatesOf": [
+        "csvToArray (L11568-11580) - canonical",
+        "KnackValueResolver list splitting at L1636 (`value.split(',').map(trim).filter(Boolean)`)"
+      ],
+      "modernisations": [
+        "L19143 uses double quotes (repo convention is single quotes).",
+        "Replace the body with a call to csvToArray; String() coercion makes numeric inputs return ['123'] instead of throwing.",
+        "csvToArray (another chunk) should stop console.error-ing on empty input (L11570) so this shim does not become noisy; the shim's falsy guard avoids it meanwhile."
+      ],
+      "behaviourRisks": [
+        "Neither function filters empty segments ('a,,b' -> ['a','','b']); the resolver variant at L1636 does - keep csvToArray's non-filtering behaviour for both globals.",
+        "Numeric input currently throws; the shim returns a one-element array - strictly more lenient."
+      ],
+      "knackPractice": "Knack-agnostic string helper, typically used on multiple-choice field display values which Knack joins with ', '. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Four lines that duplicate csvToArray without its dedupe option or input guard. Keep the global as a @deprecated one-line shim; no in-file callers."
+    },
+    {
+      "name": "syncTextInputs",
+      "kind": "function",
+      "startLine": 19156,
+      "endLine": 19195,
+      "currentSignature": "syncTextInputs(textInputA, textInputB)",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "syncTextInputs(textInputA, textInputB)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19182-19185: four addEventListener calls -> `for (const type of ['input', 'change']) { a.addEventListener(type, () => propagate(a, b)); b.addEventListener(type, () => propagate(b, a)); }`.",
+        "L19164-19176: propagate as a const arrow; dispatch both events in a loop `['input','change'].forEach(t => target.dispatchEvent(new Event(t, {bubbles: true})))`.",
+        "L19189-19195: initial reconciliation -> `const source = a.value.trim() ? a : b.value.trim() ? b : null; if (source) propagate(source, source === a ? b : a);` (propagate already no-ops when equal).",
+        "Guard non-input arguments: `if (!(a instanceof HTMLElement) || !(b instanceof HTMLElement)) return;` and accept selector strings via resolveElement for parity with other helpers (additive).",
+        "Remove inline comments that restate the code (L19157, L19165, L19170, L19188)."
+      ],
+      "behaviourRisks": [
+        "`data-notes-sync-bound` (L19158-19160) is a DOM side effect and part of the signature per policy; keep the exact attribute name even though 'notes' leaks the originating app feature.",
+        "Guard requires BOTH inputs to be marked (L19158) so re-binding A to a new C after a partial Knack re-render is allowed by design; keep the && not ||.",
+        "Native Event dispatch does reach jQuery/Backbone delegated handlers (jQuery uses addEventListener), so Knack picks up the change; do not switch to jQuery .trigger which would NOT be seen by native listeners.",
+        "Stale listeners on re-rendered elements write to detached inputs harmlessly; a WeakMap-based rebind could remove them but changes nothing observable."
+      ],
+      "knackPractice": "Dispatching bubbling 'input' and 'change' events is the correct way to make Knack's Backbone form model notice programmatic value changes. Marking elements with a data attribute to survive knack-view-render re-runs is standard practice. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 26,
+      "rationale": "Already native and correct; the gain is ~35% fewer lines by looping over event types and tightening the reconciliation. No in-file callers; public API with a documented data attribute that must be preserved."
+    },
+    {
+      "name": "createButton",
+      "kind": "function",
+      "startLine": 19208,
+      "endLine": 19251,
+      "currentSignature": "createButton(options)  with legacy overload createButton(id, html, className) detected via `typeof arguments[0] === 'string'`; options = {id = '', html = '', className = '', type = 'button', attributes = {}, onClick = null}",
+      "currentReturns": "HTMLButtonElement",
+      "verdict": "simplify",
+      "proposedSignature": "createButton(options, legacyHtml, legacyClassName)  // same call shapes: createButton({...}) or createButton(id, html, className)",
+      "proposedReturns": "HTMLButtonElement",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19210-19216: drop `arguments`; declare the two extra positional parameters so the legacy overload is explicit: `if (typeof options === 'string') options = { id: options, html: legacyHtml, className: legacyClassName };`.",
+        "L19219-19226: `const { id = '', html = '', className = '', type = 'button', attributes = {}, onClick = null } = options ?? {};` instead of Object.assign.",
+        "L19233-19235: `button.classList.add('kn-button', ...className.split(/\\s+/).filter(Boolean))` keeps the 'kn-button first' order and tolerates extra whitespace.",
+        "L19239-19241: keep the attributes loop; L19244-19246: `if (typeof onClick === 'function') button.addEventListener('click', onClick)` unchanged.",
+        "Document that `html` is set via innerHTML (trusted markup only) and consider an additive `text` option so the seven ad-hoc createElement('button') sites (L5150, L5230, L5296, L7826, L10338, L20256, L20667) can adopt it; an additive `baseClass` option would let L7826 (no kn-button) use it too."
+      ],
+      "behaviourRisks": [
+        "Always prefixes the 'kn-button' class (L19233) - Knack's button styling hook; consumers' CSS may rely on class order `kn-button extra`, keep order.",
+        "Legacy positional overload (L19210) must keep working: `createButton('id', '<i/>', 'cls')`.",
+        "`button.type = options.type` with a non-standard string falls back to 'submit' in browsers; unchanged.",
+        "innerHTML with untrusted html is an XSS surface; not changed, but document it."
+      ],
+      "knackPractice": "Produces buttons styled with Knack's own `kn-button` class so they match native Knack buttons; good practice. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 22,
+      "rationale": "Already native; simplification removes `arguments`, Object.assign and comment padding for roughly half the lines with identical behaviour. It is the button factory the modal helper depends on, so it belongs in the wave-1 foundation set."
+    },
+    {
+      "name": "addModalNavigationButtons",
+      "kind": "function",
+      "startLine": 19258,
+      "endLine": 19327,
+      "currentSignature": "addModalNavigationButtons()",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "addModalNavigationButtons()",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "L19259: `document.querySelectorAll('[id^=\"kn-modal-bg-\"]')` -> `.at(-1)` via Array.from(...).at(-1) (reads clearer than .pop()).",
+        "L19295-19300 and L19323-19325: replace the lazy self-removal of window listeners (which only runs on the NEXT resize after the modal is gone) with one AbortController: add all listeners with `{ signal }` and abort when `!modalBg.isConnected`, detected by a MutationObserver on modalBg.parentNode or inside the existing updateVisibility; also listen for Knack's modal close by observing removal rather than polling.",
+        "L19267-19290: the two createButton calls share shape; a tiny local `control(iconClass, className, label, onClick)` helper halves them.",
+        "L19305-19311: hoist `const VIEWPORT_EDGE = 12, MODAL_GAP = 8` to module constants; `function()` callbacks -> arrows.",
+        "L19287: `modalBg.querySelector('button.close-modal, .close-modal')?.click()` duplicates the close selectors at L3904, L12370 (MODAL_CLOSE), L18619 and L20870; use one shared KNACK_MODAL_CLOSE_SELECTOR constant.",
+        "Consider an idempotent ensureModalControlStyles() that injects minimal CSS for `.modal-control-buttons` / `.is-visible` positioning, since the library currently depends on the consuming app's stylesheet for the controls to be visible at all."
+      ],
+      "behaviourRisks": [
+        "Class names `modal-control-buttons`, `modalButton`, `success-bkgd`, `warning-bkgd`, `scroll-to-top-btn`, `close-modal-btn` and the `is-visible` toggle (L19263, L19269, L19281, L19319) are the CSS contract with consuming apps; keep verbatim.",
+        "Assumes the `kn-modal-bg-*` element is the scroll container (scrollTop at L19319, scrollTo at L19276) and that `.modal-card`/`.modal-card-body` exist (L19303); Knack markup changes would break positioning in both versions.",
+        "Aborting listeners on modal removal changes nothing visible but fixes a slow leak; make sure a reopened modal (new kn-modal-bg-N element) gets fresh bindings - the `:scope > .modal-control-buttons` check (L19260) already keys off the element.",
+        "Font Awesome `fa fa-arrow-up` / `fa fa-times` icons (L19268, L19280) rely on Knack's bundled FA4; keep the markup.",
+        "scrollTo with behavior:'smooth' is ignored by browsers with reduced-motion preferences only if CSS says so; unchanged."
+      ],
+      "knackPractice": "Targets Knack's modal background element by id prefix and closes via Knack's own `.close-modal` button, which is the documented way to dismiss a modal (Knack.closeModal() is the API alternative). Intended to be called on knack-view-render inside a modal; idempotent per modal element, which fits Knack's re-render model. Unverified against live docs.",
+      "risk": "low",
+      "wave": 2,
+      "estimatedV2Lines": 55,
+      "rationale": "Recent, already-native code (70 lines) with a minor listener-lifecycle wart and duplicated selector constants. Port with targeted improvements once the foundation is stable; needs a manual visual check against an open Knack modal because the library ships no CSS for the controls."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "createStorageAdapter / secureJsonStore",
+      "purpose": "Generalise createBulkActionStorageAdapter (L1857-1930, already KTL-aware with try/catch guards) into a library-wide createStorageAdapter(storage, {preferKtl, secure, noUserId, session}), and build secureJsonStore(storageKey) on it: read() parses JSON (resetting + reporting on corruption), write(obj) stringifies, update(mutator) does a serialised read-modify-write per storageKey. Replaces the three hard-coded lsGetItem/lsSetItem(key, false, false, true) call sites and removes the lost-update race between rapid setSecureStorage calls.",
+      "replaces": [
+        "initSecureStorage L18900-18931",
+        "setSecureStorage L18941-18948",
+        "getSecureStorage L18956-18965",
+        "createBulkActionStorageAdapter L1857-1930 (keeps its name as an alias, wave 3)"
+      ],
+      "signature": "createStorageAdapter(storage: Storage|null, options?: {preferKtl?: boolean, secure?: boolean, noUserId?: boolean, session?: boolean}): {get(key): string|null, set(key, value): boolean, remove(key): boolean}; secureJsonStore(storageKey: string): {read(): Promise<object>, write(obj: object): Promise<void>, update(mutator: (obj: object) => object|void): Promise<object>}"
+    },
+    {
+      "name": "slideToggle / slideUp / slideDown",
+      "purpose": "Hoist the native height/padding/margin animation currently nested inside showHideViewGroupContent (L13445-13565) into module-level primitives, without the hard-coded marginTop '13px' (L13513, L13542), so both show/hide flavours and any future jQuery slideToggle/slideUp replacement share one implementation.",
+      "replaces": [
+        "toggleShowHideViewContent L19022 (jQuery slideToggle)",
+        "shrinkContent L19037 (jQuery slideUp)",
+        "showHideViewGroupContent inner slideToggle L13445-13546 and slideUp L13548-13565"
+      ],
+      "signature": "slideToggle(el: Element, duration = 400, display = 'block'): Promise<void>; slideUp(el: Element, duration = 400): Promise<void>; slideDown(el: Element, duration = 400, display = 'block'): Promise<void>"
+    },
+    {
+      "name": "bindShowHide",
+      "purpose": "One idempotent binder (WeakMap<Element, AbortController>) for the toggle button and optional shrink link, parameterised by class vocabulary so the single-view (show-hide-btn/arrow/active/up/down) and group (ktlHideShowButton/ktlArrow/ktlActive/ktlUp/ktlDown) flavours keep their CSS contracts.",
+      "replaces": [
+        "toggleShowHideViewContent L19020-19027",
+        "shrinkContent L19035-19041",
+        "showHideViewGroupContent onclick blocks L13567-13585"
+      ],
+      "signature": "bindShowHide({ button: Element, section: Element|Element[], arrow?: Element, shrinkLink?: Element, duration = 400, display = 'block', classes = { active: 'active', up: 'up', down: 'down' } }): void"
+    },
+    {
+      "name": "wrapElements",
+      "purpose": "Native equivalent of jQuery wrapAll: insert `wrapper` before the first element and move every element into it. Shared by both wrap helpers.",
+      "replaces": [
+        "wrapContentForShowHide L19104-19105",
+        "wrapContentForShowHideGroup L13403-13421"
+      ],
+      "signature": "wrapElements(elements: Element|Element[]|NodeList, wrapper: Element): Element"
+    },
+    {
+      "name": "showHideMarkup",
+      "purpose": "Template functions for the show/hide button and shrink link so the two flavours (L19060/L19079 vs L13344/L13348) differ only in the class names passed in; keeps the `&nbsp;` and U+25C0 glyph byte-identical.",
+      "replaces": [
+        "appendShrinkLink L19060",
+        "replaceTitleWithButton L19079",
+        "showHideGroup L13344, L13348"
+      ],
+      "signature": "showHideMarkup.button(showHideId: string, titleText: string, classes: {button: string, arrow: string, down: string}): Element; showHideMarkup.shrinkLink(showHideId: string, classes: {link: string, arrow: string, up: string}): Element"
+    },
+    {
+      "name": "isElementVisible",
+      "purpose": "jQuery `:visible` parity (layout-box test) for native rewrites; needed by checkAllRadioAnswered and by the canonical toggleVisibility if it is to match jQuery .toggle() semantics for stylesheet-hidden elements.",
+      "replaces": [
+        "checkAllRadioAnswered L18976, L18984 (`:radio:visible`)",
+        "toggleVisibility L7120 inline-style-only hidden check (C01)"
+      ],
+      "signature": "isElementVisible(el: Element): boolean  // el.checkVisibility?.() ?? el.getClientRects().length > 0"
+    },
+    {
+      "name": "fieldIdFromInputWrapper",
+      "purpose": "Safely derive the Knack field id from the nearest `[id^=\"kn-input-field_\"]` wrapper (returns null instead of throwing when absent); used twice in checkAllRadioAnswered and overlapping with getFieldId (L11280).",
+      "replaces": [
+        "checkAllRadioAnswered L18977, L18985",
+        "getFieldId L11280 (other chunk, check)"
+      ],
+      "signature": "fieldIdFromInputWrapper(el: Element, { numeric = false } = {}): string|number|null"
+    },
+    {
+      "name": "getRowById",
+      "purpose": "View-scoped, CSS.escape'd lookup of a grid row by record id, replacing document-wide `tr[id=...]` selectors that hit every grid showing the same record.",
+      "replaces": [
+        "changeCellTextBasedOnCellContent L19003",
+        "other `tr[id=` lookups across chunks (grep `tr[id`)"
+      ],
+      "signature": "getRowById(viewId: string, recordId: string): HTMLTableRowElement|null"
+    }
+  ],
+  "crossCuttingFindings": [
+    "Two parallel show/hide implementations: the jQuery single-view family here (L19020-19113; classes show-hide-btn, arrow down|up, active, show-hide-section, box-with-border; button id show-hide_${id}) and the native group family at L13330-13585 (classes ktlHideShowButton, ktlArrow ktlDown|ktlUp, ktlActive, ktlHideShowSection, ktlBoxWithBorder; button id = showHideId). Both class vocabularies are CSS contracts with consuming apps, so V2 must keep both entry points and both class sets, sharing only the slideToggle/bindShowHide/wrapElements/showHideMarkup primitives. The group version's hard-coded `delay = 1000` (L13340) and `marginTop = '13px'` (L13382, L13513, L13542) are app-specific magic numbers that should become options.",
+    "Duplicate DOM id in both flavours: the title button arrow and the shrink-link arrow are both given id `arrow_${showHideId}` (L19060 vs L19079; L13344 vs L13348), so only the first (title) arrow is ever toggled. Any 'fix' changes visuals; decide once for both chunks (C23 and the chunk owning L13330-13585).",
+    "splitAndTrimField (L19141) duplicates csvToArray (L11568) and the inline split in KnackValueResolver at L1636. csvToArray should be canonical; its console.error on empty input (L11570) conflicts with splitAndTrimField's silent [] and with the error-reporting policy - whoever owns csvToArray should return [] quietly or report via errorHandler.",
+    "The `$(sel).toggle(bool)` idiom appears in toggleElements (L19123, L19126), showHideEleBasedOnString (L17865) and the select-driven toggle at L17854. All should route through the canonical toggleVisibility, but toggleVisibility (L7112, C01) currently (a) rejects jQuery-object inputs and (b) decides hidden-ness from inline style and shows with display='' - so it cannot reveal stylesheet-hidden elements the way jQuery .show() does. C01 should widen resolveElements to accept jQuery and make toggleVisibility use a layout-box check plus an explicit display when needed, before these shims land.",
+    "removeClassFromSelector/addClassToSelector (L9630-9655) are old jQuery-layer helpers (trailing `};`, jQuery return value, undefined return for arrays). shrinkContent chains on the return value (L19038). Whichever chunk owns them must keep the jQuery return type, or the shrinkContent shim must stop chaining (it will, since it goes native).",
+    "The secure-storage trio re-implements KTL detection and flag handling that createBulkActionStorageAdapter (L1857-1930) already does generically. Promote that adapter to a wave-1 foundation primitive (createStorageAdapter) and keep the bulk-action name as an alias; the bulk-actions chunk (wave 3) should be told not to port it as private.",
+    "Hard KTL dependency without a feature check: initSecureStorage (L18900) calls ktl.storage.initSecureLs() unguarded; when KTL is not loaded the rejection is a ReferenceError. The file elsewhere feature-detects `globalThis.ktl?.storage` (L1868-1873). Standardise on a `requireKtl('storage.initSecureLs')` style guard that reports via errorHandler.",
+    "Unhandled promise rejections: initSecureStorage is called fire-and-forget at L13282 (setupLocalStorageMinutes) and inside setSecureStorage at L18941 with no .catch; policy says never swallow silently, so V2 must attach errorHandler.handle to these paths (and the chunk owning L13280 should do the same).",
+    "App-specific CSS dependencies with no library-provided styles: `var(--success)` custom property (L19006; also L11384, L18208), `.success-bkgd`/`.warning-bkgd`/`.modalButton`/`.modal-control-buttons`/`.is-visible` (L19263-19281, L19319), `.box-with-border`/`.show-hide-*` (L19060-19110). Either document them as the consumer CSS contract in V2's README or add idempotent ensure*Styles() injectors; today the modal controls are invisible without app CSS.",
+    "Seven hand-rolled `document.createElement('button')` sites (L5150, L5230, L5296, L7826, L10338, L20256, L20667) do not use createButton (L19208), partly because createButton forces the `kn-button` class and uses innerHTML. Additive `text` and `baseClass` options on createButton would let them converge in later waves.",
+    "Knack modal close selector is repeated at L3904, L12370 (MODAL_CLOSE), L18619, L19287 and L20870 with slightly different scoping ('button.close-modal, .close-modal' vs '.kn-modal button.close-modal, .kn-modal .close-modal'); define one KNACK_MODAL_CLOSE_SELECTOR constant in the foundation layer.",
+    "changeCellTextBasedOnCellContent uses a document-wide `tr[id=${id}]` selector (L19003) while replaceTextInGrid (L11647) scopes rows to the view; a shared getRowById(viewId, recordId) with CSS.escape should be the standard across grid helpers.",
+    "Record-id helpers are scattered and inconsistently named: getFormId (L19132, hidden form input), getRecordID (L18835, URL), getIdFromElement/getConnectionIdFromHtml (policy list). Document them together in V2 and consider a single getRecordIdFor({viewId|element|url}) in a later wave without renaming existing globals.",
+    "Dead/stale comment: an orphaned older JSDoc block for capitaliseInput sits at L19329-19337 immediately before the real one at L19338-19344 (chunk boundary with C24); drop it in V2.",
+    "Cosmetic signals of the old layer in this chunk: appendShrinkLink declared with a 4-space indent (L19059), JSDoc parameter names that do not match the code (appendToId vs wrapperId L19057; `view`/`records` object docs vs viewId L18992-18999), double quotes at L19143, and setSecureStorage's wrong @returns (L18939).",
+    "jQuery rule check for this chunk: no function here returns a jQuery collection, so none needs a new native-named implementation plus a toJQuery() shim. The only jQuery-typed INPUTS are the three element parameters of toggleShowHideViewContent/shrinkContent (L19020, L19035) and the selectors argument of toggleElements (L19119); their shims must unwrap via resolveElement/resolveElements (C01), which the policy allows. All proposed V2 bodies in this chunk are jQuery-free; consumers re-running showHideViewContent per render should do so through the onKnackEvent primitive."
+  ]
+}

@@ -1,0 +1,838 @@
+{
+  "chunkId": "C22",
+  "chunkSummary": "Lines 18259-18890 are 23 small, mostly already-native helpers for reading Knack details-view values (waitGetValueFromDetail, getValueFromDetail, insertValFromDetail), extracting 24-hex record ids from rendered HTML (normaliseToElement, getIdFromElement, getConnectionIdFromHtml), URL/scene navigation (sanitiseURL, getNewURL, getRecordID, getIdBeforeSceneSlug, getBackgroundSceneId, isSceneToIgnore, getCurrentSceneInfo, handleRedirect), user checks (insertLoggedInUser, isUserRole, isUserName) and four UI tweaks (borderRadiusLastVisible, changeToSlider, openFileFromBtn, replaceLargeNo, showPopUpNotification). No signature changes or shims are needed in this chunk: every verdict is keep/simplify/modernise, the only jQuery left is in getValueFromDetail, isUserRole and showPopUpNotification, and the real work is fixing four latent defects (the dropped `delay` option that makes waitGetValueFromDetail always wait 10 s, getIdFromElement returning null for all HTML-string inputs, an unbalanced Knack.showSpinner() in showPopUpNotification, and a possible TypeError in changeToSlider) plus extracting shared primitives (detailBodySelector, readElementContent, collectConnectionIds, getLoggedInUserName, redirectAfter, fadeOutAndRemove). Everything is wave 1 except changeToSlider (wave 2); the chunk also surfaces cross-chunk bugs in hideElementsByValue (no-arg call), waitGetConxIdFromDetailId (same delay bug, duplicated id walk) and the dead fileViewer.",
+  "functions": [
+    {
+      "kind": "async function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "getValueFromDetail (L18330) and getValueFromDetailBody (L9036) perform the same text/HTML extraction synchronously against `.kn-detail-body` (this one targets `.kn-detail-body span`); share the read and selector primitives, not the function.",
+        "waitGetConxIdFromDetailId (L19462-19520) repeats the wait-for-`.kn-detail-body` pattern and the same dropped-`delay` bug."
+      ],
+      "name": "waitGetValueFromDetail",
+      "startLine": 18265,
+      "endLine": 18324,
+      "currentSignature": "async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHtml = false})",
+      "currentReturns": "Promise<string|null> when fieldIds is a single id; Promise<Object<string, string|null>> keyed by the normalised 'field_x' when fieldIds is an array. Never rejects: every failure path returns null or a partially-filled object.",
+      "verdict": "simplify",
+      "proposedSignature": "async function waitGetValueFromDetail({viewId, fieldIds, delay = 20000, returnHtml = false})",
+      "proposedReturns": "Unchanged: Promise<string|null> for a scalar fieldIds, Promise<Object<string, string|null>> for an array.",
+      "modernisations": [
+        "L18282-18285: `waitSelector({selector, delay})` - waitSelector (L8772-8777) destructures `timeout`, not `delay`, so the option is silently discarded and every call waits waitSelector's default 10000 ms. Pass `timeout: delay`; the warning at L18288 (`within ${delay}ms`) then stops lying.",
+        "L18269-18304: replace the mutable `fieldValues` object, the `fieldStatuses` intermediate and the forEach with `Object.fromEntries(await Promise.all(fieldIdArray.map(async (id) => { const key = knackNavigator.normalizeFieldId(id); return [key, await readOne(key)]; })))`.",
+        "L18271 + L18312-18323: the outer try/catch is unreachable. The inner try/catch (L18281-18290) turns timeouts into `{found:false}`, Promise.all over never-rejecting promises cannot reject, and knackNavigator.normalize* never throw. Delete it; the recovery loop at L18316-18320 also keys by the raw un-normalised fieldId so it could never have matched the normalised keys.",
+        "L18296-18303: use the shared `readElementContent(element, returnHtml)` primitive and apply `|| null` here, so this function and getValueFromDetail trim identically.",
+        "L18277-18279: build the selector with the shared `detailBodySelector(fieldId, {viewId, inner: true})` so the `#view_x .field_y .kn-detail-body span` string exists once (the same string is hand-built at L12279-12280).",
+        "L18307-18308: single return `Array.isArray(fieldIds) ? values : values[knackNavigator.normalizeFieldId(fieldIds)]`.",
+        "Keep `console.warn` for a timed-out field (an absent field is an expected state on pages that do not render it); do not route it through errorHandler."
+      ],
+      "behaviourRisks": [
+        "Fixing `delay` -> `timeout` changes real timing: a call that gives up after 10 s today will wait the documented 20 s by default, and `delay: 5000` callers will become faster. CHANGELOG L92 shows consumers call this directly, so note it in the V2 changelog.",
+        "`.kn-detail-body span` only matches when Knack wraps the value in a <span>; bodies rendered without one (empty values, some paragraph/rich-text fields - unverified against live docs) resolve to null even though `.kn-detail-body` has text. Port the selector verbatim.",
+        "Empty string values return null (`'' || null`, L18298-18299) whereas getValueFromDetail returns ''. Preserve the asymmetry.",
+        "The result object is keyed by normalised ids (`field_12`) even when the caller passed 12 (L18286). Preserve.",
+        "waitSelector observes `attributes` on the whole body subtree (L8879-8883), so this is expensive on large grids; that is waitSelector's problem but a V2 that calls it N times for N fields should consider one observer."
+      ],
+      "knackPractice": "Follows Knack DOM conventions for details views (`.kn-detail.field_x .kn-detail-body`) and uses a MutationObserver (via waitSelector) rather than polling, which is the correct way to survive Knack's asynchronous re-render. It fights the model slightly: the Knack-idiomatic source for a details-view value is the view's Backbone model (`Knack.views[viewId].model`, exposing `field_x` HTML and `field_x_raw`) available from `knack-view-render.view_x`, which avoids DOM waits entirely (model shape unverified against live docs). Keep the DOM approach for compatibility and document the alternative in the JSDoc.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 28,
+      "rationale": "Already async/await and jQuery-free, but 60 lines carry a real defect (the timeout option is never applied, L18282-18285), an unreachable 12-line catch block and a hand-rolled object builder. Same signature and return types, so no shim; the only observable change is the corrected wait time, which must be called out. It belongs in wave 1 because it shares primitives with getValueFromDetail and the connection-id helpers in this chunk."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "getValueFromDetailBody (L9036-9046) is a byte-for-byte native twin (`querySelector` == `$().first()`, `textContent` == `.text()`, `innerHTML` == `.html()`) with zero in-file callers; this function has two (L9597, L18346) so it is the canonical name and getValueFromDetailBody becomes the `@deprecated` shim.",
+        "waitGetValueFromDetail (L18265) is the async variant."
+      ],
+      "name": "getValueFromDetail",
+      "startLine": 18330,
+      "endLine": 18338,
+      "currentSignature": "getValueFromDetail(fieldID, returnHtml = false)",
+      "currentReturns": "string ('' for an empty body) | null when no `.field_<fieldID> .kn-detail-body` exists anywhere in the document.",
+      "verdict": "modernise",
+      "proposedSignature": "getValueFromDetail(fieldID, returnHtml = false)",
+      "proposedReturns": "string | null (unchanged).",
+      "modernisations": [
+        "L18331-18333: `const body = document.querySelector(detailBodySelector(fieldID))` replaces `$(...).first()` and the `.length === 0` test; identical first-match-in-document semantics.",
+        "L18337: `return readElementContent(body, returnHtml)` (shared primitive) replaces the `.html().trim() : .text().trim()` branch; for a single element jQuery .text()/.html() equal textContent/innerHTML exactly.",
+        "L18331: normalise the id with `knackNavigator.normalizeFieldId(fieldID)` so 12, '12' and 'field_12' all work. Today 'field_12' builds `.field_field_12` and returns null.",
+        "L18334: `console.log('Error: ...')` -> `console.warn` (a field absent from the page is expected, not an error); keep returning null.",
+        "Drop the 3-line header-comment style JSDoc for a standard block with @returns {string|null}."
+      ],
+      "behaviourRisks": [
+        "Document-wide first match: when two details views on one scene show the same field the DOM-first wins. V2 must not scope to a view (there is no viewId parameter) or results change.",
+        "Input widening: 'field_12' used to return null and will return the value; no caller in-file passes prefixed ids, but a consumer relying on null for a prefixed id (unlikely) would change.",
+        "Keep returning '' (not null) for an empty body - updateButtonColourOnFormComplete (L9598) tests `!formsCompleted || !formsCompleted.length`, so either works there, but waitGetValueFromDetail deliberately differs."
+      ],
+      "knackPractice": "Uses Knack's `.kn-detail.field_x .kn-detail-body` convention correctly but ignores the view-based model (no view scoping, no render-event binding); callers must invoke it inside `knack-view-render.view_x`. A details view's value is also available from `Knack.views[viewId].model` without DOM parsing (unverified against live docs).",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 7,
+      "rationale": "Nine lines of jQuery-era code whose exact native equivalent already exists at L9036, so V2 keeps this name as the canonical implementation, drops jQuery, and turns getValueFromDetailBody into a shim. Signature, return type and null semantics are unchanged; the only widening is accepting prefixed field ids."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "insertValFromDetail",
+      "startLine": 18345,
+      "endLine": 18351,
+      "currentSignature": "insertValFromDetail(fieldID, insertSpan)",
+      "currentReturns": "undefined",
+      "verdict": "keep",
+      "proposedSignature": "insertValFromDetail(fieldID, insertSpan)",
+      "proposedReturns": "undefined",
+      "modernisations": [
+        "L18347-18350: `resolveElements(insertSpan).forEach((el) => { el.textContent = value; })` (resolveElements L7927) so an Element, NodeList or array is accepted as well as the documented selector string; same result for strings.",
+        "JSDoc L18342: `{integer|string}` -> `{number|string}`."
+      ],
+      "behaviourRisks": [
+        "When getValueFromDetail returns null, `el.textContent = null` sets '' per the DOM spec (L18349); keep that rather than writing 'null'.",
+        "Runs once; Knack re-renders the target on `knack-view-render`, so callers must rebind - unchanged."
+      ],
+      "knackPractice": "Thin composition over getValueFromDetail; inherits its unscoped-document lookup. Fine as a convenience helper to call from `knack-view-render.view_x`.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 5,
+      "rationale": "Already native and succinct. The only change is routing the target through resolveElements for input widening; nothing in the signature or DOM side effects moves."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "updateUserFields (L11306-11312) and insertStaffName (L20183-20186) also read `Knack.getUserAttributes().name` and write it into the DOM with different fallbacks ('' / none).",
+        "The string/Element/NodeList branching at L18365-18388 is resolveElements (L7927)."
+      ],
+      "name": "insertLoggedInUser",
+      "startLine": 18359,
+      "endLine": 18400,
+      "currentSignature": "insertLoggedInUser(selector, callback)",
+      "currentReturns": "string - the user name written (falls back to 'Unknown User' when Knack has no name, L18362) or the literal 'User Unknown' when the try block throws (L18398). The callback receives the name only when at least one element was updated (L18370, L18387 return before it).",
+      "verdict": "simplify",
+      "proposedSignature": "insertLoggedInUser(selector, callback)",
+      "proposedReturns": "string (unchanged, same fallback strings).",
+      "modernisations": [
+        "L18365-18388: `const elements = resolveElements(selector); if (!elements.length) { console.warn(...); return userName; } elements.forEach((el) => { el.textContent = userName; });` - collapses three branches into four lines and additionally accepts arrays and jQuery collections (resolveElements in V2 is being widened per tests/v2/foundation.test.cjs L45-57).",
+        "L18362: use the shared `getLoggedInUserName('Unknown User')` primitive.",
+        "L18396-18399: the try/catch guards only `Knack.getUserAttributes()`; keep it but report through `errorHandler.handle(error, {selector}, 'insertLoggedInUser')` instead of console.error, and return the same 'User Unknown' literal (callers may compare).",
+        "Remove the eight narrating comments (L18361, L18364, L18366, L18373, L18378, L18381, L18390)."
+      ],
+      "behaviourRisks": [
+        "The two different fallback literals ('Unknown User' vs 'User Unknown') look like a typo but are observable return values; V2 must keep both or document a change.",
+        "Invalid selector type today logs console.error and returns WITHOUT invoking the callback (L18385-18388); after resolveElements it would hit the 'no elements' branch, also without the callback - same effect, different log level.",
+        "A NodeList input is written in place; a jQuery object currently falls into the error branch and is NOT updated - V2 would update it (widening)."
+      ],
+      "knackPractice": "Uses the documented `Knack.getUserAttributes()` (returns {id, name, email, values, roles}). Correct Knack usage; like every DOM writer here it must be re-run on `knack-view-render` because Knack replaces the view's DOM.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 14,
+      "rationale": "Forty-two lines that reduce to about fourteen by reusing resolveElements and a user-name primitive; the signature, return strings and callback contract stay identical. Low risk and a clear succinctness gain, so wave 1."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "borderRadiusLastVisible",
+      "startLine": 18402,
+      "endLine": 18429,
+      "currentSignature": "borderRadiusLastVisible(viewId, delay)",
+      "currentReturns": "undefined. Side effect: clears inline `border-radius` on every visible `.menu-links__list > li > a` in `#<viewId>` and sets `0 .35em .35em 0` on the last visible one; when `delay` is truthy it re-runs itself once after `delay` ms (the recursive call drops `delay`, L18427).",
+      "verdict": "simplify",
+      "proposedSignature": "borderRadiusLastVisible(viewId, delay)",
+      "proposedReturns": "undefined (same inline-style side effect).",
+      "modernisations": [
+        "Add the missing JSDoc (the only undocumented function in the chunk besides getRecordID).",
+        "L18403: `getViewRootElement(viewId)` (L6931) instead of `document.getElementById(viewId)` so 'view_12', 12 and a view object are accepted; `document.getElementById(undefined)` is how the call at L20776 currently becomes a silent no-op.",
+        "L18409-18411: `li.offsetParent !== null` alone - an element with `display:none` always has a null offsetParent, so the getComputedStyle call is redundant (the only divergence is `position:fixed` items, which are never menu <li>s).",
+        "L18416-18424: `const anchors = visible.map((li) => li.querySelector('a')).filter(Boolean); anchors.forEach((a) => { a.style.borderRadius = ''; }); anchors.at(-1).style.borderRadius = MENU_LAST_ITEM_RADIUS;` - `.at(-1)` replaces `visibleLis[visibleLis.length - 1]`.",
+        "Hoist `'0 .35em .35em 0'` into a named constant; it is a theme value, not a library fact."
+      ],
+      "behaviourRisks": [
+        "The inline style is the contract: consumers' CSS may rely on `style=\"border-radius: ...\"` overriding theme rules; do not switch to a class.",
+        "`delay` re-run exists because KTL hides menu items asynchronously; keep the single re-run (do not loop) and keep it after the first pass.",
+        "Accepting a missing/invalid viewId as a no-op must remain (hideElementsByValue L20776 calls it with no arguments) until that caller is fixed.",
+        "Visibility predicate change (dropping getComputedStyle) is behaviour-neutral for <li> in a flow layout; flag if a theme positions menu items fixed."
+      ],
+      "knackPractice": "Targets Knack's menu view markup (`.menu-links__list`), which is a Knack class name but not a documented API, so it is coupled to Knack's current theme HTML (unverified against live docs). Must run after `knack-view-render.view_x` and after any KTL `_hebv`-style hiding, which is why hideElementsByValue calls it.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 14,
+      "rationale": "Native already but verbose and undocumented, with a redundant visibility check and a hard-coded theme radius. The port keeps the signature and inline-style side effect, halves the body, and makes the viewId tolerant, which also exposes the no-argument call bug at L20776 for the owning chunk to fix."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "changeToSlider",
+      "startLine": 18445,
+      "endLine": 18548,
+      "currentSignature": "changeToSlider(viewId, sliderFieldSelector, resultFieldSelector, attributes = {})",
+      "currentReturns": "undefined. Side effects: converts the slider input to type=range, swaps class `input` for `slider`, copies every remaining key of `attributes` onto it via setAttribute, adds `attributes.class` tokens to `#kn-input-<sliderId>` and `<token>-result` to `#kn-input-<resultId>`, wires input->result (`input`) and result->slider (`keyup`) sync, and appends `label.slideLabel` min/max labels into `#<viewId> #kn-input-<sliderId> div.control`.",
+      "verdict": "simplify",
+      "proposedSignature": "changeToSlider(viewId, sliderFieldSelector, resultFieldSelector, attributes = {})",
+      "proposedReturns": "undefined (same DOM side effects, class names and inline label offsets).",
+      "modernisations": [
+        "L18447-18462: four ternaries collapse to `const scoped = (s) => (typeof s === 'string' ? `#${viewId} ${s}` : s); const sliderField = resolveElement(scoped(sliderFieldSelector)); const resultField = resolveElement(scoped(resultFieldSelector));` (resolveElement L7915).",
+        "L18473-18481: `const { minLabel = '', maxLabel = '', class: extraClass = '', ...sliderAttributes } = attributes;` replaces the copy-and-delete block and the three `// NEW` tags (L18475, L18481, L18489).",
+        "L18491-18492: `document.getElementById(...)` can be null when the result field has no `#kn-input-` wrapper, throwing a TypeError mid-way; use `document.getElementById(`kn-input-${sliderFieldId}`)?.classList.add(cls)`.",
+        "L18497-18499: set `min`, `max`, `step` before `value` explicitly (`for (const key of ['min','max','step']) ...` then the rest). Object.entries order follows the caller's literal order, so `{value: 150, max: 200}` currently clamps value to the default max of 100 before max is applied.",
+        "L18532-18547: one `addSlideLabel(controlDiv, text, side)` helper (`style[side] = side === 'left' ? '1px' : '2px'`) replaces the duplicated min/max blocks.",
+        "L18507: listen to `input` as well as `keyup` on the result field so paste/autofill sync (additive; keep `keyup`).",
+        "L18522-18524: move the `if (!sliderFieldId) return;` guard up next to L18469 and drop the two 'Can't ...' comments.",
+        "Strip the fifteen narrating comments; keep the JSDoc."
+      ],
+      "behaviourRisks": [
+        "`slider`, `slideLabel` and `<class>-result` are CSS contracts in consuming apps; keep the exact names and the inline `left:1px` / `right:2px` offsets.",
+        "Removing Knack's `input` class (L18484) changes Knack theme styling on purpose; preserve.",
+        "Knack re-renders the form after submit/validation errors, so the slider conversion is lost until the caller re-runs it on `knack-view-render.view_x`; a V2 must not try to persist it with an observer unless asked.",
+        "Reordering attribute application (min/max before value) fixes a silent clamp but changes the initial value for callers who relied on the clamp - unlikely and arguably a bug fix.",
+        "`resultField.value = sliderField.value` at L18519 writes the Knack number input without firing `input`/`change`, so Knack's own validation state is not updated until the user types - existing behaviour, keep unless the team wants a dispatched `input` event."
+      ],
+      "knackPractice": "Mutates Knack form inputs in place using the documented wrapper convention (`#kn-input-field_x` and its `div.control`). It follows the Knack model as long as the caller runs it from `knack-view-render.view_x`; Knack's submit serialises the input by id, so changing `type` to range is safe (unverified against live docs).",
+      "risk": "medium",
+      "wave": 2,
+      "estimatedV2Lines": 55,
+      "rationale": "Modern-ish widget code (104 lines) with no third-party coupling but several CSS/DOM contracts and a latent TypeError, so it fits the wave-2 'modern-ish widget' bucket rather than the wave-1 jQuery sweep. Same signature and side effects; the port halves the body through destructuring, resolveElement and a label helper, and fixes the attribute-order clamp and null wrapper crash."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "Text matching duplicates getElementByText(selector, text, exact=false) (L7136) and findElementByText (L17170); the `includes` filter at L18570-18572 should go through one text-match primitive.",
+        "fileViewer (L13932-13938) is called at L18593 but returns `url` on both branches, so the extension parsing at L18586-18587 is dead."
+      ],
+      "name": "openFileFromBtn",
+      "startLine": 18557,
+      "endLine": 18605,
+      "currentSignature": "openFileFromBtn(viewId, btnText, filePath, openInNewWindow = false)",
+      "currentReturns": "undefined. Side effect: adds a click listener to every <a>/<button> inside `#<viewId>` whose trimmed textContent includes btnText; on click either `window.open(<api asset URL>, '_blank')` or `location.href = sanitiseURL(location.href) + KN_ASSET_PREFIX + filePath`.",
+      "verdict": "simplify",
+      "proposedSignature": "openFileFromBtn(viewId, btnText, filePath, openInNewWindow = false)",
+      "proposedReturns": "undefined (same listeners and navigation).",
+      "modernisations": [
+        "L18565-18572: `const buttons = [...viewElement.querySelectorAll('a, button')].filter((b) => b.textContent.trim().includes(btnText));` replaces the two push-spreads and Array.from.",
+        "L18558: `getViewRootElement(viewId)` so 'view_12' / 12 / view objects work.",
+        "L18585-18593: delete the extension split and the fileViewer call (identity function); `const url = `https://api.knack.com/v1/applications/${Knack.application_id}/download/asset/${filePath}`;` is all that remains. Fix the indentation drift at L18585-18596.",
+        "L18600: read the prefix from a configurable source (`globalThis.KN_ASSET_PREFIX ?? ''`) and warn once when it is undefined instead of producing 'undefined' in the URL; better, accept it as `options.assetPrefix` in a V2-named sibling if the team wants to drop the app global.",
+        "L18580: mark bound buttons (`if (btn.dataset.kfOpenFile === filePath) return; btn.dataset.kfOpenFile = filePath;`) so a double call within one render does not stack listeners.",
+        "L18560, L18575: route through `console.warn`/errorHandler consistently with the rest of V2."
+      ],
+      "behaviourRisks": [
+        "Partial text match (`includes`, L18571) deliberately binds several buttons ('Report' also matches 'Reports'); do not switch to exact matching.",
+        "`window.open` is called synchronously inside the click handler so popup blockers allow it; any async refactor (await before open) would get blocked.",
+        "The redirect branch assumes the sanitised href ends with '/' (Knack hashes do) and that KN_ASSET_PREFIX is defined by the app; if V2 stops reading the global, every consumer that defines it must pass it.",
+        "The download URL format `https://api.knack.com/v1/applications/{app}/download/asset/{path}` is unverified against live docs; port the string verbatim.",
+        "Listeners are added on every call; Knack recreates the elements on re-render so leaks are bounded, but dataset marking must not prevent rebinding on a fresh render (fresh elements have no dataset)."
+      ],
+      "knackPractice": "Uses `Knack.application_id` (documented) and Knack's asset download endpoint (unverified). It is view-scoped (good) and expects to be called from `knack-view-render.view_x`. It fights nothing in the Knack model, but its dependency on an app-defined global (KN_ASSET_PREFIX) is a library smell.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 22,
+      "rationale": "Forty-nine lines reduce to about twenty-two once the dead fileViewer path, the two-pass button collection and the comments go; the signature and the two navigation behaviours stay. Medium risk only because it drives navigation and leans on an app global; wave 1 because it is old-style glue with no library coupling."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "handleRedirect",
+      "startLine": 18611,
+      "endLine": 18627,
+      "currentSignature": "handleRedirect(event, newURL)",
+      "currentReturns": "undefined. For event.type 'knack-form-submit' or 'click' sets `location.href = newURL` after 300 ms; for 'knack-scene-render' / 'knack-view-render' binds a once-only click listener on `.kn-modal button.close-modal, .kn-modal .close-modal` that does the same; any other type is ignored.",
+      "verdict": "simplify",
+      "proposedSignature": "handleRedirect(event, newURL)",
+      "proposedReturns": "undefined (same timing and listeners).",
+      "modernisations": [
+        "L18615-18617 and L18621-18623: one shared `redirectAfter(newURL, 300)` primitive replaces the two identical setTimeout blocks.",
+        "L18614, L18618: `const IMMEDIATE = new Set(['knack-form-submit', 'click']); const ON_RENDER = new Set(['knack-scene-render', 'knack-view-render']);` and `if (IMMEDIATE.has(event.type)) ... else if (ON_RENDER.has(event.type)) ...`.",
+        "L18619-18625: `for (const btn of document.querySelectorAll(MODAL_CLOSE_SELECTOR)) btn.addEventListener('click', () => redirectAfter(newURL, 300), { once: true });` - the selector string is also hard-coded at L20870 (redirectToPopUp); hoist one constant.",
+        "Replace the `/*****` header comment (L18607) with standard JSDoc."
+      ],
+      "behaviourRisks": [
+        "The 300 ms delay is load-bearing: it lets Knack finish its own submit/close handling before the hash changes. Keep the number.",
+        "`event.type` for a jQuery-triggered `knack-form-submit.view_x.rtp` handler is 'knack-form-submit' (jQuery strips namespaces) - V2 must keep reading `.type`, not `.namespace`.",
+        "The render-event branch has no in-file caller any more (redirectToPopUp L20827-20863 binds close buttons itself in the capture phase) but is public API; keep it.",
+        "`location.href` assignment with a hash-only change does not reload in Knack's SPA; switching to `Knack.router.navigate` would change behaviour for absolute URLs. Keep `location.href`."
+      ],
+      "knackPractice": "Reacts to Knack's documented lifecycle events by name (`knack-form-submit`, `knack-scene-render`, `knack-view-render`) and targets Knack's modal DOM (`.kn-modal .close-modal`). Follows the model; the delay is a pragmatic workaround for Knack's own post-submit navigation. handleRedirect itself needs no jQuery; the events reach it because the caller (redirectToPopUp L20897-20902) binds `$(document).on('knack-form-submit.view_x...')`, which is policy exception (1) and should go through the `onKnackEvent` primitive in V2.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 12,
+      "rationale": "Small, already native, and called from the _rtp keyword flow (L20846, L20901). The port only removes duplication and hoists two constants shared with redirectToPopUp; no signature or timing change."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "ktl.core.findParentURL(url, levels) is used for the same purpose at L20877 (redirectToPopUp).",
+        "bulkActionBuildHash / bulkActionGetCurrentHashState (L3966, L4018) are the hash-aware way to compute a parent route."
+      ],
+      "name": "getNewURL",
+      "startLine": 18631,
+      "endLine": 18637,
+      "currentSignature": "getNewURL(currURL, numPops = 3)",
+      "currentReturns": "string - the query-stripped URL with the last `numPops` '/'-separated segments removed ('' when numPops >= segment count).",
+      "verdict": "simplify",
+      "proposedSignature": "getNewURL(currURL, numPops = 3)",
+      "proposedReturns": "string (unchanged).",
+      "modernisations": [
+        "L18632-18636: `const parts = sanitiseURL(currURL).split('/'); return parts.slice(0, Math.max(0, parts.length - numPops)).join('/');` - same output for numPops 0, negative-safe, and '' when over-popping, without a loop.",
+        "JSDoc L18629-18630: add `@param {number} [numPops=3]` and `@returns {string}`."
+      ],
+      "behaviourRisks": [
+        "Knack URLs end with '/', so the last segment is '' and `numPops = 3` removes '' + record id + slug; the result has no trailing slash. Callers append it themselves; keep that.",
+        "Must keep using sanitiseURL so `?` hash-queries (bulk-action filters, L3950) are stripped before popping."
+      ],
+      "knackPractice": "Pure string helper over Knack's `#scene-slug/record-id/` hash shape; neither follows nor fights the model, but a hash-aware helper (knackNavigator.getCurrentSceneTrail, L610) now exists for route-based navigation.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 4,
+      "rationale": "Seven lines become two with slice; no callers in-file but it is a public global. Low risk, wave 1 alongside the other URL helpers."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "getBackgroundSceneId",
+      "startLine": 18641,
+      "endLine": 18649,
+      "currentSignature": "getBackgroundSceneId()",
+      "currentReturns": "string ('kn-scene_x' DOM id of the first `.kn-scene` under `#knack-body .kn-scenes` not inside `.kn-modal`) | null.",
+      "verdict": "keep",
+      "proposedSignature": "getBackgroundSceneId()",
+      "proposedReturns": "string | null (unchanged).",
+      "modernisations": [
+        "L18642-18648: `return [...document.querySelectorAll('#knack-body .kn-scenes .kn-scene')].find((s) => !s.closest('.kn-modal'))?.id || null;` - one expression, same first-match semantics."
+      ],
+      "behaviourRisks": [
+        "Returns the DOM id with the `kn-` prefix, not a Knack scene key; isSceneToIgnore strips it (L18660). Keep the prefix in the return value."
+      ],
+      "knackPractice": "Relies on Knack's `#knack-body .kn-scenes .kn-scene#kn-scene_x` and `.kn-modal` DOM conventions (unverified against live docs). `Knack.router.current_scene_key` would give the modal scene, so a DOM scan is the right way to find the background scene.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 4,
+      "rationale": "Already modern and correct; only an optional one-liner rewrite. Kept in wave 1 because isSceneToIgnore depends on it."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "isSceneToIgnore",
+      "startLine": 18656,
+      "endLine": 18664,
+      "currentSignature": "isSceneToIgnore(scenes)",
+      "currentReturns": "boolean. Throws TypeError when `scenes` is null/undefined (`scenes.length`, L18659). Entries that are not numeric ('scene_1234') are dropped by `Number()` -> NaN, so only bare numbers / numeric strings can ever match.",
+      "verdict": "modernise",
+      "proposedSignature": "isSceneToIgnore(scenes)",
+      "proposedReturns": "boolean; never throws (null/undefined -> false).",
+      "modernisations": [
+        "L18660-18663: compare normalised scene keys instead of numbers: `const bg = knackNavigator.normalizeSceneId(getBackgroundSceneId()?.replace(/^kn-/, '')); if (!bg) return false; return [].concat(scenes ?? []).map((s) => knackNavigator.normalizeSceneId(s)).includes(bg);` - accepts 1234, '1234' and 'scene_1234' (the JSDoc at L18653 already promises strings).",
+        "L18659: `!scenes?.length` or the `[].concat(scenes ?? [])` above removes the TypeError on a missing argument.",
+        "JSDoc L18652: 'Used in handleRedirect' is stale - nothing in the file calls this; say so or point at redirectToPopUp."
+      ],
+      "behaviourRisks": [
+        "Widening: 'scene_1234' inputs that silently never matched will start matching. redirectToPopUp (L20885) does not use this function, so no in-file flow changes.",
+        "A null/undefined argument stops throwing and returns false - a thrown-error change, but only from a crash to a sane result."
+      ],
+      "knackPractice": "Correctly distinguishes the background scene from a modal scene by DOM, which Knack's `Knack.router.current_scene_key` cannot do (it reports the modal). Fine; uses the `kn-scene_x` id convention.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 6,
+      "rationale": "Nine lines with a numeric-only comparison that contradicts its own JSDoc and a crash on a missing argument. Normalising through knackNavigator.normalizeSceneId fixes both without touching the signature; the widening is safe because the only in-file consumer of the concept (redirectToPopUp) reimplements the check."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "Role checks also appear as `Knack.getUserRoleNames().includes(role)` (L15994-15996) and `ktl.core.hasRoleAccess(options)` (L20763, L20926) - three role models in one file."
+      ],
+      "name": "isUserRole",
+      "startLine": 18669,
+      "endLine": 18678,
+      "currentSignature": "isUserRole(userRoleArr)",
+      "currentReturns": "boolean - true when `Knack.getUserRoles(role)` is truthy for any element. A bare string argument is treated by `$(string)` as a CSS selector (matches nothing) and returns false; undefined -> `$(undefined)` -> empty -> false.",
+      "verdict": "modernise",
+      "proposedSignature": "isUserRole(userRoleArr)",
+      "proposedReturns": "boolean (unchanged).",
+      "modernisations": [
+        "L18670-18677: `return [].concat(userRoleArr ?? []).some((role) => Boolean(Knack.getUserRoles(role)));` - removes `var`, the jQuery `.each` with `return false` break, and the mutable flag.",
+        "JSDoc L18666-18668: fix the parameter name (`userRole` vs `userRoleArr`), indentation and spelling; document that roles are Knack role object keys as accepted by `Knack.getUserRoles(key)` (unverified against live docs)."
+      ],
+      "behaviourRisks": [
+        "`Knack.getUserRoles(role)` with an argument returning a boolean is undocumented behaviour of Knack's client (unverified); the V2 body must keep calling it the same way rather than switching to `getUserRoles().includes(role)`, whose array element shape may differ.",
+        "A bare string argument changes from 'always false' (jQuery selector lookup) to a real role check - widening, documented.",
+        "tests/v2/stubs.js L33 `getUserRoles() { return ['profile_1']; }` ignores the argument, so a differential test would pass trivially; the stub needs `getUserRoles(role)` semantics before this is tested."
+      ],
+      "knackPractice": "Uses `Knack.getUserRoles()` (documented) but with an argument form that is not in the public docs. Knack's documented pattern is `Knack.getUserRoles()` returning role keys / `Knack.getUserRoleNames()` returning names; V2 keeps the existing call for compatibility and notes the uncertainty.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Textbook five-year-old layer (var, jQuery .each over a plain array) that collapses to one `some`. Signature and return type unchanged; the only behavioural movement is that a string argument now works."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "isUserName",
+      "startLine": 18683,
+      "endLine": 18686,
+      "currentSignature": "isUserName(nameToMatch)",
+      "currentReturns": "boolean (strict equality with `Knack.getUserAttributes()?.name`).",
+      "verdict": "keep",
+      "proposedSignature": "isUserName(nameToMatch)",
+      "proposedReturns": "boolean",
+      "modernisations": [
+        "L18684: `return getLoggedInUserName() === nameToMatch;` via the shared primitive; otherwise unchanged."
+      ],
+      "behaviourRisks": [
+        "Strict, case-sensitive comparison; do not 'improve' with trim/lower-case."
+      ],
+      "knackPractice": "Documented `Knack.getUserAttributes()` usage; follows the model.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Already minimal and modern. Ported as-is in wave 1 with the rest of the user helpers."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "replaceLargeNo",
+      "startLine": 18698,
+      "endLine": 18716,
+      "currentSignature": "replaceLargeNo(cellIdent, maxNum, replaceTxt, isLink)",
+      "currentReturns": "undefined. Side effect: for every matched `span.knViewLink__label` (isLink) or `td.field_<cellIdent>` in the document whose comma-stripped integer value exceeds maxNum, replaces the element's textContent (destroying child markup) with replaceTxt.",
+      "verdict": "simplify",
+      "proposedSignature": "replaceLargeNo(cellIdent, maxNum, replaceTxt, isLink)",
+      "proposedReturns": "undefined (same side effect).",
+      "modernisations": [
+        "L18699-18707: `const cells = isLink ? [...document.querySelectorAll('span.knViewLink__label')].filter((s) => s.textContent.includes(cellIdent)) : [...document.querySelectorAll(`td.${knackNavigator.normalizeFieldId(cellIdent)}`)];` - accepts 'field_12' as well as 12 (today 'field_12' builds `td.field_field_12`).",
+        "L18711-18712: `const n = Number.parseInt(cell.textContent.replace(/,/g, ''), 10); if (Number.isInteger(n) && n > maxNum) cell.textContent = replaceTxt;`.",
+        "Drop the four narrating comments; keep the JSDoc."
+      ],
+      "behaviourRisks": [
+        "Replacing `td.textContent` removes any inner links/spans in the cell (existing behaviour); a V2 that targets the inner span instead would preserve markup but change the DOM shape - do not change silently.",
+        "Document-wide query: runs across every table on the scene; Knack re-renders tables on paging/sorting/inline edit, so callers must re-run on `knack-records-render.view_x`.",
+        "`includes(cellIdent)` with a numeric cellIdent coerces to string; keep the coercion."
+      ],
+      "knackPractice": "Uses Knack's `td.field_x` convention (documented) and the `knViewLink__label` class from Knack's link rendering (unverified). Unscoped to a view, so it fights the view-based model slightly; a viewId cannot be added without a signature change.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 11,
+      "rationale": "Native already; the port trims comments, normalises the field id and uses Number.* helpers. No signature or side-effect change, hence wave 1 and low risk."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "NOT a duplicate of resolveElement (L7915: string = CSS selector), bulkActionResolveElement (L3676: jQuery/array unwrap) or normaliseInputs (L18004): here a string is HTML markup. The policy's suspected overlap is a false positive; aliasing any of them would break getIdFromElement/getConnectionIdFromHtml."
+      ],
+      "name": "normaliseToElement",
+      "startLine": 18723,
+      "endLine": 18734,
+      "currentSignature": "normaliseToElement(input)",
+      "currentReturns": "Element | null. An Element is returned as-is; an HTML string is parsed into a detached wrapper <div> (the wrapper itself is returned, not its first child); anything else -> null.",
+      "verdict": "keep",
+      "proposedSignature": "normaliseToElement(input)",
+      "proposedReturns": "Element | null (unchanged - still the wrapper div for strings).",
+      "modernisations": [
+        "L18725: additionally unwrap a jQuery collection (`if (input?.jquery) return input[0] ?? null;`) - pure widening.",
+        "JSDoc L18719: state explicitly that strings are parsed as HTML (not selectors) and that the wrapper <div> is returned, since getIdFromElement (L18780) depends on that.",
+        "Do not switch to `<template>`/DocumentFragment: the return type would change from Element to DocumentFragment (no `.matches`/`.classList`), which is a signature change requiring a shim for no gain."
+      ],
+      "behaviourRisks": [
+        "`wrapper.innerHTML = input` on a detached div does not execute <script> but does resolve <img src> fetches; acceptable for Knack cell HTML, note in JSDoc.",
+        "Returning the wrapper (not firstElementChild) is relied upon by getIdFromElement's descendant scan and getConnectionIdFromHtml's `ancestor !== root` loop; keep."
+      ],
+      "knackPractice": "Pure DOM utility; neutral with respect to the Knack model. Exists because Knack record payloads expose `field_x` as HTML strings and consumers pass those straight in.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 7,
+      "rationale": "Twelve modern lines with distinct, load-bearing semantics (HTML string -> wrapper Element). Keep verbatim apart from jQuery unwrapping and a clearer JSDoc; it is a foundation primitive for the connection-id helpers so it must land in wave 1."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "escapeHTML (L9665-9670): same job, numeric entities (&#38; &#60; ...), `text ?? ''` falsy handling, 15 in-file callers in the interactive table (L9844-10531); escapeHtml has none. tests/v2/foundation.test.cjs L115-130 pins BOTH outputs byte-for-byte, so neither can be a plain alias of the other without changing the test."
+      ],
+      "name": "escapeHtml",
+      "startLine": 18741,
+      "endLine": 18748,
+      "currentSignature": "escapeHtml(value)",
+      "currentReturns": "string with named entities (&amp; &lt; &gt; &quot; &#39;). `String(value || '')` means null, undefined, 0, false and NaN all become ''.",
+      "verdict": "keep",
+      "proposedSignature": "escapeHtml(value)",
+      "proposedReturns": "string (unchanged entity set).",
+      "modernisations": [
+        "L18742-18747: `const HTML_ENTITIES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }; return String(value ?? '').replace(/[&<>\"']/g, (c) => HTML_ENTITIES[c]);` - one pass instead of five chained replaces; share the `/[&<>\"']/g` regex with escapeHTML.",
+        "`value || ''` -> `value ?? ''` so `escapeHtml(0)` returns '0' instead of '' (an escaper that erases zero is a defect). The foundation test only pins null -> '', so the fix is test-compatible; list it in the V2 changelog."
+      ],
+      "behaviourRisks": [
+        "The `||` -> `??` change alters output for 0, false and NaN (now '0', 'false', 'NaN'); any consumer relying on `escapeHtml(0) === ''` changes. Keep `||` if the team wants zero behaviour drift.",
+        "Entity style is observable in string comparisons/tests even though browsers render both forms identically; keep named entities here and numeric in escapeHTML."
+      ],
+      "knackPractice": "Pure utility, independent of Knack. Relevant because Knack record payloads mix HTML (`field_x`) and raw (`field_x_raw`) values, so escaping raw values before innerHTML is the correct pattern.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 4,
+      "rationale": "Already modern; the only question is the duplicate. Because the two escapers differ in output and both are pinned by tests, V2 keeps escapeHtml as the canonical named-entity escaper and escapeHTML as a deprecated 3-line numeric variant sharing the regex (see crossCuttingFindings) rather than a lossy alias."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "Deliberate thin wrapper over KnackNavigator.getCurrentSceneInfo (L653); C02's analysis lists it as such. getSceneFromViewId (L9132) is the related weaker helper."
+      ],
+      "name": "getCurrentSceneInfo",
+      "startLine": 18757,
+      "endLine": 18764,
+      "currentSignature": "getCurrentSceneInfo(viewId, options)",
+      "currentReturns": "{recordId: string, sceneId: string, sceneSlug: string} | null (delegates to knackNavigator.getCurrentSceneInfo L653-690; null on invalid view or on any thrown error).",
+      "verdict": "keep",
+      "proposedSignature": "getCurrentSceneInfo(viewId, options)",
+      "proposedReturns": "{recordId, sceneId, sceneSlug} | null (unchanged).",
+      "modernisations": [
+        "L18761: report via `errorHandler.handle(error, { viewId, options }, 'getCurrentSceneInfo')` instead of console.error; keep `return null`.",
+        "Keep the `function` declaration (not `const`) so `window.getCurrentSceneInfo` stays reachable for consumers that call it off window.",
+        "Keep the try/catch: removing it would turn a swallowed error into a thrown one, which the policy counts as a signature change; the only realistic throw is an undeclared `Knack` global in non-Knack pages (tests)."
+      ],
+      "behaviourRisks": [
+        "`options` has no default here but the navigator method defaults `options = {}` (L653), so passing undefined is safe; a bare number is accepted as historyIndex (L659-661) - keep forwarding it untouched."
+      ],
+      "knackPractice": "Reads `Knack.views[viewId].model.view.scene` through the navigator - the Knack-idiomatic way to get the current scene/record for a view, and the alternative the URL-based getRecordID should migrate towards.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 7,
+      "rationale": "Eight correct lines whose only job is to shield callers from navigator exceptions. Port as-is with errorHandler reporting; it must follow KnackNavigator in the V2 file order (wave 1 per C02)."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "waitGetConxIdFromDetailId (L19479-19494) re-implements getConnectionIdFromHtml's primary-node + ancestor walk around this function."
+      ],
+      "name": "getIdFromElement",
+      "startLine": 18774,
+      "endLine": 18794,
+      "currentSignature": "getIdFromElement(eleOrHtml)",
+      "currentReturns": "string (first 24-hex token found in `id` or `classList` of the element itself when it is a span/div/a, otherwise of its span/div/a descendants) | null.",
+      "verdict": "simplify",
+      "proposedSignature": "getIdFromElement(eleOrHtml)",
+      "proposedReturns": "string | null (unchanged).",
+      "modernisations": [
+        "L18778: hoist `HEX24` to a module-level `KNACK_RECORD_ID_RE = /^[a-fA-F0-9]{24}$/` shared with getConnectionIdFromHtml / getRecordID validation.",
+        "L18781-18783 bug: when `eleOrHtml` is an HTML string, normaliseToElement returns a wrapper <div>, which itself matches 'span, div, a', so `candidates = [wrapper]`, the wrapper has no id/classes and the function returns null for EVERY string input - the comment at L18780 describes the intended, not the actual, behaviour. Fix: `const candidates = [el, ...el.querySelectorAll('span, div, a')];` (self first, then descendants) which also covers a <td> passed directly.",
+        "L18785-18791: `for (const node of candidates) { const hit = [node.id, ...node.classList].find((t) => KNACK_RECORD_ID_RE.test(t)); if (hit) return hit; } return null;`.",
+        "`el.matches &&` guard (L18781) is dead once normaliseToElement guarantees an Element; remove."
+      ],
+      "behaviourRisks": [
+        "The candidate-order fix widens results: an Element span/div/a with no id of its own but a hex-classed child now returns the child's id (previously null); a <td> with a hex id of its own now returns it before its children. Both are improvements but are observable.",
+        "Knack puts the record id as a class on `span[data-kn=\"connection-value\"]` in grids/details (L18804 example) - this is observed markup, unverified against live docs; a Knack theme change would silently break it.",
+        "Case-insensitive hex: Knack ids are lower-case; keep `[a-fA-F0-9]` to avoid rejecting upper-case ids from consumers' HTML."
+      ],
+      "knackPractice": "Extracts record ids from rendered HTML, which is working against the model: the documented source is `field_x_raw[].id` on the record from `Knack.views[viewId].model` or the view-based REST API. It exists because many flows only have the cell HTML (`field_x`) to hand; keep it but document the raw-field alternative.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 10,
+      "rationale": "Modern code with one genuine bug (string inputs always return null) and a regex that should be shared. Same signature and return type; the fix changes results only where the old code returned null incorrectly."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "waitGetConxIdFromDetailId (L19477-19500) duplicates the primary-node and ancestor walk verbatim and then calls this function as a fallback; both should call one `collectConnectionIds(root)` primitive."
+      ],
+      "name": "getConnectionIdFromHtml",
+      "startLine": 18806,
+      "endLine": 18832,
+      "currentSignature": "getConnectionIdFromHtml(cellElOrHtml)",
+      "currentReturns": "string (24-hex record id) | null. Search order: `span[data-kn=\"connection-value\"]`, then its ancestors up to (excluding) the root, then every descendant <span>.",
+      "verdict": "simplify",
+      "proposedSignature": "getConnectionIdFromHtml(cellElOrHtml)",
+      "proposedReturns": "string | null (unchanged, same search order).",
+      "modernisations": [
+        "L18810-18829: `return collectConnectionIds(root)[0] ?? null;` where the shared primitive yields ids in the same order (primary node, ancestors, all spans) and de-duplicates.",
+        "L18815-18822: the ancestor walk becomes a small generator/array helper `ancestorsUntil(node, root)` used by both this and waitGetConxIdFromDetailId.",
+        "L18812: `getIdFromElement(conn)` with `conn === null` works only because normaliseToElement(null) returns null; make it explicit with `conn ? ... : null` so the intent is readable.",
+        "Accept jQuery via normaliseToElement's widening (no code here)."
+      ],
+      "behaviourRisks": [
+        "Search order is observable when a cell holds several connection values (multi-connection fields): the first `span[data-kn]` wins. Keep the order and keep returning one id (waitGetConxIdFromDetailId is the multi-id variant).",
+        "`span[data-kn=\"connection-value\"]` is Knack's current rendering for connection values (unverified against live docs).",
+        "Detail bodies that put the id on the <a> rather than a <span> are not found by the fallback (spans only) - existing behaviour, keep unless a case is reported."
+      ],
+      "knackPractice": "Same as getIdFromElement: parses rendered HTML for ids that Knack exposes cleanly as `field_x_raw[].id` on records. Acceptable as a compatibility helper for callers that only have `field_x` HTML.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 10,
+      "rationale": "Correct and modern but duplicated 150 lines later; the port extracts the shared id collector so this becomes a four-line wrapper with identical results and gives waitGetConxIdFromDetailId's chunk a primitive to call."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "knackNavigator.getCurrentSceneInfo(viewId).recordId (L653-690) and getIdBeforeSceneSlug (L18849) obtain record ids from Knack metadata / the hash; `Knack.hash_id` may expose the same value (unverified). getIdFromElement / getConnectionIdFromHtml are unrelated (DOM, not URL) despite the policy grouping."
+      ],
+      "name": "getRecordID",
+      "startLine": 18835,
+      "endLine": 18840,
+      "currentSignature": "getRecordID(part = null)",
+      "currentReturns": "string | undefined - the segment `part` places from the end of the query-stripped `location.href` split on '/'; default (`part` null/0) is the second-to-last segment, i.e. the record id when the hash is `#slug/<id>/`. No validation: on `#slug/` it returns the slug, with no hash it returns the host name.",
+      "verdict": "modernise",
+      "proposedSignature": "getRecordID(part = null)",
+      "proposedReturns": "string | undefined (unchanged positional semantics).",
+      "modernisations": [
+        "Add JSDoc (L18834 is a bare block comment): `@param {number|string|null} [part=null] - 1-based position from the end of the URL segments; default 2`, `@returns {string|undefined}`.",
+        "L18836-18839: `const parts = sanitiseURL(window.location.href).split('/'); return parts.at(-(Number(part) || 2));` - `Number(part) || 2` keeps the null/0 default and the string coercion used by buttonToUrl (`getRecordID(urlPart)` with a keyword string, L20963); `.at()` returns undefined for out-of-range like the current index does.",
+        "Document (do not enforce) that callers wanting a validated id should test `KNACK_RECORD_ID_RE` or use getCurrentSceneInfo(viewId).recordId; adding validation would change the return for pages without a record id."
+      ],
+      "behaviourRisks": [
+        "setupLocalStorageMinutes (L13281) uses the result as a storage key and addConnectionIdToRecord (L13128) as a connection value; any change in which segment is returned corrupts stored minutes or writes a wrong connection. Port the positional arithmetic exactly.",
+        "Depends on Knack hashes ending with '/'; a URL without the trailing slash shifts every index (existing fragility).",
+        "`Number(part)` on a non-numeric string gives NaN -> default 2, where today `parts.length - 'abc'` is NaN -> `parts[NaN]` -> undefined. Edge case only; note it."
+      ],
+      "knackPractice": "Fights the model: Knack exposes the current record through `Knack.views[view].model.view.scene.scene_id` (used by knackNavigator.getCurrentSceneInfo) and the hash is documented as `#scene-slug/record-id/`, so URL slicing without validation is fragile. Keep for compatibility; steer new code to getCurrentSceneInfo.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 6,
+      "rationale": "Six old-style lines with no JSDoc and no validation, used by four flows including local-storage keys, so the positional behaviour must be preserved to the letter while the body is modernised with `.at()`. Medium risk is about the blast radius of a mistake, not the complexity."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "getIdBeforeSceneSlug",
+      "startLine": 18849,
+      "endLine": 18857,
+      "currentSignature": "getIdBeforeSceneSlug(sceneSlug)",
+      "currentReturns": "string - the hash segment immediately before the first occurrence of sceneSlug, or '' when the slug is absent or first.",
+      "verdict": "keep",
+      "proposedSignature": "getIdBeforeSceneSlug(sceneSlug)",
+      "proposedReturns": "string (unchanged).",
+      "modernisations": [
+        "L18850-18856: optional compaction `const parts = location.hash.replace(/^#/, '').split('/').filter(Boolean); const i = parts.indexOf(sceneSlug); return i > 0 ? parts[i - 1] : '';` - same output.",
+        "Must stay a hoisted `function` declaration: KnackNavigator.getCurrentSceneTrail calls it at L625 and the class may sit earlier in the V2 file."
+      ],
+      "behaviourRisks": [
+        "First-occurrence semantics (`indexOf`) matter for routes that repeat a slug; keep.",
+        "Does not strip a `?query` inside the hash before splitting, so `#a/id/slug?x=1` yields 'slug?x=1' and never matches - existing behaviour; the C02 note on bulk-action hash queries (L3950) applies."
+      ],
+      "knackPractice": "Encodes Knack's documented nested-route shape `#area/parent-slug/{parentId}/scene-slug/{recordId}/` and is used by the navigator as a fallback when `scene.key` is missing; follows the model.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 6,
+      "rationale": "Recent, modern, correct and a dependency of KnackNavigator, so it ports unchanged in wave 1."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "showNotification(options) (L17882-17993) is the modern notification helper but appends INSIDE the target, mutates the target's position/z-index (L17903-17908) and returns the element, so a shim over it would move the element in the DOM; not a clean replacement without a `placement: 'after'` option.",
+        "showInputNotification (L11229) and bulkActionNotify (L4657) are further notification variants."
+      ],
+      "name": "showPopUpNotification",
+      "startLine": 18865,
+      "endLine": 18873,
+      "currentSignature": "showPopUpNotification(insertNotificationAfter, notificationTxt, notificationCol, ca_class, delay)",
+      "currentReturns": "undefined. Side effects: calls `Knack.showSpinner()` (never hidden here); inserts `<div class=\"<ca_class>\">notificationTxt</div>` (innerHTML, unescaped) AFTER `insertNotificationAfter` (selector | Element | jQuery) with inline background-color; after `delay` ms (undefined -> immediate) runs jQuery fadeOut (400 ms, ends in display:none) then removes the element via removeElement (L9618).",
+      "verdict": "modernise",
+      "proposedSignature": "showPopUpNotification(insertNotificationAfter, notificationTxt, notificationCol, ca_class, delay)",
+      "proposedReturns": "undefined (same insertion point, class, colour and fade-then-remove).",
+      "modernisations": [
+        "L18867-18868: `const target = resolveElement(insertNotificationAfter); if (!target) return; const note = document.createElement('div'); note.className = ca_class ?? ''; note.innerHTML = notificationTxt; note.style.backgroundColor = notificationCol; target.insertAdjacentElement('afterend', note);` - replaces the jQuery build + `.css()` + `.insertAfter()`. V2 resolveElement already unwraps jQuery collections (tests/v2/foundation.test.cjs, signature-exceptions.json), which satisfies the policy's 'accept the same inputs' rule without using jQuery.",
+        "L18869-18872: shared `fadeOutAndRemove(note, { delay: delay ?? 0, duration: 400 })` primitive using `note.animate([{opacity: 1}, {opacity: 0}], { duration: 400, delay, fill: 'forwards' }).finished.then(() => note.remove())` - replaces `.delay().fadeOut()` and the call to removeElement (L9618), which is itself a jQuery wrapper (`$(selector).remove()`) that its own chunk must port or shim.",
+        "L18866: drop `Knack.showSpinner()` - there is no matching hideSpinner anywhere in this path, so the spinner stays until Knack's next render hides it. This is a defect, not a feature; record the removal in the changelog (or keep it behind the shim if the team disagrees).",
+        "Replace the `/****` header (L18859) with JSDoc; note that notificationTxt is inserted as HTML (callers must escapeHtml untrusted text)."
+      ],
+      "behaviourRisks": [
+        "Removing the unbalanced `Knack.showSpinner()` is a visible change: today the page shows Knack's spinner overlay from the call until the next view render. Any consumer who relies on that accidental blocking overlay would notice.",
+        "jQuery fadeOut sets `display:none` at the end before removal; the Web Animations version removes directly - no observable difference once the node is gone, but CSS transitions on the element are bypassed either way.",
+        "`insertAfter` with a selector matching several elements inserts a clone after each (jQuery semantics); the native version inserts once after the first match. No in-file caller; document.",
+        "`delay` undefined currently means immediate fade (jQuery `.delay(undefined)` -> 0); keep `delay ?? 0`.",
+        "innerHTML insertion is an XSS vector for untrusted text; keep (callers may pass markup) but document."
+      ],
+      "knackPractice": "Calls `Knack.showSpinner()` (documented) incorrectly - without `Knack.hideSpinner()` - and otherwise does not interact with the Knack model. Insertion relative to a Knack element is fine as long as it is done after `knack-view-render`.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 10,
+      "rationale": "Nine lines of jQuery animation plus a spinner leak; the native rewrite keeps the exact signature, placement and timing and drops jQuery and the leak. Medium risk because it is visual and because the spinner removal is a judgement call that must be flagged; wave 1 because it is old-style and dependency-free."
+    },
+    {
+      "kind": "function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "name": "sanitiseURL",
+      "startLine": 18878,
+      "endLine": 18880,
+      "currentSignature": "sanitiseURL(urlToClean)",
+      "currentReturns": "string - everything before the first '?' of `String(urlToClean)`; throws TypeError on null/undefined (`.toString()`).",
+      "verdict": "keep",
+      "proposedSignature": "sanitiseURL(urlToClean)",
+      "proposedReturns": "string (unchanged; still throws on null/undefined).",
+      "modernisations": [
+        "L18879: unchanged body; add a JSDoc note that it only strips the query string (including one inside the hash, which is what callers building Knack URLs need) and does not sanitise in the security sense - never rename.",
+        "Keep `urlToClean.toString()` rather than `String(urlToClean)`: the latter would turn null into 'null' and swallow the current TypeError, a thrown-error (signature) change."
+      ],
+      "behaviourRisks": [
+        "Six in-file callers (L18600, L18632, L18836, L19610, L19648, L20877, L20933) build navigation URLs from it; any change in trailing-slash or query handling ripples into redirects and asset links.",
+        "Strips `?filters=` hash queries used by bulk actions (L3950) - intended by callers, but note that it discards state."
+      ],
+      "knackPractice": "Supports Knack's hash-routed URLs, where filter/sort state is carried as a `?` query after the hash; stripping it before appending `slug/id/` is the correct way to build child-page URLs. Follows the model.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "A three-line foundation primitive used across three chunks. Port verbatim in wave 1; only the JSDoc improves."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "detailBodySelector",
+      "purpose": "Builds the `.field_x .kn-detail-body` selector (optionally view-scoped and/or targeting the inner span) from raw or prefixed ids via knackNavigator, so the string exists once.",
+      "signature": "detailBodySelector(fieldId, { viewId = '', inner = false } = {}): string",
+      "replaces": [
+        "waitGetValueFromDetail L18277-18279",
+        "getValueFromDetail L18331",
+        "getValueFromDetailBody L9037",
+        "L12279-12280",
+        "waitGetConxIdFromDetailId L19464",
+        "hideElementsByValue L20768"
+      ]
+    },
+    {
+      "name": "readElementContent",
+      "purpose": "Returns the trimmed textContent or innerHTML of an element (null-safe), so every detail reader trims the same way; callers apply their own '' vs null policy.",
+      "signature": "readElementContent(element, returnHtml = false): string",
+      "replaces": [
+        "waitGetValueFromDetail L18296-18299",
+        "getValueFromDetail L18337",
+        "getValueFromDetailBody L9046"
+      ]
+    },
+    {
+      "name": "KNACK_RECORD_ID_RE / isKnackRecordId",
+      "purpose": "Single 24-hex record-id regex and predicate shared by the DOM id extractors and available to validate URL-derived ids.",
+      "signature": "const KNACK_RECORD_ID_RE = /^[a-fA-F0-9]{24}$/; isKnackRecordId(value): boolean",
+      "replaces": [
+        "getIdFromElement L18778",
+        "getConnectionIdFromHtml (implicit via getIdFromElement)",
+        "optional validation for getRecordID L18835"
+      ]
+    },
+    {
+      "name": "collectConnectionIds",
+      "purpose": "Collects every 24-hex record id under a root in Knack's rendering order (span[data-kn=\"connection-value\"], its ancestors up to root, then all spans), de-duplicated; getConnectionIdFromHtml takes [0], waitGetConxIdFromDetailId takes all.",
+      "signature": "collectConnectionIds(rootOrHtml): string[]",
+      "replaces": [
+        "getConnectionIdFromHtml L18810-18829",
+        "waitGetConxIdFromDetailId L19477-19500"
+      ]
+    },
+    {
+      "name": "getLoggedInUserName",
+      "purpose": "`Knack.getUserAttributes()?.name || fallback` in one place so the four insertion sites stop inventing different fallbacks.",
+      "signature": "getLoggedInUserName(fallback = ''): string",
+      "replaces": [
+        "insertLoggedInUser L18362",
+        "isUserName L18684",
+        "updateUserFields L11307",
+        "insertStaffName L20186"
+      ]
+    },
+    {
+      "name": "redirectAfter",
+      "purpose": "`setTimeout(() => { window.location.href = url; }, delayMs)` returning the timer id, so the 300 ms Knack post-submit delay is defined once.",
+      "signature": "redirectAfter(url, delayMs = 300): number",
+      "replaces": [
+        "handleRedirect L18615-18617",
+        "handleRedirect L18621-18623",
+        "buttonToUrl handleLinkClick L20940-20943 (delay 0)"
+      ]
+    },
+    {
+      "name": "fadeOutAndRemove",
+      "purpose": "Web Animations replacement for jQuery `.delay().fadeOut(cb)` + remove, resolving when the node is gone.",
+      "signature": "fadeOutAndRemove(element, { delay = 0, duration = 400 } = {}): Promise<void>",
+      "replaces": [
+        "showPopUpNotification L18869-18872",
+        "showNotification L17968-17988 (nested setTimeouts)"
+      ]
+    },
+    {
+      "name": "MODAL_CLOSE_SELECTOR",
+      "purpose": "The `.kn-modal button.close-modal, .kn-modal .close-modal` selector used by both the redirect helpers and redirectToPopUp.",
+      "signature": "const MODAL_CLOSE_SELECTOR = '.kn-modal button.close-modal, .kn-modal .close-modal'",
+      "replaces": [
+        "handleRedirect L18619",
+        "redirectToPopUp L20870"
+      ]
+    }
+  ],
+  "crossCuttingFindings": [
+    "waitSelector option mismatch: waitGetValueFromDetail (L18282-18285) and waitGetConxIdFromDetailId (L19466-19470) pass `{selector, delay}` but waitSelector (L8772-8777) destructures `timeout`, so both always wait the 10000 ms default and their documented `delay` defaults (20000 / 5000) are fiction. Fix both call sites (pass `timeout: delay`); do not add a `delay` alias to waitSelector. Note also that `ktl.core.waitSelector(selector, timeout)` (positional, L9609) and the in-file `waitSelector({...})` (options object) coexist with different shapes.",
+    "hideElementsByValue (L20776) calls `borderRadiusLastVisible()` with no arguments; `document.getElementById(undefined)` is null so the call is a silent no-op. The intended call is `borderRadiusLastVisible(viewId)`. Owning chunk should fix it when porting.",
+    "getValueFromDetailBody (L9036-9046) is a zero-caller native twin of getValueFromDetail (L18330); in V2 it becomes a one-line `@deprecated` shim over getValueFromDetail (canonical, two callers).",
+    "escapeHTML (L9665) vs escapeHtml (L18741): different entity encodings (numeric vs named) and falsy handling (`??` vs `||`). tests/v2/foundation.test.cjs L115-130 pins both outputs exactly, so a straight alias of one to the other fails the test. Recommended V2: both stay as 3-line functions sharing one `/[&<>\"']/g` regex, escapeHTML marked `@deprecated Use escapeHtml` with the entity difference documented; collapse in V3 when the test is relaxed.",
+    "fileViewer (L13932-13938) returns `url` on both branches - the OFFICE_EXTENSIONS/pdf test is dead - which also makes openFileFromBtn's extension parsing (L18586-18587) dead. Candidate `simplify` to an identity or `deprecate` in its chunk.",
+    "App-specific asset constants: `KN_ASSET_PREFIX` (L18600) is an app-supplied global used only by openFileFromBtn, and `kn-asset/1542-3553-3690-` (L19648, updateLinksAndAssets) hard-codes the same concept for one app. The library should take the prefix from one configurable place (e.g. a `knackFunctionsConfig.assetPrefix`) rather than a bare global or literal.",
+    "Three role-check models coexist: isUserRole via `Knack.getUserRoles(role)` (L18672), `Knack.getUserRoleNames().includes(role)` (L15994-15996) and `ktl.core.hasRoleAccess(options)` (L20763, L20926). tests/v2/stubs.js L33 `getUserRoles()` ignores its argument, so any differential test of isUserRole passes trivially; the stub needs `getUserRoles(role)` semantics.",
+    "The logged-in user's name is written to the DOM at four sites with three fallbacks: 'Unknown User' (L18362), 'User Unknown' (L18398), '' (L20186) and none (L11307). A shared getLoggedInUserName(fallback) primitive is proposed; the inconsistent literals are public return values and must be preserved where returned.",
+    "Parent-URL computation is implemented three ways: getNewURL (L18631), `ktl.core.findParentURL(url, 1)` (L20877) and bulkActionBuildHash/bulkActionGetCurrentHashState (L3966-L4046). Pick the hash-aware bulk-action helpers for new code.",
+    "isSceneToIgnore and getBackgroundSceneId have no in-file callers; redirectToPopUp (L20885) reimplements the ignore check as `document.getElementById('kn-' + sceneToIgnore)` and the JSDoc at L18652 ('Used in handleRedirect') is stale. redirectToPopUp should call isSceneToIgnore once it accepts 'scene_x' ids.",
+    "Spinner imbalance: showPopUpNotification (L18866) calls Knack.showSpinner() with no hideSpinner, unlike every other site which pairs them (L15807/L15812, L21293/L21300, L21713/L21720). Treat as a defect.",
+    "Two of the policy's suspected duplicate groups are false positives here: normaliseToElement (L18723, HTML string -> wrapper Element) is semantically different from resolveElement (selector string), bulkActionResolveElement (jQuery/array unwrap) and normaliseInputs; and getRecordID (URL) is unrelated to getIdFromElement / getConnectionIdFromHtml (DOM). Do not alias them.",
+    "getIdFromElement (L18781-18783) returns null for every HTML-string input because the wrapper <div> from normaliseToElement itself matches 'span, div, a' and is the only candidate inspected; only Element inputs work. getConnectionIdFromHtml is unaffected because it passes real nodes. waitGetConxIdFromDetailId (L19479-19494) duplicates getConnectionIdFromHtml's primary + ancestor walk and should call the proposed collectConnectionIds.",
+    "Load order / hoisting: getIdBeforeSceneSlug (L18849) is called from KnackNavigator.getCurrentSceneTrail (L625) and getCurrentSceneInfo (L18757) wraps the knackNavigator singleton (L797). Both must remain `function` declarations so placement in knackFunctionsV2.js is free and `window.<name>` stays reachable; none of this chunk's functions may become `const` arrows.",
+    "Text matching strategies: openFileFromBtn uses `textContent.includes` (L18571), getElementByText (L7136) exact/partial, findElementByText (L17170) exact with tag/class filters, and the jQuery `:textEquals` pseudo (L6996) used by buttonToUrl (L20935). One `findElementsByText(root, selector, text, {exact})` primitive would serve all four.",
+    "changeToSlider (L18497-18499) applies `attributes` in caller-literal order, so `{value, max}` clamps value to the browser default max of 100 before max is set - any other slider/attribute-copy helper in the library should also apply min/max/step before value.",
+    "jQuery footprint of this chunk under the no-jQuery rule: only getValueFromDetail (L18331, `$().first().text()/.html()`), isUserRole (L18671, `$(array).each`) and showPopUpNotification (L18867-18872, `$(html).css().insertAfter().delay().fadeOut()`) touch jQuery, none returns a jQuery collection and none falls under the three permitted exceptions, so all three are straight native rewrites with no shim. showPopUpNotification also depends on removeElement (L9618) and jQuery's `insertAfter` accepting jQuery targets - V2 covers the latter through the widened resolveElement (jQuery accepted as INPUT only)."
+  ]
+}

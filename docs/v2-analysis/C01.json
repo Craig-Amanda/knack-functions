@@ -1,0 +1,821 @@
+{
+  "chunkId": "C01",
+  "chunkSummary": "Foundation layer: 8 global constants, the errorHandler console fallback, and the native-DOM primitives (resolveElement/resolveElements/getById/getViewRootElement) plus small visibility, text-lookup, numeric and timing helpers. Almost all of it is already native (no jQuery except the $.expr[':'].textEquals pseudo-selector) and modern, so the work is tightening the primitives so the rest of V2 can depend on them: widen resolveElement/resolveElements to accept jQuery/Document inputs (fixing a real getById({context: document}) bug), route setVisibility/toggleVisibility/getNumericValue/selectTextOnFocus through them, deprecate the curried evaluate and the jQuery textEquals pseudo in favour of native helpers, and alias the duplicated handle/handleError fallback. Everything is wave 1 and low risk.",
+  "functions": [
+    {
+      "name": "CLASS_HIDDEN",
+      "kind": "const",
+      "startLine": 2,
+      "endLine": 2,
+      "currentSignature": "const CLASS_HIDDEN = 'ktlHidden'",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const CLASS_HIDDEN = 'ktlHidden'",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Group with the other constants under a single '// Global constants' JSDoc block with @constant {string} and a note that the class is defined by KTL CSS, not by this library.",
+        "V2 should add an idempotent ensureBaseStyles() that injects `.ktlHidden{display:none!important}` once (by style id) so hiding works even when KTL is not loaded."
+      ],
+      "behaviourRisks": [
+        "Value is a CSS hook owned by KTL (Knack Toolkit Library); renaming or changing it breaks consumer CSS and KTL interop.",
+        "Line 12330 hard-codes the string 'ktlHidden' instead of using the constant; must stay identical."
+      ],
+      "knackPractice": "Not a Knack construct; it is a KTL convention. Knack itself hides inputs via inline style or .kn-hidden (unverified against live docs).",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Used by 6 call sites in-file (7593, 7634, 11312, 12632, 12649, 13131) and probably by consumer CSS. Already a const literal; nothing to modernise beyond documentation. Keep verbatim as a page global."
+    },
+    {
+      "name": "CLASS_DISPLAY_NONE",
+      "kind": "const",
+      "startLine": 3,
+      "endLine": 3,
+      "currentSignature": "const CLASS_DISPLAY_NONE = 'ktlDisplayNone'",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const CLASS_DISPLAY_NONE = 'ktlDisplayNone'",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Document with @constant and the KTL dependency; cover it in the same ensureBaseStyles() fallback as CLASS_HIDDEN."
+      ],
+      "behaviourRisks": [
+        "Only one in-file user (18171 toggleCheckboxOption) but the global is public; consumer apps may reference it."
+      ],
+      "knackPractice": "KTL convention, not Knack. Unverified against live docs.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Already modern. Keep as-is; it exists for KTL parity and consumer CSS."
+    },
+    {
+      "name": "INPUT_CHECKBOX_SELECTOR",
+      "kind": "const",
+      "startLine": 4,
+      "endLine": 4,
+      "currentSignature": "const INPUT_CHECKBOX_SELECTOR = 'input[type=\"checkbox\"]'",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const INPUT_CHECKBOX_SELECTOR = 'input[type=\"checkbox\"]'",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "None beyond JSDoc; the template-literal derived constants on lines 6-7 already compose it correctly."
+      ],
+      "behaviourRisks": [
+        "None; pure selector string."
+      ],
+      "knackPractice": "Generic DOM selector; Knack renders multiple-choice checkboxes as input[type=checkbox] inside .kn-input, so it is accurate.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Used by addCheckboxes/addCheckboxesToHeaders and composed into INPUT_CHECKBOX_CHECKED_SELECTOR. Keep verbatim."
+    },
+    {
+      "name": "INPUT_RADIO_SELECTOR",
+      "kind": "const",
+      "startLine": 5,
+      "endLine": 5,
+      "currentSignature": "const INPUT_RADIO_SELECTOR = 'input[type=\"radio\"]'",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const INPUT_RADIO_SELECTOR = 'input[type=\"radio\"]'",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "JSDoc only."
+      ],
+      "behaviourRisks": [
+        "None."
+      ],
+      "knackPractice": "Generic selector; matches Knack radio inputs in .kn-input.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Used by mapFieldsToView and clearInput. Keep verbatim."
+    },
+    {
+      "name": "INPUT_CHECKBOX_CHECKED_SELECTOR",
+      "kind": "const",
+      "startLine": 6,
+      "endLine": 6,
+      "currentSignature": "const INPUT_CHECKBOX_CHECKED_SELECTOR = `${INPUT_CHECKBOX_SELECTOR}:checked`",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const INPUT_CHECKBOX_CHECKED_SELECTOR = `${INPUT_CHECKBOX_SELECTOR}:checked`",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "None; must be declared after INPUT_CHECKBOX_SELECTOR (TDZ) - keep ordering in V2."
+      ],
+      "behaviourRisks": [
+        "Temporal dead zone: if V2 reorders constants this throws at load and takes the whole script down."
+      ],
+      "knackPractice": "Generic selector.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Used by getCheckedRowIds/getCheckedRows. Already composed via template literal; keep."
+    },
+    {
+      "name": "INPUT_RADIO_CHECKED_SELECTOR",
+      "kind": "const",
+      "startLine": 7,
+      "endLine": 7,
+      "currentSignature": "const INPUT_RADIO_CHECKED_SELECTOR = `${INPUT_RADIO_SELECTOR}:checked`",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const INPUT_RADIO_CHECKED_SELECTOR = `${INPUT_RADIO_SELECTOR}:checked`",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "None; keep declaration order."
+      ],
+      "behaviourRisks": [
+        "TDZ ordering as above."
+      ],
+      "knackPractice": "Generic selector.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Used by mapFieldsToView and showHideMsgBasedOnRadios. Keep."
+    },
+    {
+      "name": "HEADER_CHECKBOX_SELECTOR",
+      "kind": "const",
+      "startLine": 8,
+      "endLine": 8,
+      "currentSignature": "const HEADER_CHECKBOX_SELECTOR = 'th input[type=\"checkbox\"]'",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const HEADER_CHECKBOX_SELECTOR = `th ${INPUT_CHECKBOX_SELECTOR}`",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Derive from INPUT_CHECKBOX_SELECTOR so the three checkbox selectors cannot drift (value is byte-identical)."
+      ],
+      "behaviourRisks": [
+        "Unused inside the file (only its definition on line 8 matches), but it is in eslint/knack-functions-globals.json so consumer apps may use it; must not be dropped."
+      ],
+      "knackPractice": "Targets the select-all checkbox the library injects into grid headers (addCheckboxesToHeaders); not a Knack-native element.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Zero internal callers but a public global. Keep; the addCheckboxesToHeaders chunk should start using it instead of inlining the selector."
+    },
+    {
+      "name": "CLASS_DISABLED",
+      "kind": "const",
+      "startLine": 9,
+      "endLine": 9,
+      "currentSignature": "const CLASS_DISABLED = 'disabled'",
+      "currentReturns": "string",
+      "verdict": "keep",
+      "proposedSignature": "const CLASS_DISABLED = 'disabled'",
+      "proposedReturns": "string",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "JSDoc only."
+      ],
+      "behaviourRisks": [
+        "'disabled' as a class (not attribute) is what updateOptions (8908) and disableCellsByColHead (13216) rely on for styling; consumer CSS may target .disabled."
+      ],
+      "knackPractice": "Knack uses the disabled attribute on inputs; this is a visual class for cells/options, so it complements rather than fights Knack.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "Trivial, used, public. Keep."
+    },
+    {
+      "name": "if (typeof globalThis.errorHandler === 'undefined') {",
+      "kind": "statement",
+      "startLine": 15,
+      "endLine": 34,
+      "currentSignature": "if (typeof globalThis.errorHandler === 'undefined') { globalThis.errorHandler = { handle(error, additionalInfo = {}, errorSource = 'Unknown'), handleError(error, additionalInfo = {}, errorSource = 'Unknown') } }",
+      "currentReturns": "void (side effect: defines globalThis.errorHandler; both methods return null)",
+      "verdict": "simplify",
+      "proposedSignature": "globalThis.errorHandler ??= (() => { const handle = (error, additionalInfo = {}, errorSource = 'Unknown') => { console.error('[knackFunctions] Fallback error handler:', { error, additionalInfo, errorSource }); return null; }; return { handle, handleError: handle }; })()",
+      "proposedReturns": "void (same side effect; handle and handleError return null)",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Lines 17-32: handle and handleError are byte-identical bodies; define once and alias (handleError: handle).",
+        "Use `globalThis.errorHandler ??=` instead of the typeof guard (line 15).",
+        "Keep the JSDoc explaining why the fallback exists (so an app-level errorHandler defined later in Knack's custom JS still wins only if it loads first - note that ordering in the comment)."
+      ],
+      "behaviourRisks": [
+        "An app that defines errorHandler AFTER this script loads will overwrite the fallback (fine) but one that defines only `handle` will throw on the 20 handleError call sites; V2 should not change that ordering behaviour.",
+        "Both methods must keep returning null (callers at 12556 etc. may use the return value)."
+      ],
+      "knackPractice": "Knack custom JS has no built-in error reporting; a global errorHandler is an app convention. Follows the policy's errorHandler.handle contract.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 9,
+      "rationale": "Pure duplication: two identical methods. Aliasing halves the block with zero behaviour change. This is the first thing V2 must define because every other function reports through it."
+    },
+    {
+      "name": "getById",
+      "kind": "function",
+      "startLine": 6909,
+      "endLine": 6923,
+      "currentSignature": "getById(id, { context } = {})",
+      "currentReturns": "HTMLElement | Element | null",
+      "verdict": "simplify",
+      "proposedSignature": "getById(id, { context } = {})",
+      "proposedReturns": "Element | null",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Line 6914: `typeof document.getElementById === 'function'` is an impossible-state check; drop it.",
+        "Lines 6918-6922: replace the hand-rolled quote escaping + try/catch with `root.querySelector(`#${CSS.escape(idStr)}`)`, which also handles ids starting with digits.",
+        "Line 6911: once resolveElement accepts Document/DocumentFragment (see resolveElement), `getById(id, {context: document})` stops returning null (currently a bug: resolveElement(document) is null because Document is not an Element, line 7917).",
+        "Return `root.getElementById?.(idStr) ?? root.querySelector(...)` is unnecessary; querySelector on the root is enough once ids are escaped - 6 lines total."
+      ],
+      "behaviourRisks": [
+        "Current behaviour returns null when context is `document` or a DocumentFragment; the fix widens results (more matches), which is the intended behaviour per the JSDoc but technically a change - document it.",
+        "id === 0 is accepted (line 6910) - keep that quirk."
+      ],
+      "knackPractice": "Supports Knack's id conventions (view_x, kn-input-field_x) but does not normalise `view_` prefixes - callers at 9279 and 17455 pass raw viewId; getViewRootElement is the right entry point for views.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 7,
+      "rationale": "Correct idea, over-defensive body. CSS.escape removes the try/catch and the manual escaping, and widening resolveElement fixes the document-context bug for free. Foundation primitive used by getViewRootElement, so it belongs in wave 1."
+    },
+    {
+      "name": "getViewRootElement",
+      "kind": "function",
+      "startLine": 6931,
+      "endLine": 6961,
+      "currentSignature": "getViewRootElement(viewRef)",
+      "currentReturns": "HTMLElement | null",
+      "verdict": "simplify",
+      "proposedSignature": "getViewRootElement(viewRef)",
+      "proposedReturns": "HTMLElement | null",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Lines 6932-6938: collapse to `const closest = resolveElement(viewRef)?.closest('.kn-view, #connection-form-view'); if (closest) return closest;` (closest only returns Elements; the HTMLElement instanceof checks add nothing for Knack markup).",
+        "Lines 6940-6944: compute the id candidate as `viewRef?.key ?? viewRef` and let knackNavigator.normalizeViewId reject non-strings; drop the typeof chain.",
+        "Lines 6947-6958: `return getById(id) ?? (connectionForm?.querySelector(`input[value=\"${id}\"]`) ? connectionForm : null)` - 4 lines instead of 12.",
+        "Once resolveElement accepts jQuery objects, passing `$('#view_12')` works instead of silently falling through to null."
+      ],
+      "behaviourRisks": [
+        "Must still return the #connection-form-view wrapper (Knack renders connection 'add new' forms in a modal outside .kn-view); keep that branch.",
+        "Callers rely on null (not undefined) for 'not rendered'; keep nullish return.",
+        "DOM reference must not be cached across knack-view-render; function is already stateless - keep it that way."
+      ],
+      "knackPractice": "Follows Knack's `#view_x.kn-view` root convention and the view_ prefix normalisation; the connection-form branch covers Knack's modal connection form. Unverified against live docs for the #connection-form-view id.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 12,
+      "rationale": "Already native and correct; body is 2-3x longer than needed because of repeated instanceof guards. Six internal callers plus bulkActionFindViewRoot make this the canonical view-root resolver, so it is a wave-1 primitive. bulkActionFindViewRoot (3689) is a redundant wrapper that should become a shim over it."
+    },
+    {
+      "name": "getSubmitButton",
+      "kind": "function",
+      "startLine": 6968,
+      "endLine": 6980,
+      "currentSignature": "getSubmitButton(viewId)",
+      "currentReturns": "HTMLButtonElement | null",
+      "verdict": "simplify",
+      "proposedSignature": "getSubmitButton(viewId)",
+      "proposedReturns": "HTMLButtonElement | null",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Whole body becomes `return getViewRootElement(viewId)?.querySelector('.kn-submit button[type=\"submit\"]') ?? null;` (3 lines).",
+        "Consider loosening the selector from `button.kn-button.is-primary[type=\"submit\"]` to `.kn-submit button[type=\"submit\"]` so Knack theme class changes do not break it; keep the strict selector if any app relies on skipping secondary buttons."
+      ],
+      "behaviourRisks": [
+        "If the selector is loosened and a form has a secondary submit-type button inside .kn-submit it could be returned instead; verify before loosening.",
+        "Returns null (not undefined) - keep."
+      ],
+      "knackPractice": "Matches Knack's `.kn-submit button` convention from the policy; good.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Already correct and native, just verbose (two instanceof guards for one optional chain). No external callers in-file but a public global; keep signature exactly."
+    },
+    {
+      "name": "getConnectionRef",
+      "kind": "const fn",
+      "startLine": 6990,
+      "endLine": 6992,
+      "currentSignature": "const getConnectionRef = (value) => ...",
+      "currentReturns": "{id: string, identifier: string} | null",
+      "verdict": "keep",
+      "proposedSignature": "const getConnectionRef = (value) => knackValueResolver.toConnectionRef(value)",
+      "proposedReturns": "{id: string, identifier: string} | null",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "knackValueResolver.toConnectionRef"
+      ],
+      "modernisations": [
+        "Drop the block body and `return` (one expression).",
+        "V2 must declare it AFTER `const knackValueResolver` (1787) because it is a const arrow, not a hoisted function; or convert to a `function getConnectionRef(value)` declaration so load order no longer matters (global name unchanged)."
+      ],
+      "behaviourRisks": [
+        "Converting const->function declaration is safe for callers but changes `typeof` nothing; it does change the TDZ behaviour (becomes callable earlier) - purely additive."
+      ],
+      "knackPractice": "Thin convenience over Knack's `field_x_raw` connection shape `[{id, identifier}]`, which matches the policy's description of connection payloads.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 1,
+      "rationale": "It is an intentional public alias for the KnackValueResolver method (wave 3 class). Keep as a one-liner; it is not a duplicate implementation, just a forwarding alias."
+    },
+    {
+      "name": "$.expr[':'].textEquals = function (el, i, m) {",
+      "kind": "statement",
+      "startLine": 6996,
+      "endLine": 7000,
+      "currentSignature": "$.expr[':'].textEquals = function (el, i, m) -> registers jQuery pseudo-selector :textEquals('text')",
+      "currentReturns": "boolean per element (side effect: extends jQuery Sizzle)",
+      "verdict": "deprecate",
+      "proposedSignature": "if (globalThis.jQuery?.expr?.[':']) jQuery.expr[':'].textEquals = (el, _i, m) => elementTextEquals(el, m[3], { stripRequiredMarker: true })",
+      "proposedReturns": "boolean per element (same side effect, guarded)",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "Keep registering the pseudo (guarded by `globalThis.jQuery?.expr`) in the shims section, delegating to the native elementTextEquals(el, text, {stripRequiredMarker:true}) primitive; mark @deprecated Use getElementByText. Internal callers at 11651 and 20935 move to getElementByText.",
+      "duplicatesOf": [
+        "getElementByText",
+        "findElementByText"
+      ],
+      "modernisations": [
+        "Line 6998: `.replace('*', '')` only strips the FIRST asterisk; use `.replaceAll('*', '')` or a regex - note this is a (benign) behaviour change.",
+        "Use `el.textContent` instead of `$(el).text()` (identical output for elements).",
+        "Guard on jQuery existing so V2 can load in a page without jQuery (policy: new code must not need jQuery).",
+        "Unused `i` parameter: name it `_i`."
+      ],
+      "behaviourRisks": [
+        "Consumer apps may use `:textEquals(...)` in their own $() selectors; the pseudo MUST stay registered or those selectors throw 'unsupported pseudo'.",
+        "Sizzle passes the quoted argument in m[3] with quotes already stripped; do not change which index is read.",
+        "The required-field `*` stripping is specific to Knack labels (`<label>Name<span class=\"kn-required\">*</span>`); getElementByText does NOT strip it, so the shim must keep that option."
+      ],
+      "knackPractice": "Depends on Knack bundling jQuery with Sizzle (`$.expr[':']`); the policy says not to depend on version-specific jQuery behaviour, and custom pseudo-selectors are exactly that. Native lookups via getElementByText fit Knack's DOM better.",
+      "risk": "medium",
+      "wave": 1,
+      "estimatedV2Lines": 4,
+      "rationale": "The only jQuery in this chunk and a Sizzle-specific extension that cannot work without jQuery. Keep it as a guarded compatibility shim (consumer selectors may rely on it) and move the two internal users to the native helper. The single-asterisk replace is a latent bug worth fixing in the shared primitive."
+    },
+    {
+      "name": "evaluate",
+      "kind": "const fn",
+      "startLine": 7002,
+      "endLine": 7019,
+      "currentSignature": "const evaluate = a => operator => b => ...",
+      "currentReturns": "number | boolean | 'Invalid operation' (string)",
+      "verdict": "deprecate",
+      "proposedSignature": "const evaluate = a => operator => b => applyOperator(a, operator, b)",
+      "proposedReturns": "number | boolean | 'Invalid operation'",
+      "signatureChanges": false,
+      "shimRequired": true,
+      "shimShape": "const evaluate = a => operator => b => { try { return applyOperator(a, operator, b); } catch { return 'Invalid operation'; } }; // @deprecated Use applyOperator(a, operator, b)",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Replace the 15-case switch (7003-7018) with a frozen lookup table `OPERATORS = { '+': (a,b)=>a+b, ... }` in a new applyOperator(a, operator, b) primitive that throws a TypeError on unknown operators (policy: never swallow silently).",
+        "Add JSDoc (currently only a trailing comment on 7002).",
+        "Drop the `==` / `!=` loose-equality cases from new code paths? No - keep them in the table for parity, but document.",
+        "Missing the `//knack`-style stray comment on 7002; use a proper @example."
+      ],
+      "behaviourRisks": [
+        "Default branch returns the TRUTHY string 'Invalid operation' (7018); compareAge (12259-12265) returns it as if it were a boolean, so a typo'd operator passes an age check. The shim must preserve this to be signature-identical; the new primitive should throw and compareAge's chunk should decide whether to adopt the throwing version.",
+        "Currying order a -> operator -> b is public API (eslint globals list includes evaluate); keep."
+      ],
+      "knackPractice": "Nothing Knack-specific; pure arithmetic/comparison helper.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Only one internal caller (compareAge, 12264) and the policy flags it as a dead/deprecate candidate. A table-driven applyOperator is 3x shorter and testable; the curried name stays as a thin shim because it is in the published globals list."
+    },
+    {
+      "name": "getNumericValue",
+      "kind": "function",
+      "startLine": 7027,
+      "endLine": 7044,
+      "currentSignature": "getNumericValue(selOrEl, stripNonNumeric = false)",
+      "currentReturns": "number (finite) | NaN",
+      "verdict": "simplify",
+      "proposedSignature": "getNumericValue(selOrEl, stripNonNumeric = false)",
+      "proposedReturns": "number | NaN",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Lines 7028-7036: resolve via `const el = typeof selOrEl === 'string' ? resolveElement(selOrEl) : selOrEl;` then `if (!el || !('value' in el)) return NaN;` - also lets jQuery objects work once resolveElement unwraps them.",
+        "Lines 7040-7043: `const n = Number((stripNonNumeric ? raw.replace(/[^\\d.+-]/g, '') : raw).trim()); return Number.isFinite(n) ? n : NaN;`.",
+        "Fix the JSDoc opening `/** Get ...` single-line style to the repo's multi-line convention."
+      ],
+      "behaviourRisks": [
+        "Number('') is 0 - current code returns 0 for an empty input, not NaN (raw '' -> Number('') === 0, finite). Preserve exactly; do not 'fix' to NaN without a shim.",
+        "stripNonNumeric keeps all '.', '+' and '-' characters so '1.2.3' -> NaN; preserve."
+      ],
+      "knackPractice": "Reads a Knack number input's .value directly, which is correct for `#view_x-field_y` inputs; Knack currency/number fields may contain thousands separators, hence stripNonNumeric.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 8,
+      "rationale": "Correct and native; the resolution branch duplicates resolveElement. Halve the body by reusing the primitive and keep the exact NaN/0 semantics."
+    },
+    {
+      "name": "setVisibility",
+      "kind": "function",
+      "startLine": 7051,
+      "endLine": 7059,
+      "currentSignature": "setVisibility(elements, show)",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "setVisibility(elements, show)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "toggleVisibility",
+        "showIf",
+        "toggleElements",
+        "toggleMessage"
+      ],
+      "modernisations": [
+        "Lines 7052-7054 re-implement resolveElements (7927); replace with `resolveElements(elements).forEach(el => { el.style.display = show ? '' : 'none'; })` - 3 lines.",
+        "Make this the canonical visibility primitive that showIf and toggleVisibility call; toggleElements (19119, jQuery .toggle) is NOT a safe dedupe target because jQuery restores the pre-hide display and respects CSS-hidden elements, whereas this sets '' - flag for that chunk.",
+        "Accepting jQuery input comes free from the widened resolveElements (today `$('x')` silently does nothing because NodeList/Array checks fail)."
+      ],
+      "behaviourRisks": [
+        "`display = ''` only reveals elements hidden by inline style; elements hidden by a class (ktlHidden) stay hidden - current behaviour, keep.",
+        "Array inputs with non-Element entries (e.g. selector strings in an array, as the JSDoc promises) are currently silently skipped because `el.style` would throw... actually `if (el)` lets a string through and `'str'.style` is undefined -> TypeError. resolveElements filters to Elements, which removes that crash; document."
+      ],
+      "knackPractice": "Inline display toggling is what Knack itself does for conditional rules, so this coexists with Knack re-renders (must be re-applied on knack-view-render).",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 4,
+      "rationale": "Three functions in this chunk inline the same 'normalise to element array' logic; routing through resolveElements removes the duplication and a latent crash on string arrays, with identical visible behaviour."
+    },
+    {
+      "name": "showIf",
+      "kind": "function",
+      "startLine": 7066,
+      "endLine": 7069,
+      "currentSignature": "showIf(elements, condition)",
+      "currentReturns": "undefined",
+      "verdict": "keep",
+      "proposedSignature": "showIf(elements, condition)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "setVisibility"
+      ],
+      "modernisations": [
+        "Single expression: `setVisibility(elements, Boolean(typeof condition === 'function' ? condition() : condition));`.",
+        "Note: `toggleVisibility(elements, condition)` with a defined condition is identical to showIf; V2 can implement showIf as `toggleVisibility(elements, condition ?? false)` or keep both as 1-liners over setVisibility."
+      ],
+      "behaviourRisks": [
+        "If condition() throws, it propagates - keep (no silent swallow)."
+      ],
+      "knackPractice": "Generic.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 3,
+      "rationale": "Already a 2-line wrapper; nothing to gain beyond collapsing to one expression."
+    },
+    {
+      "name": "fadeFormConfirmation",
+      "kind": "function",
+      "startLine": 7080,
+      "endLine": 7105,
+      "currentSignature": "fadeFormConfirmation(viewElement, options = {})",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "fadeFormConfirmation(viewElement, { delayMs = 7000, fadeDurationMs = 500 } = {})",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Destructure options with defaults in the parameter list; lines 7088-7089's `Number(x ?? 7000) || 7000` double-fallback collapses to `Math.max(0, Number(delayMs) || 7000)`.",
+        "Line 7081: accept a view id too via `resolveElement(viewElement)`? Keep the Element-only contract but use `getViewRootElement(viewElement)` so a string viewId also works (widening, compatible).",
+        "Replace the two setTimeouts with one that sets opacity then listens for `transitionend` (fallback timer) - optional; current approach is simpler and deterministic, keep it.",
+        "Use `confirmationElement.style.cssText += ...`? No - keep individual style props for readability."
+      ],
+      "behaviourRisks": [
+        "The dataset flag `data-form-confirmation-fade-scheduled` is a DOM side-effect consumers/tests could read; keep the exact name.",
+        "isConnected guards matter: Knack replaces .kn-form-confirmation on the next knack-form-submit re-render; removing a detached node would be harmless but the opacity write on a re-rendered element would not.",
+        "Inline transition on .kn-form-confirmation may conflict with app CSS transitions; existing behaviour."
+      ],
+      "knackPractice": "Targets Knack's `.kn-form-confirmation` block shown after submit (unverified against live docs for the class name); must be called from knack-form-submit.view_x handler, which it leaves to the app - correct separation.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 18,
+      "rationale": "Recent, modern code; only parameter destructuring and the duplicated fallback expressions to tidy. No callers in-file but public."
+    },
+    {
+      "name": "toggleVisibility",
+      "kind": "function",
+      "startLine": 7112,
+      "endLine": 7127,
+      "currentSignature": "toggleVisibility(elements, condition)",
+      "currentReturns": "undefined",
+      "verdict": "simplify",
+      "proposedSignature": "toggleVisibility(elements, condition)",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "setVisibility",
+        "showIf"
+      ],
+      "modernisations": [
+        "Lines 7113-7115 duplicate resolveElements; use it.",
+        "Lines 7117-7124: `const forced = typeof condition === 'function' ? condition() : condition;` once outside the loop (currently condition() is re-evaluated per element - a behaviour change only if condition has side effects; document), then `el.style.display = (condition === undefined ? el.style.display === 'none' : Boolean(forced)) ? '' : 'none';`.",
+        "Total ~6 lines."
+      ],
+      "behaviourRisks": [
+        "Toggle-without-condition only inspects inline `style.display === 'none'` (7120), not computed style, so elements hidden via CSS class toggle 'wrong'; preserve for parity (jQuery's .toggle differs - see toggleElements).",
+        "Per-element condition() evaluation vs once: if a caller passes a function with side effects or that depends on element index they would notice; unlikely but keep per-element evaluation if in doubt (costs one line)."
+      ],
+      "knackPractice": "Generic; same re-render caveat as setVisibility.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 7,
+      "rationale": "Same inline normalisation as setVisibility; reusing resolveElements and hoisting the condition makes it a third of the size with the same output."
+    },
+    {
+      "name": "getElementByText",
+      "kind": "function",
+      "startLine": 7136,
+      "endLine": 7142,
+      "currentSignature": "getElementByText(selector, text, exact = true)",
+      "currentReturns": "Element | undefined",
+      "verdict": "keep",
+      "proposedSignature": "getElementByText(selector, text, exact = true, root = document)",
+      "proposedReturns": "Element | undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a (this is the canonical implementation; findElementByText and :textEquals become shims over it / over elementTextEquals)",
+      "duplicatesOf": [
+        "findElementByText",
+        "$.expr[':'].textEquals"
+      ],
+      "modernisations": [
+        "Add optional trailing `root = document` so findElementByText(text, root, {tag, class}) can be expressed as `getElementByText(`${tag||'*'}${classes}`, text, true, root) ?? null` (trailing optional param: no caller breaks).",
+        "Delegate the comparison to the shared elementTextEquals(el, text, {exact}) primitive so the three text matchers share one trim/compare rule.",
+        "Keep `Array.from(...).find` -> returns undefined; do NOT change to null (callers may test `=== undefined`)."
+      ],
+      "behaviourRisks": [
+        "textContent includes hidden text and the Knack required `*` marker (not stripped here, unlike textEquals) - keep both behaviours distinct via the option.",
+        "findElementByText (17184) console.warns on miss; getElementByText does not - the findElementByText shim must keep its warn."
+      ],
+      "knackPractice": "Native text lookup; handy for Knack menu links/table headers whose text is the only stable hook when ids are not available.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 6,
+      "rationale": "Smallest and most general of the three text-matchers, already native. Make it canonical; the other two (in other chunks) collapse into shims over it and the shared predicate."
+    },
+    {
+      "name": "selectTextOnFocus",
+      "kind": "function",
+      "startLine": 7879,
+      "endLine": 7893,
+      "currentSignature": "selectTextOnFocus(viewId, selector = '.kn-input-number input')",
+      "currentReturns": "undefined",
+      "verdict": "modernise",
+      "proposedSignature": "selectTextOnFocus(viewId, selector = '.kn-input-number input')",
+      "proposedReturns": "undefined",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Line 7880: `document.getElementById(viewId)` -> `getViewRootElement(viewId)` so 'view_12', 12 and element inputs all work.",
+        "Lines 7885-7891: use an arrow + the event target (`({ target }) => setTimeout(() => target.select(), 0)`) instead of `function() { this.select() }`; or `requestAnimationFrame`.",
+        "Add an idempotency guard (`if (input.dataset.selectOnFocus) return; input.dataset.selectOnFocus = 'true'`) so repeated calls on knack-view-render (Knack re-renders the same DOM on inline edits/paging) do not stack listeners; alternatively use `{ once: false }` with a WeakSet.",
+        "Use `input.select()` guarded by `typeof input.select === 'function'` only if selector may match non-inputs; default selector guarantees inputs - skip."
+      ],
+      "behaviourRisks": [
+        "setTimeout(0) is needed because some browsers deselect on mouseup after focus; keep it (or use `requestAnimationFrame`, but test on Safari).",
+        "Adding the dataset guard changes DOM (new data attribute) - harmless but document."
+      ],
+      "knackPractice": "Must be invoked inside `$(document).on('knack-view-render.view_x', ...)` since Knack re-renders inputs; the function itself does not bind to render events (correct - the app owns lifecycle). Uses Knack's `.kn-input-number` wrapper class.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 9,
+      "rationale": "Simple and native but uses a raw getElementById and `this`-style handler; routing through getViewRootElement and guarding against double-binding makes it consistent with the rest of V2."
+    },
+    {
+      "name": "debounce",
+      "kind": "function",
+      "startLine": 7898,
+      "endLine": 7908,
+      "currentSignature": "debounce(func, wait)",
+      "currentReturns": "Function (debounced wrapper; returns undefined when invoked)",
+      "verdict": "simplify",
+      "proposedSignature": "debounce(func, wait)",
+      "proposedReturns": "Function",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Lines 7901-7904: the inner `clearTimeout(timeout)` inside `later` is redundant (the timer has already fired); body becomes `let t; return (...args) => { clearTimeout(t); t = setTimeout(() => func(...args), wait); };` (4 lines).",
+        "Add @param/@returns JSDoc (7896 is a bare description).",
+        "Note: current version calls func without `this`; an arrow version does the same - keep. If a caller relies on `this` (named executedFunction suggests not), use `func.apply(this, args)` with a function expression instead."
+      ],
+      "behaviourRisks": [
+        "API_TIMER (11263) is a promise-based sleep, not a debounce - do NOT dedupe them despite the policy's hint; they are different primitives.",
+        "Leading-edge behaviour: none (trailing only); keep."
+      ],
+      "knackPractice": "Generic; useful for Knack keyup filters and resize handlers.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 5,
+      "rationale": "Correct textbook debounce with one redundant clearTimeout; trimming it is the only change. Public global (eslint list), no internal callers."
+    },
+    {
+      "name": "resolveElement",
+      "kind": "function",
+      "startLine": 7915,
+      "endLine": 7920,
+      "currentSignature": "resolveElement(input)",
+      "currentReturns": "Element | null",
+      "verdict": "keep",
+      "proposedSignature": "resolveElement(input)",
+      "proposedReturns": "Element | Document | DocumentFragment | null",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a (canonical; bulkActionResolveElement becomes `v => typeof v === 'string' ? null : resolveElement(v)` in its own chunk)",
+      "duplicatesOf": [
+        "bulkActionResolveElement",
+        "normaliseToElement"
+      ],
+      "modernisations": [
+        "Widen accepted inputs (strictly additive, per policy line 31): `if (input instanceof Node && (input.nodeType === 1 || input.nodeType === 9 || input.nodeType === 11)) return input;` so Document/DocumentFragment contexts work (fixes getById({context: document}) returning null).",
+        "Unwrap jQuery and array-likes to the first Element: `if (input.jquery || Array.isArray(input) || input instanceof NodeList) return [...input].find(n => n instanceof Element) ?? null;`.",
+        "Use CSS selectors only for strings (unchanged); normaliseToElement (18723) treats strings as HTML markup, so it is NOT a duplicate and must stay separate - rename confusion only."
+      ],
+      "behaviourRisks": [
+        "Widening the return to include Document means callers doing `.closest()` on the result would throw for Document input; today those callers get null and skip. Only getById uses the context path, and it only calls querySelector, so safe - but audit callers in other chunks (getViewRootElement calls .closest on the result: guard with `instanceof Element` there, as it already does).",
+        "`$('selector')` previously resolved to null; now resolves to the first element - more permissive, never less."
+      ],
+      "knackPractice": "Foundation for the policy's 'accept selector, Element, NodeList, jQuery, array' rule; Knack code passes jQuery objects constantly, so unwrapping them is essential for V2's jQuery-free functions to remain drop-in.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 9,
+      "rationale": "Already the right shape and name; it just rejects inputs the rest of the library accepts (jQuery, Document). Widening makes it the single resolver every V2 function uses and fixes a real getById bug. Must be defined early in V2 (function declaration, hoisted)."
+    },
+    {
+      "name": "resolveElements",
+      "kind": "function",
+      "startLine": 7927,
+      "endLine": 7943,
+      "currentSignature": "resolveElements(input)",
+      "currentReturns": "Element[]",
+      "verdict": "keep",
+      "proposedSignature": "resolveElements(input)",
+      "proposedReturns": "Element[]",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a (canonical; normaliseInputs(target) in its chunk becomes `resolveElements(target)` shim, noting it no longer returns non-Element array members)",
+      "duplicatesOf": [
+        "normaliseInputs",
+        "setVisibility (inline)",
+        "toggleVisibility (inline)",
+        "attachNativeDateInputPicker inner resolveElements closure (8220)"
+      ],
+      "modernisations": [
+        "Add jQuery support: `if (input.jquery) return input.toArray().filter(isElement)` (today a jQuery object returns [] silently because it is neither NodeList nor Array).",
+        "Accept any iterable/array-like (HTMLCollection, Set, arguments) via `typeof input[Symbol.iterator] === 'function' || 'length' in input` instead of the NodeList/Array pair; HTMLCollection from `.children` currently returns [].",
+        "Accept Document/DocumentFragment -> [] stays correct (not Elements); fine.",
+        "Collapse to ~8 lines: string -> querySelectorAll; Element -> [input]; iterable -> Array.from(input).filter(el => el instanceof Element); else []."
+      ],
+      "behaviourRisks": [
+        "normaliseInputs (18010) returns arrays unfiltered and wraps unknown objects as `[target]`; if it becomes a shim over resolveElements those non-Element members disappear - its callers (clearInput) only use Element APIs so this is safe, but note it.",
+        "Always returns a fresh array (never the caller's array) - keep, callers may mutate."
+      ],
+      "knackPractice": "Foundation for jQuery-free handling of Knack's `$()` collections; same rationale as resolveElement.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 9,
+      "rationale": "Good name, good contract, slightly too narrow (no jQuery/HTMLCollection). Widen it and point setVisibility/toggleVisibility/normaliseInputs/the 8220 closure at it so there is exactly one multi-element resolver in V2."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "resolveElement",
+      "purpose": "Single canonical 'anything -> one Element' resolver (selector | Element | Document | DocumentFragment | jQuery | NodeList | Array). Hoisted function declared at the top of V2.",
+      "replaces": [
+        "resolveElement",
+        "bulkActionResolveElement",
+        "getNumericValue inline branch",
+        "getById context resolution"
+      ],
+      "signature": "resolveElement(input: string|Element|Document|DocumentFragment|jQuery|ArrayLike<Node>|null): Element|Document|DocumentFragment|null"
+    },
+    {
+      "name": "resolveElements",
+      "purpose": "Single canonical 'anything -> Element[]' resolver including jQuery and HTMLCollection.",
+      "replaces": [
+        "resolveElements",
+        "normaliseInputs",
+        "setVisibility inline",
+        "toggleVisibility inline",
+        "attachNativeDateInputPicker inner closure (8220)"
+      ],
+      "signature": "resolveElements(input: string|Element|jQuery|NodeList|HTMLCollection|Iterable<Node>|null): Element[]"
+    },
+    {
+      "name": "elementTextEquals",
+      "purpose": "One trimmed text comparison used by getElementByText, findElementByText and the :textEquals jQuery pseudo, with the Knack required-marker (*) stripping as an option.",
+      "replaces": [
+        "$.expr[':'].textEquals body",
+        "getElementByText predicate",
+        "findElementByText predicate"
+      ],
+      "signature": "elementTextEquals(el: Element, text: string, { exact = true, stripRequiredMarker = false } = {}): boolean"
+    },
+    {
+      "name": "applyOperator",
+      "purpose": "Table-driven arithmetic/comparison operator application; throws TypeError on unknown operator. evaluate becomes a curried shim.",
+      "replaces": [
+        "evaluate switch (7003-7018)"
+      ],
+      "signature": "applyOperator(a: unknown, operator: '+'|'-'|'*'|'/'|'%'|'>'|'>='|'<'|'<='|'=='|'==='|'!='|'!==', b: unknown): number|boolean"
+    },
+    {
+      "name": "ensureStyle",
+      "purpose": "Idempotent style injection by id so CLASS_HIDDEN/CLASS_DISPLAY_NONE work without KTL CSS and so other chunks (bulk-edit styles 5453, grid truncation) stop hand-rolling 'inject once' logic.",
+      "replaces": [
+        "KTL_BULK_EDIT_SELECTION_STYLE_ID injection",
+        "any `if (!document.getElementById(styleId))` blocks"
+      ],
+      "signature": "ensureStyle(id: string, cssText: string): HTMLStyleElement"
+    },
+    {
+      "name": "reportError",
+      "purpose": "Thin wrapper `errorHandler.handle(err, context, source)` so V2 functions do not have to choose between handle and handleError (20 vs 4 call sites today).",
+      "replaces": [
+        "direct errorHandler.handleError(...) calls",
+        "direct errorHandler.handle(...) calls"
+      ],
+      "signature": "reportError(error: unknown, context: object = {}, source: string = 'knackFunctions'): null"
+    }
+  ],
+  "crossCuttingFindings": [
+    "errorHandler API is inconsistent across the file: 20 call sites use errorHandler.handleError (e.g. 12556, 12575, 12702, 12820, 13019) and 4 use errorHandler.handle; the policy names handle(). The V2 fallback must keep both names (alias), and new V2 code should use one wrapper (reportError).",
+    "getById(id, {context: document}) currently returns null (6911 -> resolveElement rejects Document at 7917/7918); callers at 9279 and 17455 use the default context so are unaffected, but widening resolveElement fixes it.",
+    "bulkActionFindViewRoot (3689-3693) normalises the id and then calls getViewRootElement, which normalises again; it should become a one-line @deprecated shim over getViewRootElement in its chunk.",
+    "bulkActionResolveElement (3676) accepts jQuery/arrays but NOT selector strings, while resolveElement accepts strings but NOT jQuery; the shim for the bulk one must keep rejecting strings (`typeof v === 'string' ? null : resolveElement(v)`) to avoid turning stray strings into querySelector lookups.",
+    "normaliseToElement (18723) treats strings as HTML markup, not selectors; it is NOT a duplicate of resolveElement despite the policy's suspicion and must stay separate (consider a clearer JSDoc noting the difference).",
+    "attachNativeDateInputPicker (8220-8226) defines a local closure named resolveElements that shadows the global and then calls it with no argument (8228: `resolveElements()`); replace with the global `resolveElements(inputOrSelector)`.",
+    "`:textEquals` jQuery pseudo is used by two other chunks (11651 table header lookup, 20935 menu/link lookup); those should switch to getElementByText/elementTextEquals so V2 code paths are jQuery-free while the pseudo stays registered as a shim. The pseudo strips only the first '*' (replace vs replaceAll).",
+    "evaluate's default branch returns the truthy string 'Invalid operation' (7018); compareAge (12259-12265) returns it as a boolean result, so an invalid operator yields a truthy 'match'. The compareAge chunk should decide whether to adopt the throwing applyOperator.",
+    "API_TIMER (11263) is a promise-based sleep(ms), not a debounce; the policy's 'debounce vs API_TIMER' pair is not a real duplicate. A `sleep(ms)` primitive named with UK-neutral naming could absorb API_TIMER as a shim in its chunk.",
+    "toggleElements (19119) uses jQuery .toggle(), which restores the element's pre-hide display value and accounts for CSS-hidden elements; setVisibility sets style.display='' which does not. Deduping toggleElements onto setVisibility would silently change behaviour for elements hidden by stylesheet - that chunk needs a computed-style aware implementation or must keep jQuery semantics.",
+    "toggleMessage (11623) is another display toggler (uses 'block'/'none' and :has()); it should route through setVisibility once a `displayValue` option exists, or stay separate - note 'block' vs '' difference.",
+    "Line 12330 hard-codes 'ktlHidden' instead of CLASS_HIDDEN; use the constant.",
+    "CLASS_HIDDEN / CLASS_DISPLAY_NONE rely on KTL's stylesheet being loaded; the library should inject fallback rules via ensureStyle so apps without KTL still get hiding.",
+    "HEADER_CHECKBOX_SELECTOR is defined but never used in-file; the addCheckboxesToHeaders chunk inlines its own selector - use the constant.",
+    "Naming: KnackNavigator uses US spelling (normalizeViewId, normalizeFieldId, normalizePrefixedId) while the rest of the file uses UK (normaliseInputs, normaliseToElement); globals cannot be renamed, but V2's new identifiers must be UK per policy and the mismatch should be documented.",
+    "Several functions still call document.getElementById(viewId) directly (selectTextOnFocus 7880; check 9279/17455 patterns elsewhere) which breaks for numeric ids or element inputs; standardise on getViewRootElement.",
+    "Load-order hazard: getConnectionRef (6990) is a const arrow referencing knackValueResolver (const at 1787) and $.expr registration (6996) needs jQuery at load time. V2 should declare foundation primitives as hoisted function declarations and guard jQuery-dependent registrations.",
+    "The F2 `debugger` keydown hook at 9659-9663 (other chunk) is debugging-only dead code: remove in V2 (no global name to shim, it is an anonymous handler)."
+  ]
+}
