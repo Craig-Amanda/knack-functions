@@ -28,11 +28,16 @@ function browser() {
 function build(options = {}, { iframe = false, shared = browser(), tab = new Map() } = {}) {
     const timers = [];
     const reloads = [];
+    const reloadUserVersions = [];
     const posted = [];
     const errors = [];
     const fakeWindow = {
         location: { origin: ORIGIN, hash: '#home' },
-        sessionStorage: { getItem: (key) => tab.get(key) ?? null, setItem: (key, value) => tab.set(key, value) },
+        sessionStorage: {
+            getItem: (key) => tab.get(key) ?? null,
+            setItem: (key, value) => tab.set(key, value),
+            removeItem: (key) => tab.delete(key),
+        },
         setTimeout(fn) {
             timers.push(fn);
             return timers.length;
@@ -79,7 +84,10 @@ function build(options = {}, { iframe = false, shared = browser(), tab = new Map
         showRefreshNow() {},
         syncUserVersionViewId: 2077,
         syncUserVersionFieldId: 1311,
-        reload: (target) => reloads.push(target),
+        reload: (target, userVersion) => {
+            reloads.push(target);
+            reloadUserVersions.push(userVersion);
+        },
         onSyncError: (error) => errors.push(error),
         ...options,
     });
@@ -87,6 +95,7 @@ function build(options = {}, { iframe = false, shared = browser(), tab = new Map
     return {
         controller,
         reloads,
+        reloadUserVersions,
         posted,
         errors,
         runTimers() {
@@ -239,7 +248,44 @@ test('a custom syncUserVersion that resolves to undefined still counts as a save
     assert.equal(posted[0]?.userVersion, '1.3.7');
 });
 
-for (const [label, result] of [['an empty string', ''], ['false', false], ['null', null]]) {
+test('a custom syncUserVersion that resolves to true counts as a save', async () => {
+    const { controller, posted, errors } = build({ syncUserVersion: async () => true }, { iframe: true });
+    controller.cacheCurrentUserRecord({ field_1311: '1.2.5' });
+
+    await controller.syncIframeVersion({ userVersion: '1.2.5', targetVersion: '1.3.7' });
+
+    assert.deepEqual(errors, []);
+    assert.equal(posted[0]?.userVersion, '1.3.7');
+});
+
+test('resetState lets a tab reload again for a target it already reloaded for', () => {
+    const shared = browser();
+    const tab = new Map();
+    const before = build({}, { shared, tab });
+    send(before, '1.3.7', '1.2.5');
+    send(before, '', '1.3.7');
+    assert.deepEqual(before.reloads, ['1.3.7']);
+
+    // Same tab, loaded before the target is announced again: only the cleared marker allows this reload.
+    const after = build({}, { shared, tab });
+    after.controller.resetState();
+    shared.store.set('versionState', JSON.stringify({ targetVersion: '1.3.7', targetSeenAt: shared.clock.now + 10, userVersion: '1.3.7' }));
+    send(after, '', '1.3.7');
+    assert.deepEqual(after.reloads, ['1.3.7']);
+});
+
+test('reload receives the user version current when the timer fires', () => {
+    const page = build();
+    send(page, '1.3.7', '1.2.5');
+    page.controller.handleRefreshMessage({ origin: ORIGIN, data: { ...MESSAGE, targetVersion: '', userVersion: '1.3.7' } });
+    page.controller.handleRefreshMessage({ origin: ORIGIN, data: { ...MESSAGE, targetVersion: '', userVersion: '1.3.8' } });
+    page.runTimers();
+
+    assert.deepEqual(page.reloads, ['1.3.7']);
+    assert.deepEqual(page.reloadUserVersions, ['1.3.8']);
+});
+
+for (const [label, result] of [['an empty string', ''],['false', false], ['null', null]]) {
     test(`the iframe treats ${label} from syncUserVersion as a failure and does not ask for a reload`, async () => {
         const { controller, posted, errors } = build({ syncUserVersion: async () => result }, { iframe: true });
         controller.cacheCurrentUserRecord({ field_1311: '1.2.5' });

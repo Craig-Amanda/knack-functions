@@ -2083,7 +2083,8 @@ function createVersionRefreshController(options = {}) {
 
     // A page loaded after a target version was first seen already runs that version's code, so it
     // never reloads for it. This is what stops a reload loop: each page reloads at most once per target.
-    // performance.timeOrigin is when the page started loading, before this script was fetched.
+    // performance.timeOrigin is when the page started loading, before this script was fetched. The
+    // Date.now() fallback is a little later than the real load, which only narrows the reload window.
     const pageLoadedAt = typeof performance !== 'undefined' && performance?.timeOrigin
         ? Math.floor(performance.timeOrigin)
         : Date.now();
@@ -2106,6 +2107,9 @@ function createVersionRefreshController(options = {}) {
     };
 
     const normalizedSyncUserVersionFieldId = knackNavigator.normalizeFieldId(syncUserVersionFieldId);
+    if (typeof options.syncUserVersion === 'function' && !normalizedSyncUserVersionFieldId) {
+        console.warn('createVersionRefreshController: syncUserVersion is set but syncUserVersionFieldId is not, so the user version is never saved.');
+    }
     const normalizedTargetVersionItemFieldId = knackNavigator.normalizeFieldId(targetVersionItemFieldId);
     const normalizedTargetVersionValueFieldId = knackNavigator.normalizeFieldId(targetVersionValueFieldId);
 
@@ -2357,7 +2361,7 @@ function createVersionRefreshController(options = {}) {
 
         if (internalState.pendingRequestActive) {
             ensurePendingRefreshWatch();
-            showDeferredRefreshNotice(getReloadTarget());
+            showDeferredRefreshNotice(getOutdatedTarget());
         }
 
         return normalizedHoldId;
@@ -2461,6 +2465,11 @@ function createVersionRefreshController(options = {}) {
         if (internalState.reloadTimerId) {
             window.clearTimeout(internalState.reloadTimerId);
             internalState.reloadTimerId = 0;
+        }
+        try {
+            window.sessionStorage?.removeItem(reloadedTargetKey);
+        } catch (error) {
+            // Nothing to clear without sessionStorage.
         }
     }
 
@@ -2652,11 +2661,13 @@ function createVersionRefreshController(options = {}) {
         };
         internalState.syncInFlight = true;
         try {
-            // undefined counts as a save of the target. Anything else that is not a version string
+            // undefined or true counts as a save of the target. Anything else that is not a version string
             // ('' from the default when the view, field or scene is missing, false, null) means
             // nothing was written, so the main window must not reload.
             const result = await syncUserVersion(targetVersion, syncContext);
-            const syncedVersion = result === undefined ? targetVersion : (typeof result === 'string' ? normalizeVersion(result) : '');
+            const syncedVersion = result === undefined || result === true
+                ? targetVersion
+                : (typeof result === 'string' ? normalizeVersion(result) : '');
             if (!syncedVersion) {
                 throw new Error('syncUserVersion did not write the user version (check syncUserVersionViewId and syncUserVersionFieldId).');
             }
@@ -2750,7 +2761,7 @@ function createVersionRefreshController(options = {}) {
             stopPendingRefreshWatch();
             writeReloadedTarget(targetVersion);
             if (typeof reload === 'function') {
-                reload(targetVersion, userVersion);
+                reload(targetVersion, internalState.userVersion);
             }
         }, reloadDelayMs);
     }
