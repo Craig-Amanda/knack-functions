@@ -10,6 +10,7 @@
 - Without a `syncUserVersionFieldId`, the iframe no longer calls `syncUserVersion` at all. A refresh message the app posts itself then reloads the page once without waiting for a save.
 - The save gate uses the user version this window's own iframe reported, so another tab's stale iframe cannot block or trigger it.
 - New test: `tests/versionRefreshController.test.cjs`, and an `npm test` script.
+- Spot in-app changelog: entry #61, Spot version 1.3.8 (Development until `PROD_PINNED_VERSION` is bumped).
 
 ## 2026-10-28
 
