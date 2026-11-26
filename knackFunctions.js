@@ -20375,13 +20375,15 @@ function insertStaffName(target) {
  * text quotes any cell that holds a line break, tab or double quote.
  * Blank lines at the start or end of a cell are dropped. A cell holding one link
  * keeps it as a hyperlink; other rich content (images, colours) is copied as text.
+ * KTL's row-selection checkbox column (bulk edit, `_ebo`, `_bulk_actions`) is skipped,
+ * so selecting rows doesn't add a blank first column to the paste.
  *
  * @param {HTMLElement} tbody - The table body to read (must be in the page, so hidden content is skipped).
  * @returns {{html: string, text: string}} Clipboard data for `text/html` and `text/plain`.
  */
 function buildTableBodyClipboardData(tbody) {
     const rows = Array.from(tbody.rows).filter(row => isElementVisible(row)).map(row =>
-        Array.from(row.cells).filter(cell => isElementVisible(cell)).map(cell => {
+        Array.from(row.cells).filter(cell => isElementVisible(cell) && !isKtlCheckboxCell(cell)).map(cell => {
             const lines = cell.innerText.trim().split('\n').map(line => line.trim());
             const links = cell.querySelectorAll('a[href]');
             return { lines, colSpan: cell.colSpan, href: links.length === 1 ? links[0].href : '' };
@@ -20402,6 +20404,19 @@ function buildTableBodyClipboardData(tbody) {
 
     // The charset stops Excel reading £ and other non-ASCII text as Windows-1252.
     return { html: `<meta charset="utf-8"><table>${html}</table>`, text };
+}
+
+/**
+ * Whether a table cell is one KTL added for row selection: a checkbox cell
+ * (`ktlCheckboxCell`), the blank spacer it adds to totals rows, or a cell
+ * that holds only a `bulkEditCb` checkbox.
+ *
+ * @param {HTMLTableCellElement} cell - The cell to check.
+ * @returns {boolean} True when the cell is a KTL selection cell.
+ */
+function isKtlCheckboxCell(cell) {
+    if (cell.classList.contains('ktlCheckboxCell') || cell.classList.contains('ktlCheckboxBlankCell')) return true;
+    return !!cell.querySelector('input.bulkEditCb') && cell.innerText.trim() === '';
 }
 
 /**

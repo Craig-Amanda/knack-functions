@@ -10,9 +10,11 @@ const escapeHelper = sliceFrom('function escapeHtml(value)', '\n\n');
 const visibleHelper = sliceFrom('function isElementVisible(target', '\n}\n') + '\n}';
 const copyHelpers = sliceFrom('function buildTableBodyClipboardData', 'if (typeof globalThis !== \'undefined\') {\n    globalThis.copyViewBodyToClipboard');
 
-// Two rows trimmed from a NABCEL table: multi-line Works Done cells, trailing <br>s and a hidden column.
+// Two rows trimmed from a NABCEL table: multi-line Works Done cells, trailing <br>s, a hidden column
+// and KTL's row-selection checkbox column (one cell with KTL's class, one without).
 const tableHtml = `<div id="view_1" class="kn-table"><div class="table-keyword-search"></div><div class="kn-table-wrapper"><table><tbody>
 <tr id="a">
+  <td class="ktlCheckboxCell"><input type="checkbox" class="bulkEditCb ktlCheckbox-row"></td>
   <td class="field_2040"><span class="col-0">
 0048
   </span></td>
@@ -26,6 +28,7 @@ const tableHtml = `<div id="view_1" class="kn-table"><div class="table-keyword-s
   <td class="field_3"><a href="https://example.com/cert.pdf">cert.pdf</a></td>
 </tr>
 <tr id="b">
+  <td><input type="checkbox" class="bulkEditCb ktlCheckbox-row"></td>
   <td class="field_2040"><span class="col-0">
 0277
   </span></td>
