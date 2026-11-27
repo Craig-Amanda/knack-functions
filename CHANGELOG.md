@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-27
+
+<!-- pr:113 feat/sheet-import - CSWinnall -->
+- New `KnackSheetImport`, a step-by-step wizard that imports a CSV or Excel sheet into Knack records through Add-form views: choose the context, match columns to fields (saved as a template per choice), fill in fields not in the sheet, check each row, then import. Connection fields are matched to existing records or created first, e.g. a Property before its Job.
+- Date fields follow the field's format: a date-only field gets the date, a date-and-time field gets the date and time (24-hour or am/pm), and a time-only field gets the time. Times are read from text ("14:05", "2pm", "9.30 am", "noon"), Excel serials and Excel dates. A date with no time (or midnight) is written as the date only.
+- `SheetImportCore` holds the parsing, matching and value conversion with no DOM, so it can be tested on its own.
+- While an import runs, closing or reloading the tab asks first. Failed rows can have their values corrected on the result step and be retried; anything already created for a row is reused. A saved template that can't be read, or holds wrongly shaped values, is cleaned and the user is warned.
+- New test: `tests/sheetImport.test.cjs`.
+
 ## 2026-11-18
 
 <!-- pr:111 fix/version-refresh-reload-loop - CSWinnall -->

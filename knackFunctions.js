@@ -23415,3 +23415,2760 @@ async function getGovBankHolidays(options = {}) {
         throw err;
     }
 }
+
+/* =========================================================================
+ * Sheet import: KnackSheetImport + SheetImportCore
+ * A config-driven "upload a spreadsheet, match its columns, create records"
+ * wizard. Everything app-specific (cascade lists, target forms, aliases,
+ * duplicate checks, defaults) comes from the config the app passes in.
+ * ========================================================================= */
+
+const KNACK_SHEET_IMPORT_XLSX_URL = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+// Line icons for the import wizard (24×24, stroked).
+const KSI_ICONS = {
+    file: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z M14 3v5h5 M9 13h6 M9 17h6',
+    check: 'M5 12l5 5L20 7',
+    alert: 'M12 8v5 M12 16.5v.01 M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+    arrow: 'M5 12h14 M13 6l6 6-6 6'
+};
+
+/**
+ * Pure helpers for KnackSheetImport: header detection, column matching and value parsing.
+ * Uses no DOM or Knack globals, so tests can load this class on its own.
+ */
+class SheetImportCore {
+    /**
+     * Lower-cases a label and turns punctuation into single spaces.
+     * @param {*} value - Any label.
+     * @returns {string} Normalised label.
+     */
+    static normalizeLabel(value) {
+        return String(value ?? '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    /**
+     * Normalises a match key (postcode, reference, tracker id) to lower-case letters and digits only.
+     * @param {*} value - Raw key.
+     * @returns {string} Normalised key.
+     */
+    static normalizeKey(value) {
+        return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    }
+
+    /**
+     * Normalises one key or a list of keys, dropping blanks.
+     * @param {*|Array<*>} value - Raw key or keys.
+     * @returns {string[]} Normalised keys.
+     */
+    static normalizeKeys(value) {
+        return [].concat(value ?? []).map(SheetImportCore.normalizeKey).filter(Boolean);
+    }
+
+    /**
+     * Turns a sheet cell into one line of display text.
+     * @param {*} value - Cell value (string, number, boolean or Date).
+     * @returns {string} Display text.
+     */
+    static cellText(value) {
+        if (value === null || value === undefined) return '';
+        if (value instanceof Date) {
+            const parts = SheetImportCore.dateParts(value);
+            if (!parts) return '';
+            const time = SheetImportCore.timeParts(value);
+            // A time-only cell comes through on Excel's day 0 (30/12/1899): show just the time, even 00:00.
+            if (parts.year < 1900) return SheetImportCore.formatTime(time, 'military');
+            const clock = time.hours || time.minutes ? SheetImportCore.formatTime(time, 'military') : '';
+            return [SheetImportCore.formatDate(parts, 'dd/mm/yyyy'), clock].filter(Boolean).join(' ');
+        }
+        return String(value).replace(/\s+/g, ' ').trim();
+    }
+
+    /**
+     * Scores how alike two labels are (Dice coefficient on letter pairs).
+     * @param {string} a - First label.
+     * @param {string} b - Second label.
+     * @returns {number} 0 (nothing alike) to 1 (same).
+     */
+    static similarity(a, b) {
+        const x = SheetImportCore.normalizeLabel(a).replace(/ /g, '');
+        const y = SheetImportCore.normalizeLabel(b).replace(/ /g, '');
+        if (!x || !y) return 0;
+        if (x === y) return 1;
+        if (x.length < 2 || y.length < 2) return 0;
+        const pairs = (text) => {
+            const counts = new Map();
+            for (let i = 0; i < text.length - 1; i++) {
+                const pair = text.slice(i, i + 2);
+                counts.set(pair, (counts.get(pair) || 0) + 1);
+            }
+            return counts;
+        };
+        const px = pairs(x);
+        const py = pairs(y);
+        let overlap = 0;
+        for (const [pair, count] of px) overlap += Math.min(count, py.get(pair) || 0);
+        return (2 * overlap) / ((x.length - 1) + (y.length - 1));
+    }
+
+    /**
+     * Finds the heading row: the first row (of the first few) with at least two cells
+     * and at least half as many text cells as the widest row.
+     * @param {Array<Array<*>>} rows - Sheet rows.
+     * @param {number} [maxScan=15] - How many rows to look at.
+     * @returns {number} Zero-based heading row index.
+     */
+    static findHeaderRow(rows, maxScan = 15) {
+        const scan = (rows || []).slice(0, maxScan).map((row) => (row || []).map(SheetImportCore.cellText).filter(Boolean));
+        const widest = scan.reduce((max, cells) => Math.max(max, cells.length), 0);
+        const index = scan.findIndex((cells) => {
+            const textCells = cells.filter((cell) => !/^[\d\s.,/:£$%()+-]+$/.test(cell));
+            return cells.length >= 2 && textCells.length >= Math.ceil(widest / 2);
+        });
+        return Math.max(0, index);
+    }
+
+    /**
+     * Turns a 1-based column number into a spreadsheet letter (1 → A, 27 → AA).
+     * @param {number} index - Zero-based column index.
+     * @returns {string} Column letter.
+     */
+    static columnLetter(index) {
+        let n = index + 1;
+        let letters = '';
+        while (n > 0) {
+            const rem = (n - 1) % 26;
+            letters = String.fromCharCode(65 + rem) + letters;
+            n = Math.floor((n - 1) / 26);
+        }
+        return letters;
+    }
+
+    /**
+     * Builds the column list (heading + first few filled values) and the data rows under the headings.
+     * @param {Array<Array<*>>} rows - Sheet rows.
+     * @param {number} headerIndex - Heading row index.
+     * @param {number} [previewCount=3] - Values to keep per column for the preview.
+     * @returns {{columns: Array<{index: number, header: string, preview: string[], empty: boolean}>, body: Array<{number: number, cells: Array<*>}>}}
+     */
+    static buildColumns(rows, headerIndex, previewCount = 3) {
+        const header = rows[headerIndex] || [];
+        const body = [];
+        rows.slice(headerIndex + 1).forEach((cells, offset) => {
+            if ((cells || []).some((cell) => SheetImportCore.cellText(cell))) {
+                body.push({ number: headerIndex + offset + 2, cells: cells || [] });
+            }
+        });
+        const width = body.reduce((max, row) => Math.max(max, row.cells.length), header.length);
+        const columns = [];
+        for (let i = 0; i < width; i++) {
+            const filled = body.map((row) => SheetImportCore.cellText(row.cells[i])).filter(Boolean);
+            columns.push({
+                index: i,
+                header: SheetImportCore.cellText(header[i]) || `Column ${SheetImportCore.columnLetter(i)}`,
+                preview: filled.slice(0, previewCount),
+                empty: filled.length === 0
+            });
+        }
+        return { columns, body };
+    }
+
+    /**
+     * Picks a target for every column: saved choice, then alias, then exact label, then a close label.
+     * Each single-use target goes to one column only. Empty columns are ignored; other unmatched columns get `fallback`.
+     * @param {Array<{header: string, empty: boolean}>} columns - Sheet columns.
+     * @param {Array<{value: string, label: string, names?: string[], multi?: boolean}>} options - Targets a column can map to.
+     * @param {{aliases?: Object<string, string|string[]>, saved?: Object<string, string>, fallback?: string, threshold?: number}} [settings]
+     * @returns {string[]} One option value per column.
+     */
+    static autoMap(columns, options, settings = {}) {
+        const { aliases = {}, saved = {}, fallback = 'ignore', threshold = 0.8 } = settings;
+        const norm = SheetImportCore.normalizeLabel;
+        const byValue = new Map(options.map((option) => [option.value, option]));
+        const aliasIndex = new Map();
+        Object.entries(aliases).forEach(([value, labels]) => {
+            [].concat(labels).forEach((label) => aliasIndex.set(norm(label), value));
+        });
+        const namesOf = (option) => option.names?.length ? option.names : [option.label];
+        const used = new Set();
+        const take = (value) => {
+            const option = byValue.get(value);
+            if (!option || (!option.multi && used.has(value))) return null;
+            if (!option.multi) used.add(value);
+            return value;
+        };
+
+        const result = columns.map(() => null);
+        const passes = [
+            (heading) => saved[heading],
+            (heading) => aliasIndex.get(heading),
+            (heading) => options.find((option) => !option.multi && namesOf(option).some((name) => norm(name) === heading))?.value
+        ];
+        passes.forEach((pass) => {
+            columns.forEach((column, i) => {
+                if (result[i] || column.empty) return;
+                const value = pass(norm(column.header));
+                if (value) result[i] = take(value);
+            });
+        });
+
+        columns.forEach((column, i) => {
+            if (result[i] || column.empty) return;
+            let best = null;
+            let bestScore = threshold;
+            options.forEach((option) => {
+                if (option.multi || used.has(option.value)) return;
+                namesOf(option).forEach((name) => {
+                    const score = SheetImportCore.similarity(column.header, name);
+                    if (score >= bestScore) {
+                        bestScore = score;
+                        best = option.value;
+                    }
+                });
+            });
+            if (best) result[i] = take(best);
+        });
+
+        return columns.map((column, i) => result[i] || (column.empty ? 'ignore' : fallback));
+    }
+
+    /**
+     * Reads a date from a Date, an Excel serial number or text (dd/mm/yyyy, yyyy-mm-dd, 12 Mar 2026).
+     * @param {*} value - Cell value.
+     * @param {{dayFirst?: boolean}} [options] - Read 01/02/2026 as 1 Feb (default) or 2 Jan.
+     * @returns {{year: number, month: number, day: number}|null} Date parts, or null when not a date.
+     */
+    static dateParts(value, { dayFirst = true } = {}) {
+        let year;
+        let month;
+        let day;
+        if (value instanceof Date) {
+            if (Number.isNaN(value.getTime())) return null;
+            // Round to the minute first, as timeParts does, so 23:59:50 moves to the next day but 23:59 keeps its day.
+            const day0 = new Date(Math.round(value.getTime() / 60e3) * 60e3);
+            [year, month, day] = [day0.getFullYear(), day0.getMonth() + 1, day0.getDate()];
+        } else if (typeof value === 'number') {
+            if (value < 1 || value > 2958465) return null;
+            const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(Math.round(value * 1440) / 1440) * 864e5);
+            [year, month, day] = [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate()];
+        } else {
+            const text = String(value ?? '').trim();
+            const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+            // The date ends the text or is followed by a space, comma or T, so "2026-03-03T14:05" and "03/03/2026, 14:05" still read.
+            let match = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?=$|[\sT,])/);
+            if (match) {
+                [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+            } else if ((match = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2})(?=$|[\sT,])/))) {
+                const [a, b] = [Number(match[1]), Number(match[2])];
+                [day, month] = dayFirst ? [a, b] : [b, a];
+                year = Number(match[3]);
+            } else if ((match = text.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s-]+([a-z]{3,9})[\s,-]+(\d{2}|\d{4})\b/i))) {
+                day = Number(match[1]);
+                month = months.indexOf(match[2].slice(0, 3).toLowerCase()) + 1;
+                year = Number(match[3]);
+            } else {
+                return null;
+            }
+            if (year < 100) year += 2000;
+        }
+        const check = new Date(Date.UTC(year, month - 1, day));
+        if (!month || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return null;
+        return { year, month, day };
+    }
+
+    /**
+     * Writes date parts in a Knack date format (US formats start with mm; everything else is written dd/mm/yyyy).
+     * @param {{year: number, month: number, day: number}} parts - Date parts.
+     * @param {string} [format='dd/mm/yyyy'] - Knack `date_format`.
+     * @returns {string} Formatted date.
+     */
+    static formatDate(parts, format = 'dd/mm/yyyy') {
+        const pad = (n) => String(n).padStart(2, '0');
+        const dd = pad(parts.day);
+        const mm = pad(parts.month);
+        return /^m/i.test(String(format || '')) ? `${mm}/${dd}/${parts.year}` : `${dd}/${mm}/${parts.year}`;
+    }
+
+    /**
+     * What a Knack date/time field holds, from its format.
+     * @param {{date_format?: string, time_format?: string}} [format] - Field format.
+     * @returns {'date'|'datetime'|'time'} 'time' for "Ignore Date", 'date' when there is no time or it is "Ignore Time".
+     */
+    static dateKind(format = {}) {
+        if (/ignore/i.test(String(format?.date_format || ''))) return 'time';
+        const time = String(format?.time_format || '');
+        return !time || /ignore/i.test(time) ? 'date' : 'datetime';
+    }
+
+    /**
+     * Reads a time of day from a Date, an Excel serial (the fraction is the time) or text
+     * ("14:05", "2:05pm", "2pm", "9.30 am", "noon", or a date followed by a time).
+     * @param {*} value - Cell value.
+     * @returns {{hours: number, minutes: number}|null} 24-hour time, or null when there is no time.
+     */
+    static timeParts(value) {
+        let total;
+        if (value instanceof Date) {
+            if (Number.isNaN(value.getTime())) return null;
+            // Round to the minute: sheet times can sit a few seconds out.
+            const rounded = new Date(Math.round(value.getTime() / 60e3) * 60e3);
+            return { hours: rounded.getHours(), minutes: rounded.getMinutes() };
+        }
+        if (typeof value === 'number') {
+            // A whole number (9, 14, a date serial) has no time in it, and 1–18263 (before 1950) is a number typed
+            // into the cell ("14.30" becomes 14.3), not a date with a time.
+            if (!(value >= 0) || value > 2958466 || (value >= 1 && (Number.isInteger(value) || value < 18264))) return null;
+            total = Math.round((value - Math.floor(value)) * 1440) % 1440;
+            return { hours: Math.floor(total / 60), minutes: total % 60 };
+        }
+        const text = String(value ?? '').trim().toLowerCase();
+        if (/(?:^|\s)(?:12\s*)?(?:noon|midday)$/.test(text)) return { hours: 12, minutes: 0 };
+        if (/(?:^|\s)midnight$/.test(text)) return { hours: 0, minutes: 0 };
+        const match = text.match(/(?:^|[\sT])(\d{1,2})(?:[:.](\d{2})(?::\d{2}(?:\.\d+)?)?)?\s*(?:([ap])\.?\s?m\.?)?$/i);
+        if (!match || (match[2] === undefined && !match[3])) return null;
+        let hours = Number(match[1]);
+        const minutes = Number(match[2] || 0);
+        if (minutes > 59) return null;
+        if (match[3]) {
+            if (hours < 1 || hours > 12) return null;
+            hours = (hours % 12) + (match[3] === 'p' ? 12 : 0);
+        } else if (hours > 23) {
+            return null;
+        }
+        return { hours, minutes };
+    }
+
+    /**
+     * Writes a time in a Knack time format: "14:05" for military formats, otherwise "2:05pm".
+     * @param {{hours: number, minutes: number}} time - 24-hour time.
+     * @param {string} [format] - Knack `time_format`.
+     * @returns {string} Formatted time.
+     */
+    static formatTime({ hours, minutes }, format = '') {
+        const mm = String(minutes).padStart(2, '0');
+        return /military/i.test(String(format))
+            ? `${String(hours).padStart(2, '0')}:${mm}`
+            : `${(hours % 12) || 12}:${mm}${hours >= 12 ? 'pm' : 'am'}`;
+    }
+
+    /**
+     * Reads yes/no style text.
+     * @param {*} value - Cell value.
+     * @returns {boolean|null} true, false, or null when unclear.
+     */
+    static parseBoolean(value) {
+        if (typeof value === 'boolean') return value;
+        if (/^[✓✔☑]$/.test(String(value ?? '').trim())) return true;
+        const text = SheetImportCore.normalizeLabel(value);
+        if (['yes', 'y', 'true', '1', 'x', 'ticked', 'checked', 'on'].includes(text)) return true;
+        if (['no', 'n', 'false', '0', 'none', 'n a', 'na', 'off'].includes(text)) return false;
+        return null;
+    }
+
+    /**
+     * Matches text to one of a field's choices: same text, then a close match.
+     * @param {*} value - Cell value.
+     * @param {string[]} choices - Allowed options.
+     * @param {number} [threshold=0.8] - Lowest similarity accepted.
+     * @returns {string|null} The matching choice, or null.
+     */
+    static matchChoice(value, choices, threshold = 0.8) {
+        const text = SheetImportCore.normalizeLabel(value);
+        if (!text) return null;
+        const list = (choices || []).map(String);
+        const exact = list.find((choice) => SheetImportCore.normalizeLabel(choice) === text);
+        if (exact) return exact;
+        let best = null;
+        let bestScore = threshold;
+        list.forEach((choice) => {
+            const score = SheetImportCore.similarity(text, choice);
+            if (score >= bestScore) {
+                bestScore = score;
+                best = choice;
+            }
+        });
+        return best;
+    }
+
+    /**
+     * Splits a person's name into title, first and last ("Mrs J Smith", "Smith, John").
+     * Joint titles ("Mr & Mrs Smith") stay in the first name.
+     * @param {*} value - Cell value.
+     * @returns {{title: string, first: string, last: string}|null} Name parts.
+     */
+    static parseName(value) {
+        let text = String(value ?? '').replace(/\s+/g, ' ').trim();
+        if (!text) return null;
+        const reversed = text.match(/^([^,]+),\s*(.+)$/);
+        if (reversed) text = `${reversed[2]} ${reversed[1]}`;
+        const titles = 'mr|mrs|ms|miss|mx|dr|rev|prof|sir|lady';
+        const joint = text.match(new RegExp(`^((?:${titles})\\.?\\s*(?:&|and)\\s*(?:${titles})\\.?)\\s+(.+)$`, 'i'));
+        if (joint) return { title: '', first: joint[1], last: joint[2] };
+        let title = '';
+        const single = text.match(new RegExp(`^(${titles})\\.?\\s+`, 'i'));
+        if (single) {
+            title = single[1].charAt(0).toUpperCase() + single[1].slice(1).toLowerCase();
+            text = text.slice(single[0].length);
+        }
+        const words = text.split(' ').filter(Boolean);
+        if (words.length === 1) return title ? { title, first: '', last: words[0] } : { title, first: words[0], last: '' };
+        const last = words.pop() || '';
+        return { title, first: words.join(' '), last };
+    }
+
+    /**
+     * Whether text is all capitals or all lower case (so its case can be fixed without losing anything).
+     * @param {string} text - Text.
+     * @returns {boolean}
+     */
+    static isOneCase(text) {
+        const letters = String(text ?? '').replace(/[^A-Za-z]/g, '');
+        return letters.length > 1 && (letters === letters.toUpperCase() || letters === letters.toLowerCase());
+    }
+
+    /**
+     * Fixes the case of one word: words with digits in capitals ("2A", "LE1") except ordinals ("1st"),
+     * others lower case, with the capitals put back by `capitalise`.
+     * @param {string} word - Word.
+     * @param {(lower: string) => string} capitalise - Puts the capitals into the lower-case word.
+     * @returns {string} Word.
+     */
+    static caseWord(word, capitalise) {
+        if (/\d/.test(word)) return /^\d+(st|nd|rd|th)$/i.test(word) ? word.toLowerCase() : word.toUpperCase();
+        return capitalise(word.toLowerCase());
+    }
+
+    /**
+     * Title case for names, streets and towns ("JOHN O'BRIEN-SMITH" → "John O'Brien-Smith", "FLAT 2A" → "Flat 2A").
+     * Text already in mixed case is left alone, so "McDonald" or "de Souza" typed correctly stay as they are.
+     * @param {*} value - Text.
+     * @returns {string} Text.
+     */
+    static titleCase(value) {
+        const text = String(value ?? '');
+        if (!SheetImportCore.isOneCase(text)) return text;
+        return text.replace(/\S+/g, (word) => SheetImportCore.caseWord(word, (lower) => lower
+            .replace(/(^|[-(/.&])([a-z])/g, (match, before, letter) => before + letter.toUpperCase())
+            .replace(/^(\(?[A-Z])'([a-z])/, (match, start, letter) => `${start}'${letter.toUpperCase()}`)
+            .replace(/^(\(?)Mc([a-z])/, (match, start, letter) => `${start}Mc${letter.toUpperCase()}`)));
+    }
+
+    /**
+     * Sentence case for text typed all in capitals ("NO HOT WATER. CALL FIRST" → "No hot water. Call first").
+     * Mixed-case text, and short codes or references (one word, or no word of 4+ letters, e.g. "LCC WO"), are left alone.
+     * @param {*} value - Text, may be several lines.
+     * @returns {string} Text.
+     */
+    static sentenceCase(value) {
+        const text = String(value ?? '');
+        const letters = text.replace(/[^A-Za-z]/g, '');
+        const words = text.split(/\s+/).filter(Boolean);
+        if (!letters || letters !== letters.toUpperCase() || words.length < 2 || !/[A-Za-z]{4,}/.test(text)) return text;
+        return text
+            .replace(/\S+/g, (word) => SheetImportCore.caseWord(word, (lower) => (lower === 'i' ? 'I' : lower)))
+            .replace(/(^|[.!?]\s+|\n\s*)([a-z])/g, (match, before, letter) => before + letter.toUpperCase());
+    }
+
+    /**
+     * Writes a UK postcode in capitals with one space before the last three characters.
+     * @param {*} value - Postcode text.
+     * @returns {string} Formatted postcode.
+     */
+    static formatPostcode(value) {
+        const compact = String(value ?? '').toUpperCase().replace(/\s+/g, '');
+        return compact.length > 3 ? `${compact.slice(0, -3)} ${compact.slice(-3)}` : compact;
+    }
+
+    /**
+     * Splits a one-cell address on commas and new lines into street, street2, city and postcode.
+     * @param {*} value - Cell value.
+     * @returns {{street: string, street2: string, city: string, zip: string}|null} Address parts.
+     */
+    static parseAddress(value) {
+        const text = String(value ?? '').trim();
+        if (!text) return null;
+        let parts = text.split(/\s*[,\n\r]+\s*/).map((part) => part.trim()).filter(Boolean);
+        let zip = '';
+        const lastPart = parts[parts.length - 1] || '';
+        const postcode = lastPart.match(/([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})$/i);
+        if (postcode) {
+            zip = SheetImportCore.formatPostcode(postcode[1]);
+            const rest = lastPart.slice(0, postcode.index).trim();
+            parts = parts.slice(0, -1);
+            if (rest) parts.push(rest);
+        }
+        const street = parts.shift() || '';
+        const city = parts.length ? parts.pop() : '';
+        return { street, street2: parts.join(', '), city, zip };
+    }
+
+    /**
+     * Pulls every phone number out of a cell ("07700 900123 / 0116 234 5678"), UK style, without repeats.
+     * @param {*} value - Cell value.
+     * @returns {Array<{number: string, mobile: boolean}>} Numbers as digits, mobiles flagged.
+     */
+    static splitPhones(value) {
+        const text = String(value ?? '');
+        const seen = new Set();
+        const numbers = [];
+        text.split(/\s*(?:[/,;&\n\r|]|\bor\b|\band\b)\s*/i).forEach((piece) => {
+            // "+44 (0)7700…" carries the trunk 0 twice; "ext 2" digits aren't part of the number.
+            let digits = piece.replace(/\(0\)/g, '').replace(/\s*(?:ext\.?|extn\.?|x)\s*\d+\s*$/i, '').replace(/[^\d+]/g, '');
+            if (digits.startsWith('0044')) digits = `+44${digits.slice(4)}`;
+            if (digits.startsWith('+44')) digits = `0${digits.slice(3)}`;
+            else if (digits.startsWith('44') && digits.length === 12) digits = `0${digits.slice(2)}`;
+            digits = digits.replace(/\+/g, '');
+            if (digits.length === 10 && !digits.startsWith('0')) digits = `0${digits}`;
+            if (digits.length < 6 || seen.has(digits)) return;
+            seen.add(digits);
+            numbers.push({ number: digits, mobile: /^07/.test(digits) });
+        });
+        return numbers;
+    }
+
+    /**
+     * A row's phone numbers from several columns, in column order, each number once (sheets often repeat
+     * the same numbers under "Telephone" and "Contact Tel").
+     * @param {Array<*>} cells - Row cells.
+     * @param {Array<{index: number, header: string}>} columns - Phone columns.
+     * @returns {Array<{number: string, mobile: boolean, source: string}>} Numbers with the column they came from.
+     */
+    static collectPhones(cells, columns) {
+        const seen = new Set();
+        const numbers = [];
+        columns.forEach(({ index, header }) => {
+            SheetImportCore.splitPhones(cells[index]).forEach((entry) => {
+                if (seen.has(entry.number)) return;
+                seen.add(entry.number);
+                numbers.push({ ...entry, source: header });
+            });
+        });
+        return numbers;
+    }
+
+    /**
+     * Shares phone numbers out over mobile and other slots. Mobiles fill mobile slots first, then other slots;
+     * other numbers only go in other slots. Slots already filled are skipped.
+     * @param {Array<{number: string, mobile: boolean}>} numbers - Numbers from splitPhones or collectPhones.
+     * @param {{mobile?: string[], other?: string[]}} pool - Field ids per slot type.
+     * @param {Object} [filled={}] - Payload whose filled fields are skipped.
+     * @returns {{values: Object<string, string>, overflow: Array<Object>}} Field values, and the entries with no slot left.
+     */
+    static assignPhones(numbers, pool, filled = {}) {
+        const free = (ids) => (ids || []).filter((id) => !filled[id]);
+        const mobileSlots = free(pool?.mobile);
+        const otherSlots = free(pool?.other);
+        const values = {};
+        const overflow = [];
+        numbers.forEach((entry) => {
+            const slot = (entry.mobile && mobileSlots.shift()) || otherSlots.shift();
+            if (slot) values[slot] = entry.number;
+            else overflow.push(entry);
+        });
+        return { values, overflow };
+    }
+
+    /**
+     * Note lines for phone numbers that had no slot, one per column: "Work Telephone: 07700900123, 07800111222".
+     * @param {Array<{number: string, source?: string}>} overflow - Entries from assignPhones.
+     * @returns {string[]} Note lines.
+     */
+    static phoneNoteLines(overflow) {
+        const bySource = new Map();
+        overflow.forEach(({ number, source }) => {
+            const label = source || 'Other phone';
+            bySource.set(label, [...(bySource.get(label) || []), number]);
+        });
+        return [...bySource].map(([label, numbers]) => `${label}: ${numbers.join(', ')}`);
+    }
+
+    /**
+     * Converts a cell into the value a Knack field expects.
+     * @param {*} raw - Cell value.
+     * @param {{type: string, format?: Object}} field - Knack field type and format.
+     * @param {string} [part=''] - For name/address fields: which part this column holds ('' for the whole value).
+     * @param {Object<string, string>} [valueMap] - For choice and yes/no fields: normalised sheet value → option ('' = don't send).
+     * @returns {{value: *, warning?: string}} value is null when nothing should be sent.
+     */
+    static convertValue(raw, field, part = '', valueMap = null) {
+        const text = SheetImportCore.cellText(raw);
+        if (!text) return { value: null };
+        const format = field?.format || {};
+        const shown = `"${text.length > 40 ? `${text.slice(0, 40)}…` : text}"`;
+        const multiline = typeof raw === 'string' ? raw.trim() : text;
+        const chosen = (piece) => {
+            const key = SheetImportCore.normalizeLabel(piece);
+            return valueMap && key in valueMap ? valueMap[key] : undefined;
+        };
+
+        switch (field?.type) {
+            case 'name': {
+                if (part) return { value: { [part]: SheetImportCore.titleCase(text) } };
+                const name = SheetImportCore.parseName(SheetImportCore.titleCase(text));
+                if (!/title/i.test(String(format.format || ''))) delete name.title;
+                return { value: SheetImportCore.compact(name) };
+            }
+            case 'address': {
+                if (part === 'zip') return { value: { zip: SheetImportCore.formatPostcode(text) } };
+                if (part) return { value: { [part]: SheetImportCore.titleCase(text) } };
+                const address = SheetImportCore.parseAddress(multiline);
+                ['street', 'street2', 'city'].forEach((key) => { address[key] = SheetImportCore.titleCase(address[key]); });
+                return { value: SheetImportCore.compact(address) };
+            }
+            case 'date_time': {
+                const kind = SheetImportCore.dateKind(format);
+                const time = kind === 'date' ? null : SheetImportCore.timeParts(raw);
+                if (kind === 'time') {
+                    return time
+                        ? { value: SheetImportCore.formatTime(time, format.time_format) }
+                        : { value: null, warning: `${shown} is not a time` };
+                }
+                const parts = SheetImportCore.dateParts(raw);
+                // Year < 1900 is Excel's day 0: a time-only cell, with no date in it.
+                if (!parts || parts.year < 1900) return { value: null, warning: `${shown} is not a date` };
+                // Text that looks like it has a time we can't read (25:00, a Z or zone name) is flagged, not dropped.
+                if (kind === 'datetime' && !time && typeof raw === 'string' && /:\d{2}|\d\s*[ap]\.?m\b|\dT\d/i.test(raw)) {
+                    return { value: null, warning: `${shown} has a time that can't be read` };
+                }
+                const date = SheetImportCore.formatDate(parts, format.date_format);
+                // A date cell with no time reads as midnight; send it as a date alone rather than inventing 00:00.
+                const dateOnlyCell = (raw instanceof Date || typeof raw === 'number') && time && !time.hours && !time.minutes;
+                return { value: time && !dateOnlyCell ? `${date} ${SheetImportCore.formatTime(time, format.time_format)}` : date };
+            }
+            case 'boolean': {
+                const picked = chosen(text);
+                if (picked !== undefined) return { value: picked === '' ? null : picked === 'Yes' };
+                const flag = SheetImportCore.parseBoolean(raw);
+                return flag === null ? { value: null, warning: `${shown} is not yes or no` } : { value: flag };
+            }
+            case 'multiple_choice': {
+                const pieces = SheetImportCore.isMultiChoice(field) ? SheetImportCore.splitChoices(text) : [text];
+                const picks = pieces.map((piece) => {
+                    const picked = chosen(piece);
+                    return picked !== undefined ? picked : SheetImportCore.suggestChoice(piece, field);
+                });
+                const matched = [...new Set(picks.filter(Boolean))];
+                if (!matched.length) {
+                    // Every value set to "Don't send" on purpose: no warning.
+                    const dropped = pieces.every((piece) => chosen(piece) === '');
+                    return dropped ? { value: null } : { value: null, warning: `${shown} is not one of the options` };
+                }
+                return { value: SheetImportCore.isMultiChoice(field) ? matched : matched[0] };
+            }
+            case 'phone': {
+                const phone = SheetImportCore.splitPhones(text)[0];
+                return phone ? { value: phone.number } : { value: null, warning: `${shown} is not a phone number` };
+            }
+            case 'email': {
+                const email = text.match(/[^\s@,;<>]+@[^\s@,;<>]+\.[a-z]{2,}/i);
+                return email ? { value: email[0].toLowerCase() } : { value: null, warning: `${shown} is not an email address` };
+            }
+            case 'number':
+            case 'currency':
+            case 'rating': {
+                const number = typeof raw === 'number' ? raw : Number(text.replace(/[£$€,\s]/g, ''));
+                return Number.isFinite(number) ? { value: number } : { value: null, warning: `${shown} is not a number` };
+            }
+            case 'paragraph_text':
+                return { value: SheetImportCore.sentenceCase(multiline.split(/\r?\n/).map((line) => line.replace(/[ \t]+/g, ' ').trim()).join('\n')) };
+            case 'rich_text':
+                return { value: multiline };
+            case 'short_text':
+                return { value: SheetImportCore.sentenceCase(text) };
+            default:
+                return { value: text };
+        }
+    }
+
+    /**
+     * The options a choice or yes/no field takes, or null for any other field.
+     * @param {{type: string, format?: Object}} field - Knack field.
+     * @returns {string[]|null} Options.
+     */
+    static choiceOptions(field) {
+        if (field?.type === 'boolean') return ['Yes', 'No'];
+        if (field?.type === 'multiple_choice') return (field.format?.options || []).map(String);
+        return null;
+    }
+
+    /**
+     * Whether a choice field takes more than one option (checkboxes / multi select).
+     * @param {{type: string, format?: Object}} field - Knack field.
+     * @returns {boolean}
+     */
+    static isMultiChoice(field) {
+        return field?.type === 'multiple_choice' && ['checkboxes', 'multi'].includes(field.format?.type);
+    }
+
+    /**
+     * Splits a multi-choice cell ("Gas, Electric; Water") into its values.
+     * @param {string} text - Cell text.
+     * @returns {string[]} Values.
+     */
+    static splitChoices(text) {
+        return String(text ?? '').split(/\s*[,;]\s*/).filter(Boolean);
+    }
+
+    /**
+     * Best guess at the option one sheet value means: same text, close match, then yes/no words (Y → Yes).
+     * @param {string} text - Sheet value.
+     * @param {{type: string, format?: Object}} field - Choice or yes/no field.
+     * @returns {string} Option, or '' when there is no good guess.
+     */
+    static suggestChoice(text, field) {
+        // Remembered per field: the same few values come up on every row, and fuzzy matching is the slow part.
+        const caches = SheetImportCore.suggestCaches || (SheetImportCore.suggestCaches = new WeakMap());
+        let cache = field && typeof field === 'object' ? caches.get(field) : new Map();
+        if (!cache) caches.set(field, (cache = new Map()));
+        if (cache.has(text)) return cache.get(text);
+        const flag = SheetImportCore.parseBoolean(text);
+        let suggestion;
+        if (field?.type === 'boolean') {
+            suggestion = flag === null ? '' : flag ? 'Yes' : 'No';
+        } else {
+            const options = SheetImportCore.choiceOptions(field) || [];
+            suggestion = SheetImportCore.matchChoice(text, options)
+                || (flag === null ? '' : SheetImportCore.matchChoice(flag ? 'Yes' : 'No', options) || '');
+        }
+        cache.set(text, suggestion);
+        return suggestion;
+    }
+
+    /**
+     * The different values in one column, most common first.
+     * @param {Array<{cells: Array<*>}>} rows - Sheet rows.
+     * @param {number} index - Column index.
+     * @param {boolean} [many=false] - Split each cell into several values (multi-choice fields).
+     * @returns {Array<{key: string, text: string, count: number}>} key is the normalised value.
+     */
+    static distinctValues(rows, index, many = false) {
+        const seen = new Map();
+        rows.forEach((row) => {
+            const text = SheetImportCore.cellText(row.cells[index]);
+            if (!text) return;
+            (many ? SheetImportCore.splitChoices(text) : [text]).forEach((piece) => {
+                const key = SheetImportCore.normalizeLabel(piece);
+                if (!key) return;
+                const entry = seen.get(key) || { key, text: piece, count: 0 };
+                entry.count += 1;
+                seen.set(key, entry);
+            });
+        });
+        return [...seen.values()].sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
+    }
+
+    /**
+     * Drops empty keys from a parts object; returns null when nothing is left.
+     * @param {Object|null} parts - Name or address parts.
+     * @returns {Object|null} Parts with values only.
+     */
+    static compact(parts) {
+        if (!parts) return null;
+        const kept = Object.fromEntries(Object.entries(parts).filter(([, v]) => v !== '' && v !== null && v !== undefined));
+        return Object.keys(kept).length ? kept : null;
+    }
+
+    /**
+     * The word for a count: singular for 1, otherwise the plural (given, or made by English rules).
+     * Only the last word changes, so "Property note" → "Property notes".
+     * @param {number} count - How many.
+     * @param {string} singular - Word for one.
+     * @param {string} [plural] - Word for any other count.
+     * @returns {string} Word to show.
+     */
+    static plural(count, singular, plural) {
+        if (count === 1) return singular;
+        if (plural) return plural;
+        if (/[^aeiou]y$/i.test(singular)) return `${singular.slice(0, -1)}ies`;
+        if (/(s|x|z|ch|sh)$/i.test(singular)) return `${singular}es`;
+        return `${singular}s`;
+    }
+
+    /**
+     * Combines a new value with one already in the payload: parts objects merge, text joins, anything else is replaced.
+     * @param {*} current - Value already set.
+     * @param {*} next - New value.
+     * @param {string} [type=''] - Knack field type.
+     * @returns {*} Combined value.
+     */
+    static mergeValue(current, next, type = '') {
+        if (current === undefined || current === null || current === '') return next;
+        const isParts = (v) => v && typeof v === 'object' && !Array.isArray(v);
+        if (isParts(current) && isParts(next)) return { ...current, ...next };
+        if (typeof current === 'string' && typeof next === 'string') {
+            return ['paragraph_text', 'rich_text'].includes(type) ? `${current}\n${next}` : `${current} ${next}`;
+        }
+        return next;
+    }
+
+    /**
+     * Keeps only saved column choices in the shape KnackSheetImport writes: heading → mapping text,
+     * `values:` heading → `{mapping, values}`, and the batch key → values per target.
+     * @param {*} saved - Loaded value.
+     * @param {string} batchKey - Key holding "Fields not in the sheet" values.
+     * @returns {{clean: Object, dropped: number}} Usable entries, and how many were left out.
+     */
+    static cleanSaved(saved, batchKey) {
+        const isObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+        if (saved === null || saved === undefined) return { clean: {}, dropped: 0 };
+        if (!isObject(saved)) return { clean: {}, dropped: 1 };
+        const clean = {};
+        let dropped = 0;
+        Object.entries(saved).forEach(([key, value]) => {
+            let ok = typeof value === 'string';
+            if (key === batchKey) ok = isObject(value) && Object.values(value).every(isObject);
+            else if (key.startsWith('values:')) ok = isObject(value) && typeof value.mapping === 'string' && isObject(value.values);
+            if (ok) clean[key] = value;
+            else dropped += 1;
+        });
+        return { clean, dropped };
+    }
+
+    /**
+     * Whether a payload value counts as "not sent".
+     * @param {*} value - Payload value.
+     * @returns {boolean} True when blank.
+     */
+    static isBlank(value) {
+        if (value === null || value === undefined || value === '') return true;
+        if (Array.isArray(value)) return value.length === 0;
+        if (typeof value === 'object') return Object.keys(value).length === 0;
+        return false;
+    }
+}
+
+/**
+ * Spreadsheet import wizard: choose (cascading selects + file) → match columns (3-value preview, auto-matched)
+ * → check rows → create records through the app's Add forms. Record writes go one row at a time, target by target,
+ * so a Job can link to the Property created (or found) just before it.
+ *
+ * Config (all app-specific behaviour lives here):
+ * - `id` {string} key for the saved column choices.
+ * - `container` {string|Element} where to draw the wizard.
+ * - `title`, `intro` {string} heading text.
+ * - `cascade` [{key, label, required, options(ctx) → Promise<[{value, label}]>, default(options, ctx) → value}]
+ *   Each select reloads when one above it changes. `ctx.selections[key]` / `ctx.labels[key]` hold the choices.
+ * - `targets` [{key, label, pluralLabel (optional; otherwise made from `label`), viewId, fixed(ctx) → {fieldId: value}, link: {fieldId, target}, notesFieldId,
+ *   exclude: [fieldId], find: {load(ctx), keyOf(obj, 'payload'|'record') → string[]},
+ *   duplicates: {load(ctx) → Iterable<string>, keyOf(payload) → string|string[], message},
+ *   adjust(payload, ctx) → {fieldId: value} (values set from the row's other values, shown on the check step),
+ *   beforeCreate(payload, {row, target, ctx}) → payload, notesUpdateViewId}] in save order. `viewId` must be an Add form
+ *   on this page. `notesUpdateViewId` (a table on this page with the notes field as an inline-editable column) lets
+ *   extra phone numbers be written to a record that already exists.
+ * - `aliases` {mappingValue: [sheet headings]} where mappingValue is `target:field_x[:part]`, `phones`, `notes:target` or `ignore`.
+ * - `phonePool` {target, mobile: [fieldId], other: [fieldId]} enables the "Phone numbers" choice.
+ * - `defaults(ctx)` → {targetKey: {fieldId: value}} prefill for "Fields not in the sheet".
+ * - `validateRow(row, ctx)` → string[] errors that stop a row.
+ * - `rowLabel(row)` → string shown for a row on the check step.
+ * - `mappingStore` {load(ctx) → Object|Promise<Object>, save(map, ctx) → void|Promise}; defaults to localStorage.
+ *   Loaded once when step 1 moves on, saved (only when changed) when step 2 moves on.
+ * - `mappingHint` {string} footer text on step 2 saying where choices are remembered.
+ * - `onComplete(summary, ctx)` after an import.
+ * Missing values are never sent, so a required field with no value is left out rather than blocking the row.
+ */
+class KnackSheetImport {
+    /**
+     * Key in the saved template for "Fields not in the sheet" values (headings are normalised, so never contain ":").
+     * @returns {string}
+     */
+    static get BATCH_KEY() {
+        return 'batch:fields';
+    }
+
+    /**
+     * @param {Object} config - See the class description.
+     */
+    constructor(config = {}) {
+        this.config = { previewCount: 3, threshold: 0.8, xlsxUrl: KNACK_SHEET_IMPORT_XLSX_URL, cascade: [], targets: [], aliases: {}, ...config };
+        this.id = this.config.id || 'sheet-import';
+        this.root = null;
+        this.targets = [];
+        this.state = this.freshState();
+    }
+
+    /**
+     * Empty wizard state (cascade choices are kept separately so "Import another" keeps them).
+     * @returns {Object} State.
+     */
+    freshState() {
+        return {
+            selections: this.state?.selections || {},
+            labels: this.state?.labels || {},
+            workbook: null,
+            fileName: '',
+            sheetName: '',
+            rows: [],
+            headerIndex: 0,
+            columns: [],
+            body: [],
+            mapping: [],
+            valueMaps: {},
+            saved: {},
+            savedProblem: '',
+            batch: {},
+            review: [],
+            lookups: {}
+        };
+    }
+
+    /**
+     * Context passed to every config callback.
+     * @returns {{selections: Object, labels: Object, importer: KnackSheetImport}}
+     */
+    get ctx() {
+        return { selections: { ...this.state.selections }, labels: { ...this.state.labels }, importer: this };
+    }
+
+    /**
+     * Draws the wizard into the container.
+     * @param {string|Element} [container] - Overrides `config.container`.
+     * @returns {Promise<void>}
+     */
+    async mount(container = this.config.container) {
+        const host = resolveElement(container?.jquery ? container[0] : container);
+        if (!host) throw new Error(`KnackSheetImport: container ${container} not found`);
+        KnackSheetImport.injectStyles();
+        this.root = KnackSheetImport.el('div', { class: 'ksi' });
+        host.replaceChildren(this.root);
+        try {
+            this.targets = this.config.targets.map((target) => this.resolveTarget(target));
+        } catch (error) {
+            this.root.append(KnackSheetImport.el('div', { class: 'ksi-alert is-bad', role: 'alert' }, [KnackSheetImport.icon('alert'), error.message]));
+            throw error;
+        }
+        await this.renderChoose();
+    }
+
+    /**
+     * Reads a target's Add form: scene key and the fields a sheet column can fill.
+     * @param {Object} target - Target config.
+     * @returns {Object} Target config plus `sceneKey` and `fields`.
+     */
+    resolveTarget(target) {
+        const view = knackNavigator.getViewObject(target.viewId);
+        const sceneKey = knackNavigator.getSceneInfoForView(target.viewId)?.key;
+        if (!view || !sceneKey) throw new Error(`Import form ${target.viewId} (${target.label}) is not on this page.`);
+        const skipTypes = new Set(['connection', 'file', 'image', 'signature', 'password', 'user_roles']);
+        const locked = new Set([target.link?.fieldId, ...(target.exclude || [])].map((id) => knackNavigator.normalizeFieldId(id || '')));
+        const seen = new Set();
+        const inputs = (view.groups || []).flatMap((group) => (group?.columns || []).flatMap((column) => column?.inputs || []));
+        const fields = inputs.map((input) => {
+            const id = knackNavigator.normalizeFieldId(input?.field?.key || input?.id || '');
+            if (!id || seen.has(id) || locked.has(id)) return null;
+            seen.add(id);
+            const meta = knackNavigator.getFieldMeta(id) || {};
+            const type = meta.type || input.type || '';
+            if (skipTypes.has(type) || knackValueResolver.isReadOnlyFieldType(type)) return null;
+            return { id, label: input.label || meta.name || id, name: meta.name || '', type, format: meta.format || input.format || {}, required: Boolean(meta.required || input.required) };
+        }).filter(Boolean);
+        return { ...target, sceneKey, fields };
+    }
+
+    /**
+     * Finds a field on a target.
+     * @param {string} targetKey - Target key.
+     * @param {string} fieldId - Field id.
+     * @returns {Object|undefined} Field.
+     */
+    fieldOf(targetKey, fieldId) {
+        return this.targets.find((target) => target.key === targetKey)?.fields.find((field) => field.id === fieldId);
+    }
+
+    /* ---------- Step 1: choose ---------- */
+
+    /**
+     * Draws the cascade selects and the file picker.
+     * @returns {Promise<void>}
+     */
+    async renderChoose() {
+        const el = KnackSheetImport.el;
+        const cascadeBox = el('div', { class: 'ksi-grid' });
+        const fileInput = el('input', { type: 'file', accept: '.xlsx,.xls,.csv,.ods', class: 'ksi-file-input', 'aria-label': 'Spreadsheet file (xlsx, xls, csv or ods)' });
+        const dropText = el('span', { class: 'ksi-drop-text' });
+        const drop = el('label', { class: 'ksi-drop' }, [fileInput, KnackSheetImport.icon('file', 'ksi-drop-icon'), dropText]);
+        const fileInfo = el('div', { class: 'ksi-fileinfo' });
+        const hint = el('span', { class: 'ksi-hint', 'aria-live': 'polite' });
+        const next = el('button', { type: 'button', class: 'kn-button is-primary', disabled: '' }, 'Next: match columns');
+
+        this.frame(1, [
+            el('section', { class: 'ksi-section' }, [el('h3', { class: 'ksi-section-title' }, this.config.cascadeTitle || 'Where the rows go'), cascadeBox]),
+            el('section', { class: 'ksi-section' }, [el('h3', { class: 'ksi-section-title' }, 'Spreadsheet'), drop, fileInfo])
+        ], { hint, primary: next });
+
+        const selects = this.config.cascade.map((item) => {
+            const select = el('select', { 'data-key': item.key });
+            cascadeBox.append(el('label', { class: 'ksi-field' }, [
+                el('span', { class: 'ksi-label' }, KnackSheetImport.labelText(item.label, item.required)),
+                select
+            ]));
+            return select;
+        });
+
+        const showFile = () => {
+            const loaded = Boolean(this.state.workbook);
+            drop.classList.toggle('is-loaded', loaded);
+            dropText.replaceChildren(...(loaded
+                ? [el('strong', {}, this.state.fileName), el('span', { class: 'ksi-sub' }, `${KnackSheetImport.count(this.state.body.length, 'row')} · ${KnackSheetImport.count(this.state.columns.filter((c) => !c.empty).length, 'filled column')} · click or drop to change`)]
+                : [el('strong', {}, 'Drop a spreadsheet here, or click to choose'), el('span', { class: 'ksi-sub' }, 'Excel (.xlsx, .xls), CSV or OpenDocument')]));
+        };
+
+        const refreshNext = () => {
+            showFile();
+            const missing = this.config.cascade.find((item) => item.required && !this.state.selections[item.key]);
+            next.disabled = Boolean(missing) || !this.state.body.length;
+            hint.textContent = missing ? `Choose the ${missing.label.toLowerCase()} to continue`
+                : !this.state.workbook ? 'Choose a spreadsheet to continue'
+                    : !this.state.body.length ? 'No rows under the heading row'
+                        : `${KnackSheetImport.count(this.state.body.length, 'row')} ready to match`;
+        };
+
+        // A newer change starts a new run; an older run's slow response must not overwrite its lists.
+        let loadRun = 0;
+        const loadFrom = async (start) => {
+            const run = ++loadRun;
+            for (let i = start; i < this.config.cascade.length; i++) {
+                const item = this.config.cascade[i];
+                const select = selects[i];
+                select.disabled = true;
+                select.replaceChildren(el('option', { value: '' }, 'Loading…'));
+                let options = [];
+                try {
+                    options = await item.options(this.ctx) || [];
+                } catch (error) {
+                    console.error(`KnackSheetImport: loading ${item.key} failed`, error);
+                }
+                if (run !== loadRun) return;
+                const current = this.state.selections[item.key];
+                const keep = options.some((option) => option.value === current) ? current : '';
+                const picked = keep || item.default?.(options, this.ctx) || (options.length === 1 ? options[0].value : '');
+                select.replaceChildren(el('option', { value: '' }, options.length ? '— choose —' : '— none —'),
+                    ...options.map((option) => el('option', { value: option.value }, option.label)));
+                select.value = picked || '';
+                select.disabled = !options.length;
+                this.setSelection(item.key, select);
+            }
+            refreshNext();
+        };
+
+        selects.forEach((select, i) => {
+            select.addEventListener('change', async () => {
+                this.setSelection(this.config.cascade[i].key, select);
+                refreshNext();
+                await loadFrom(i + 1);
+            });
+        });
+
+        const loadFile = async (file) => {
+            if (!file) return;
+            fileInfo.replaceChildren(el('div', { class: 'ksi-loading', role: 'status' }, [el('span', { class: 'ksi-spinner', 'aria-hidden': 'true' }), `Reading ${file.name}…`]));
+            try {
+                await this.readFile(file);
+                fileInfo.replaceChildren(this.renderSheetPicker(refreshNext));
+            } catch (error) {
+                console.error('KnackSheetImport: reading the file failed', error);
+                Object.assign(this.state, { workbook: null, body: [], columns: [], fileName: '' });
+                fileInfo.replaceChildren(el('div', { class: 'ksi-alert is-bad', role: 'alert' }, [KnackSheetImport.icon('alert'), `Could not read that file: ${error.message}`]));
+            }
+            refreshNext();
+        };
+        fileInput.addEventListener('change', () => loadFile(fileInput.files?.[0]));
+        ['dragenter', 'dragover'].forEach((type) => drop.addEventListener(type, (event) => {
+            event.preventDefault();
+            drop.classList.add('is-over');
+        }));
+        drop.addEventListener('dragleave', () => drop.classList.remove('is-over'));
+        drop.addEventListener('drop', (event) => {
+            event.preventDefault();
+            drop.classList.remove('is-over');
+            loadFile(event.dataTransfer?.files?.[0]);
+        });
+
+        next.addEventListener('click', async () => {
+            next.disabled = true;
+            next.setAttribute('aria-busy', 'true');
+            this.state.saved = await this.loadSavedMapping();
+            // Start "Fields not in the sheet" again from this template's saved values and defaults.
+            this.state.batch = {};
+            next.removeAttribute('aria-busy');
+            this.renderMap();
+        });
+
+        if (this.state.workbook) fileInfo.replaceChildren(this.renderSheetPicker(refreshNext));
+        refreshNext();
+        await loadFrom(0);
+    }
+
+    /**
+     * Stores a cascade select's value and label.
+     * @param {string} key - Cascade key.
+     * @param {HTMLSelectElement} select - The select.
+     */
+    setSelection(key, select) {
+        this.state.selections[key] = select.value || '';
+        this.state.labels[key] = select.value ? select.selectedOptions[0]?.textContent || '' : '';
+    }
+
+    /**
+     * Sheet choice (when there is more than one) and heading-row choice.
+     * @param {Function} onChange - Called after either changes.
+     * @returns {Element} Controls.
+     */
+    renderSheetPicker(onChange) {
+        const el = KnackSheetImport.el;
+        const names = this.state.workbook.SheetNames;
+        const sheetSelect = el('select', {}, names.map((name) => el('option', { value: name }, name)));
+        sheetSelect.value = this.state.sheetName;
+        const headerInput = el('input', { type: 'number', min: '1', max: String(Math.max(1, this.state.rows.length)), value: String(this.state.headerIndex + 1), class: 'ksi-small' });
+        sheetSelect.addEventListener('change', () => {
+            this.selectSheet(sheetSelect.value);
+            headerInput.value = String(this.state.headerIndex + 1);
+            onChange();
+        });
+        headerInput.addEventListener('change', () => {
+            this.setHeaderRow(Math.max(0, Number(headerInput.value) - 1));
+            onChange();
+        });
+        return el('div', { class: 'ksi-sheetpicker' }, [
+            names.length > 1 ? el('label', { class: 'ksi-inline' }, [el('span', { class: 'ksi-label' }, 'Sheet'), sheetSelect]) : '',
+            el('label', { class: 'ksi-inline' }, [el('span', { class: 'ksi-label' }, 'Headings on row'), headerInput])
+        ]);
+    }
+
+    /**
+     * Loads SheetJS from the CDN the first time it is needed.
+     * @returns {Promise<Object>} The XLSX global.
+     */
+    loadXlsx() {
+        if (window.XLSX?.read) return Promise.resolve(window.XLSX);
+        if (!KnackSheetImport.xlsxPromise) {
+            KnackSheetImport.xlsxPromise = new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = this.config.xlsxUrl;
+                script.onload = () => resolve(window.XLSX);
+                script.onerror = () => {
+                    KnackSheetImport.xlsxPromise = null;
+                    reject(new Error('the spreadsheet reader did not load'));
+                };
+                document.head.appendChild(script);
+            });
+        }
+        return KnackSheetImport.xlsxPromise;
+    }
+
+    /**
+     * Reads the workbook and opens the first sheet with data.
+     * @param {File} file - Chosen file.
+     * @returns {Promise<void>}
+     */
+    async readFile(file) {
+        const XLSX = await this.loadXlsx();
+        const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+        this.state.workbook = workbook;
+        this.state.fileName = file.name;
+        const firstWithData = workbook.SheetNames.find((name) => workbook.Sheets[name]?.['!ref']) || workbook.SheetNames[0];
+        this.selectSheet(firstWithData);
+    }
+
+    /**
+     * Opens a sheet and finds its heading row.
+     * @param {string} name - Sheet name.
+     */
+    selectSheet(name) {
+        const sheet = this.state.workbook.Sheets[name];
+        this.state.sheetName = name;
+        this.state.rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '', blankrows: false });
+        this.setHeaderRow(SheetImportCore.findHeaderRow(this.state.rows));
+    }
+
+    /**
+     * Sets the heading row and rebuilds the columns.
+     * @param {number} index - Zero-based row index.
+     */
+    setHeaderRow(index) {
+        this.state.headerIndex = Math.min(index, Math.max(0, this.state.rows.length - 1));
+        const { columns, body } = SheetImportCore.buildColumns(this.state.rows, this.state.headerIndex, this.config.previewCount);
+        this.state.columns = columns;
+        this.state.body = body;
+        this.state.mapping = [];
+        this.state.valueMaps = {};
+    }
+
+    /* ---------- Step 2: match columns ---------- */
+
+    /**
+     * Every choice a column can map to.
+     * @returns {Array<{value: string, label: string, group: string, names?: string[], multi?: boolean}>}
+     */
+    mappingOptions() {
+        const partNames = {
+            name: { title: ['Title'], first: ['First name', 'Forename', 'Given name'], last: ['Last name', 'Surname', 'Family name'] },
+            address: { street: ['Address line 1', 'Address 1', 'Street'], street2: ['Address line 2', 'Address 2'], city: ['Town', 'City'], zip: ['Postcode', 'Post code', 'Zip'] }
+        };
+        const options = [];
+        this.targets.forEach((target) => {
+            target.fields.forEach((field) => {
+                const names = [field.label, field.name].filter(Boolean);
+                options.push({ value: `${target.key}:${field.id}`, label: field.label, group: target.label, names });
+                Object.entries(partNames[field.type] || {}).forEach(([part, partLabels]) => {
+                    options.push({ value: `${target.key}:${field.id}:${part}`, label: `${field.label} – ${part === 'zip' ? 'postcode' : part}`, group: target.label, names: partLabels });
+                });
+            });
+        });
+        const other = 'Other';
+        if (this.config.phonePool) {
+            options.push({ value: 'phones', label: 'Phone numbers (sorted into mobile / other)', group: other, multi: true, names: ['Phone', 'Phone numbers', 'Contact number', 'Telephone'] });
+        }
+        this.targets.filter((target) => target.notesFieldId).forEach((target) => {
+            options.push({ value: `notes:${target.key}`, label: `Add to ${target.label} notes`, group: other, multi: true });
+        });
+        options.push({ value: 'ignore', label: 'Don\'t import', group: other, multi: true });
+        return options;
+    }
+
+    /**
+     * Draws the column matching table and the "fields not in the sheet" section.
+     */
+    renderMap() {
+        const el = KnackSheetImport.el;
+        const options = this.mappingOptions();
+        if (!this.state.mapping.length) {
+            this.state.mapping = SheetImportCore.autoMap(this.state.columns, options, {
+                aliases: this.config.aliases,
+                saved: this.state.saved,
+                fallback: 'ignore',
+                threshold: this.config.threshold
+            });
+        }
+
+        const groups = [...new Set(options.map((option) => option.group))];
+        const buildSelect = () => el('select', { class: 'ksi-map-select' }, groups.map((group) => el('optgroup', { label: group },
+            options.filter((option) => option.group === group).map((option) => el('option', { value: option.value }, option.label)))));
+        const kindOf = (value) => (value === 'ignore' ? 'ignored' : value.startsWith('notes:') ? 'notes' : 'matched');
+        const active = this.state.columns.filter((column) => !column.empty);
+
+        const batchBox = el('div', { class: 'ksi-batch' });
+        const phoneBox = el('div', { 'aria-live': 'polite' });
+        let chips;
+        const showCounts = () => {
+            const count = (kind) => active.filter((column) => kindOf(this.state.mapping[column.index]) === kind).length;
+            KnackSheetImport.setChip(chips, 'all', `All ${active.length}`);
+            KnackSheetImport.setChip(chips, 'matched', `${count('matched')} matched to fields`);
+            KnackSheetImport.setChip(chips, 'notes', `${count('notes')} into notes`);
+            KnackSheetImport.setChip(chips, 'ignored', `${count('ignored')} not imported`);
+        };
+
+        const saved = this.state.saved;
+        const body = active.map((column) => {
+            const select = buildSelect();
+            select.value = this.state.mapping[column.index];
+            select.setAttribute('aria-label', `Where ${column.header} goes`);
+            const samples = column.preview.filter((value) => value !== '');
+            const extra = el('div', { class: 'ksi-map-extra' });
+            const row = el('tr', { class: 'ksi-row' }, [
+                el('td', {}, [el('div', { class: 'ksi-colname' }, column.header), el('div', { class: 'ksi-sub' }, `Column ${SheetImportCore.columnLetter(column.index)}`)]),
+                el('td', {}, samples.length
+                    ? el('div', { class: 'ksi-samples' }, samples.map((value) => el('span', { class: 'ksi-sample', title: value }, value)))
+                    : el('span', { class: 'ksi-sub' }, 'No values')),
+                el('td', { class: 'ksi-arrow' }, KnackSheetImport.icon('arrow')),
+                el('td', {}, [select, extra])
+            ]);
+            const mark = () => {
+                const kind = kindOf(select.value);
+                row.dataset.kind = kind;
+                ['matched', 'notes', 'ignored'].forEach((name) => row.classList.toggle(`is-${name}`, name === kind));
+            };
+            mark();
+            this.renderColumnExtra(column, extra, saved);
+            select.addEventListener('change', () => {
+                this.state.mapping[column.index] = select.value;
+                delete this.state.valueMaps[column.index];
+                mark();
+                showCounts();
+                this.renderColumnExtra(column, extra, saved);
+                this.renderPhoneSummary(phoneBox);
+                this.renderBatch(batchBox);
+            });
+            return row;
+        });
+
+        chips = KnackSheetImport.chips([
+            { kind: 'all', text: '' },
+            { kind: 'matched', text: '', dot: true },
+            { kind: 'notes', text: '', dot: true },
+            { kind: 'ignored', text: '', dot: true }
+        ], (kind) => body.forEach((row) => row.classList.toggle('is-hidden', kind !== 'all' && row.dataset.kind !== kind)));
+
+        const back = el('button', { type: 'button', class: 'kn-button' }, 'Back');
+        const next = el('button', { type: 'button', class: 'kn-button is-primary' }, 'Next: check rows');
+        back.addEventListener('click', () => this.renderChoose());
+        next.addEventListener('click', () => {
+            this.saveMapping();
+            this.renderReview();
+        });
+
+        this.frame(2, [
+            this.state.savedProblem ? el('div', { class: 'ksi-alert is-warn', role: 'alert' }, [KnackSheetImport.icon('alert'), this.state.savedProblem]) : '',
+            el('p', { class: 'ksi-lead' }, 'Check where each column goes. The first values from the sheet are shown to help.'),
+            el('div', { class: 'ksi-toolbar' }, chips),
+            el('div', { class: 'ksi-scroll' }, el('table', { class: 'ksi-table' }, [
+                el('thead', {}, el('tr', {}, [el('th', {}, 'Sheet column'), el('th', {}, 'First values'), el('th', { 'aria-hidden': 'true' }, ''), el('th', {}, 'Goes to')])),
+                el('tbody', {}, body)
+            ])),
+            phoneBox,
+            batchBox
+        ], { back, hint: el('span', { class: 'ksi-hint' }, this.config.mappingHint || 'Your choices are remembered for sheets with the same headings'), primary: next });
+        showCounts();
+        this.renderPhoneSummary(phoneBox);
+        this.renderBatch(batchBox);
+    }
+
+    /**
+     * Under the column list: how many phone numbers fit per row, and how many rows have more (repeats counted once).
+     * @param {Element} box - Container to fill.
+     */
+    renderPhoneSummary(box) {
+        const el = KnackSheetImport.el;
+        const pool = this.config.phonePool;
+        const columns = pool ? this.phoneColumns() : [];
+        box.replaceChildren();
+        if (!columns.length) return;
+        const slotIds = [...(pool.mobile || []), ...(pool.other || [])];
+        const slotNames = slotIds.map((id) => this.fieldOf(pool.target, id)?.label || id).join(', ');
+        const over = this.state.body.filter((row) => SheetImportCore.assignPhones(SheetImportCore.collectPhones(row.cells, columns), pool).overflow.length).length;
+        const overflowTarget = this.phoneOverflowTarget();
+        const text = over
+            ? `${over} of ${KnackSheetImport.count(this.state.body.length, 'row')} ${over === 1 ? 'has' : 'have'} numbers that don't fit. The extra go to ${overflowTarget.label} notes, labelled with their column. Set a column to "Don't import" to leave its numbers out.`
+            : `Every row fits in ${slotIds.length} phone fields.`;
+        box.append(el('div', { class: `ksi-alert ksi-phones${over ? ' is-warn' : ''}` }, [
+            KnackSheetImport.icon(over ? 'alert' : 'check'),
+            el('div', {}, [
+                el('strong', {}, `Phone numbers: room for ${slotIds.length} per row (${slotNames}). Repeated numbers are counted once.`),
+                el('div', {}, text)
+            ])
+        ]));
+    }
+
+    /**
+     * Under a column's "Goes to" select: how a whole name/address splits into parts, or the value matching
+     * for a choice or yes/no field.
+     * @param {Object} column - Sheet column.
+     * @param {Element} box - Container to fill.
+     * @param {Object} saved - Saved choices (column matches and value matches).
+     */
+    renderColumnExtra(column, box, saved) {
+        const mapping = this.state.mapping[column.index] || '';
+        const [targetKey, fieldId, part] = mapping.split(':');
+        const field = /^field_/.test(fieldId || '') ? this.fieldOf(targetKey, fieldId) : null;
+        box.replaceChildren();
+        if (!field) return;
+        if (['name', 'address'].includes(field.type) && !part) {
+            box.append(this.renderSplitPreview(column, field));
+        } else if (SheetImportCore.choiceOptions(field)) {
+            if (!this.state.valueMaps[column.index]) {
+                const stored = saved[`values:${SheetImportCore.normalizeLabel(column.header)}`];
+                this.state.valueMaps[column.index] = stored?.mapping === mapping ? { ...stored.values } : {};
+            }
+            box.append(this.renderValueMatch(column, field));
+        }
+    }
+
+    /**
+     * Shows how the first few values of a whole-name or whole-address column split into the field's parts.
+     * @param {Object} column - Sheet column.
+     * @param {Object} field - Name or address field.
+     * @returns {Element|string} Preview.
+     */
+    renderSplitPreview(column, field) {
+        const el = KnackSheetImport.el;
+        const partLabels = field.type === 'address'
+            ? { street: 'Line 1', street2: 'Line 2', city: 'Town', zip: 'Postcode' }
+            : { title: 'Title', first: 'First', last: 'Last' };
+        const expected = field.type === 'address' ? ['street', 'street2', 'city', 'zip'] : ['first', 'last'];
+        const samples = this.state.body.map((row) => row.cells[column.index]).filter((raw) => SheetImportCore.cellText(raw)).slice(0, this.config.previewCount);
+        if (!samples.length) return '';
+        return el('div', { class: 'ksi-split' }, [
+            el('div', { class: 'ksi-split-title' }, 'Splits into'),
+            ...samples.map((raw) => {
+                const parts = SheetImportCore.convertValue(raw, field).value || {};
+                const keys = Object.keys(partLabels).filter((key) => parts[key] || expected.includes(key));
+                return el('ul', { class: 'ksi-parts', 'aria-label': `How "${SheetImportCore.cellText(raw)}" splits` }, keys.map((key) => el('li', { class: parts[key] ? 'ksi-part' : 'ksi-part is-empty' }, [
+                    el('span', { class: 'ksi-part-name' }, partLabels[key]),
+                    parts[key] || 'blank'
+                ])));
+            })
+        ]);
+    }
+
+    /**
+     * Lets the user say which option each different sheet value means, for a choice or yes/no field.
+     * Unset values use the best guess (`suggestChoice`); a choice is kept in `state.valueMaps`.
+     * @param {Object} column - Sheet column.
+     * @param {Object} field - Choice or yes/no field.
+     * @returns {Element|string} Matching panel.
+     */
+    renderValueMatch(column, field) {
+        const el = KnackSheetImport.el;
+        const limit = 50;
+        const map = this.state.valueMaps[column.index];
+        const values = SheetImportCore.distinctValues(this.state.body, column.index, SheetImportCore.isMultiChoice(field));
+        if (!values.length) return '';
+        const options = SheetImportCore.choiceOptions(field);
+        const effective = (entry) => (entry.key in map ? map[entry.key] : SheetImportCore.suggestChoice(entry.text, field));
+        const summary = el('summary', {});
+        const panel = el('details', { class: 'ksi-values' }, summary);
+        const showSummary = () => {
+            const unmatched = values.filter((entry) => !effective(entry)).length;
+            const parts = [`${values.length} value${values.length === 1 ? '' : 's'}`];
+            parts.push(unmatched ? `${unmatched} not sent` : 'all matched');
+            summary.replaceChildren(el('span', {}, `Match values: ${parts.join(', ')}`));
+            panel.classList.toggle('is-warn', Boolean(unmatched));
+        };
+        const list = el('ul', { class: 'ksi-value-list' }, values.slice(0, limit).map((entry) => {
+            const select = el('select', { 'aria-label': `${field.label} for "${entry.text}"` }, [
+                el('option', { value: '' }, 'Don\'t send'),
+                ...options.map((option) => el('option', { value: option }, option))
+            ]);
+            select.value = effective(entry);
+            const item = el('li', { class: 'ksi-value' }, [
+                el('span', { class: 'ksi-value-text' }, [el('span', { class: 'ksi-sample', title: entry.text }, entry.text), el('span', { class: 'ksi-sub' }, ` × ${entry.count}`)]),
+                KnackSheetImport.icon('arrow'),
+                select
+            ]);
+            const mark = () => item.classList.toggle('is-unmatched', !select.value);
+            mark();
+            select.addEventListener('change', () => {
+                map[entry.key] = select.value;
+                mark();
+                showSummary();
+            });
+            return item;
+        }));
+        panel.append(el('div', { class: 'ksi-values-body' }, [
+            el('p', { class: 'ksi-sub' }, `Pick the ${field.label} option each sheet value means.`),
+            list,
+            values.length > limit ? el('p', { class: 'ksi-sub' }, `${values.length - limit} more values use the best guess.`) : ''
+        ]));
+        showSummary();
+        panel.open = panel.classList.contains('is-warn');
+        return panel;
+    }
+
+    /**
+     * A target's "Fields not in the sheet" defaults: the config's `defaults`, then the Knack form's own defaults.
+     * @param {Object} target - Target.
+     * @param {Object[]} [fields] - Fields whose form defaults to use (default: all of the target's).
+     * @returns {Object<string, *>} Value per field id.
+     */
+    batchDefaults(target, fields = target.fields) {
+        const values = {};
+        fields.forEach((field) => {
+            const value = KnackSheetImport.fieldDefault(field);
+            if (value !== undefined) values[field.id] = value;
+        });
+        return { ...values, ...this.config.defaults?.(this.ctx)?.[target.key] };
+    }
+
+    /**
+     * Draws optional "same for every row" inputs for the form fields no column fills.
+     * @param {Element} box - Section to fill.
+     */
+    renderBatch(box) {
+        const el = KnackSheetImport.el;
+        const mappedFields = new Set(this.state.mapping.filter((value) => /^[^:]+:field_/.test(value)).map((value) => value.split(':').slice(0, 2).join(':')));
+        const saved = this.state.saved[KnackSheetImport.BATCH_KEY] || {};
+        const sections = this.targets.map((target) => {
+            const fixed = target.fixed?.(this.ctx) || {};
+            const phoneIds = this.state.mapping.includes('phones') && this.config.phonePool?.target === target.key
+                ? [...(this.config.phonePool.mobile || []), ...(this.config.phonePool.other || [])] : [];
+            const fields = target.fields.filter((field) => !mappedFields.has(`${target.key}:${field.id}`)
+                && !(field.id in fixed) && !phoneIds.includes(field.id) && field.id !== target.notesFieldId);
+            if (!fields.length) return '';
+            const values = this.state.batch[target.key] = this.state.batch[target.key] || {};
+            // What the user typed this time, else what they saved for this template, else the defaults.
+            const savedHere = Object.entries(saved[target.key] || {}).filter(([fieldId]) => fields.some((field) => field.id === fieldId));
+            Object.entries({ ...this.batchDefaults(target, fields), ...Object.fromEntries(savedHere) }).forEach(([fieldId, value]) => {
+                if (!(fieldId in values)) values[fieldId] = value;
+            });
+            return el('fieldset', { class: 'ksi-batch-target' }, [
+                el('legend', {}, target.label),
+                ...fields.map((field) => this.renderBatchInput(field, values))
+            ]);
+        }).filter(Boolean);
+        if (!sections.length) {
+            box.replaceChildren();
+            return;
+        }
+        // Open to start with; a redraw keeps it the way the user left it.
+        const panel = el('details', { class: 'ksi-panel', open: this.state.batchPanelOpen !== false }, [
+            el('summary', {}, 'Fields not in the sheet (optional, same for every row)'),
+            el('div', { class: 'ksi-panel-body' }, [
+                el('p', { class: 'ksi-sub' }, 'Filled in from the form\'s own defaults where it has them. Anything left blank is not sent.'),
+                ...sections
+            ])
+        ]);
+        panel.addEventListener('toggle', () => { this.state.batchPanelOpen = panel.open; });
+        box.replaceChildren(panel);
+    }
+
+    /**
+     * One "same for every row" input.
+     * @param {Object} field - Field.
+     * @param {Object} values - Batch values for the target (updated on input).
+     * @returns {Element} Labelled input.
+     */
+    renderBatchInput(field, values) {
+        const el = KnackSheetImport.el;
+        let input;
+        if (field.type === 'boolean') {
+            input = el('select', {}, [el('option', { value: '' }, '—'), el('option', { value: 'Yes' }, 'Yes'), el('option', { value: 'No' }, 'No')]);
+        } else if (field.type === 'multiple_choice') {
+            input = el('select', {}, [el('option', { value: '' }, '—'), ...(field.format.options || []).map((option) => el('option', { value: option }, option))]);
+        } else if (field.type === 'date_time' && SheetImportCore.dateKind(field.format) === 'datetime') {
+            // Separate date and time inputs, so a date with no time stays a date (a datetime-local input needs both).
+            const [date, time] = [el('input', { type: 'date' }), el('input', { type: 'time' })];
+            const [storedDate = '', storedTime = ''] = String(values[field.id] ?? '').split(/[T ]/);
+            [date.value, time.value] = [storedDate, storedTime];
+            // A time needs a date: the time input stays off until a date is picked, and a time alone is not kept.
+            const update = () => {
+                time.disabled = !date.value;
+                values[field.id] = date.value ? [date.value, time.value].filter(Boolean).join(' ') : '';
+            };
+            time.disabled = !date.value;
+            date.addEventListener('change', update);
+            time.addEventListener('change', update);
+            return el('label', { class: 'ksi-field' }, [el('span', { class: 'ksi-label' }, KnackSheetImport.labelText(field.label, field.required)), el('span', { class: 'ksi-datetime' }, [date, time])]);
+        } else if (field.type === 'date_time') {
+            input = el('input', { type: SheetImportCore.dateKind(field.format) });
+        } else {
+            input = el('input', { type: 'text' });
+        }
+        const stored = values[field.id];
+        if (stored !== undefined && stored !== null) {
+            input.value = typeof stored === 'boolean' ? (stored ? 'Yes' : 'No') : String(stored);
+        }
+        input.addEventListener('change', () => {
+            values[field.id] = input.value;
+        });
+        return el('label', { class: 'ksi-field' }, [el('span', { class: 'ksi-label' }, KnackSheetImport.labelText(field.label, field.required)), input]);
+    }
+
+    /**
+     * Saved column choices keyed by normalised heading. A store that fails gives no saved choices.
+     * @returns {Promise<Object<string, string|Object>>}
+     */
+    async loadSavedMapping() {
+        this.state.savedProblem = '';
+        let saved;
+        try {
+            saved = this.config.mappingStore?.load
+                ? await this.config.mappingStore.load(this.ctx)
+                : JSON.parse(localStorage.getItem(`knackSheetImport:${this.id}`) || 'null');
+        } catch (error) {
+            console.error('KnackSheetImport: could not load saved column choices', error);
+            this.state.savedProblem = 'The saved column choices could not be read, so every column starts fresh. Going on to the next step saves new ones.';
+            return {};
+        }
+        const { clean, dropped } = SheetImportCore.cleanSaved(saved, KnackSheetImport.BATCH_KEY);
+        if (dropped) {
+            console.error(`KnackSheetImport: ${dropped} saved column choice(s) were not in the expected shape and were dropped`, saved);
+            this.state.savedProblem = 'Some saved column choices could not be read and were left out. Check the columns below; going on to the next step saves them again.';
+        }
+        return clean;
+    }
+
+    /**
+     * Remembers this sheet's column choices for next time. Nothing is written when they have not changed,
+     * and a failed save is logged without stopping the import.
+     */
+    saveMapping() {
+        const map = { ...this.state.saved };
+        this.state.columns.forEach((column) => {
+            if (column.empty) return;
+            const heading = SheetImportCore.normalizeLabel(column.header);
+            const mapping = this.state.mapping[column.index];
+            map[heading] = mapping;
+            const values = this.state.valueMaps[column.index];
+            if (values && Object.keys(values).length) map[`values:${heading}`] = { mapping, values };
+        });
+        // "Fields not in the sheet": only what the user changed from the defaults. Dates are left out,
+        // as a date picked for one batch rarely suits the next.
+        const batch = {};
+        this.targets.forEach((target) => {
+            const defaults = this.batchDefaults(target);
+            Object.entries(this.state.batch[target.key] || {}).forEach(([fieldId, value]) => {
+                const field = this.fieldOf(target.key, fieldId);
+                if (!field || field.type === 'date_time' || String(value ?? '') === String(defaults[fieldId] ?? '')) return;
+                (batch[target.key] = batch[target.key] || {})[fieldId] = value;
+            });
+        });
+        if (Object.keys(batch).length) map[KnackSheetImport.BATCH_KEY] = batch;
+        else delete map[KnackSheetImport.BATCH_KEY];
+        if (JSON.stringify(map) === JSON.stringify(this.state.saved)) return;
+        this.state.saved = map;
+        if (this.config.mappingStore?.save) {
+            Promise.resolve()
+                .then(() => this.config.mappingStore.save(map, this.ctx))
+                .catch((error) => console.error('KnackSheetImport: could not save column choices', error));
+            return;
+        }
+        try {
+            localStorage.setItem(`knackSheetImport:${this.id}`, JSON.stringify(map));
+        } catch (error) {
+            console.error('KnackSheetImport: could not save column choices', error);
+        }
+    }
+
+    /* ---------- Step 3: check and import ---------- */
+
+    /**
+     * Loads the find/duplicate lists for the targets.
+     * @returns {Promise<void>}
+     */
+    async loadLookups() {
+        const ctx = this.ctx;
+        const lookups = {};
+        await Promise.all(this.targets.map(async (target) => {
+            const entry = { found: new Map(), duplicates: new Set() };
+            const [records, keys] = await Promise.all([target.find?.load(ctx), target.duplicates?.load(ctx)]);
+            (records || []).forEach((record) => {
+                SheetImportCore.normalizeKeys(target.find.keyOf(record, 'record')).forEach((key) => {
+                    if (!entry.found.has(key)) entry.found.set(key, record.id);
+                });
+            });
+            SheetImportCore.normalizeKeys(keys).forEach((key) => entry.duplicates.add(key));
+            lookups[target.key] = entry;
+        }));
+        this.state.lookups = lookups;
+    }
+
+    /**
+     * Keys a target's `find.keyOf` gives for a payload.
+     * @param {Object} target - Target.
+     * @param {Object} payload - Payload.
+     * @returns {string[]} Normalised keys.
+     */
+    findKeys(target, payload) {
+        if (!target.find) return [];
+        return SheetImportCore.normalizeKeys(target.find.keyOf(payload, 'payload'));
+    }
+
+    /**
+     * Existing (or already imported) record id for a payload.
+     * @param {Object} target - Target.
+     * @param {Object} payload - Payload.
+     * @returns {string} Record id, or ''.
+     */
+    findExisting(target, payload) {
+        const found = this.state.lookups[target.key]?.found;
+        const key = this.findKeys(target, payload).find((k) => found?.has(k));
+        return key ? found.get(key) : '';
+    }
+
+    /**
+     * Builds one row's payloads, warnings and errors from the sheet cells.
+     * @param {{number: number, cells: Array<*>}} source - Sheet row.
+     * @param {Object} fixedByTarget - `fixed(ctx)` values per target.
+     * @param {Object} batchByTarget - "Same for every row" values per target, already converted (see batchValues).
+     * @returns {Object|null} Row, or null when no mapped cell has a value.
+     */
+    buildRow(source, fixedByTarget, batchByTarget) {
+        const payloads = {};
+        const notes = {};
+        const fromSheet = {};
+        const warnings = [];
+        const missing = [];
+        this.targets.forEach((target) => {
+            payloads[target.key] = {};
+            notes[target.key] = [];
+            fromSheet[target.key] = false;
+        });
+
+        this.state.columns.forEach((column) => {
+            const mapping = this.state.mapping[column.index];
+            const raw = source.cells[column.index];
+            if (!mapping || mapping === 'ignore' || mapping === 'phones' || !SheetImportCore.cellText(raw)) return;
+            if (mapping.startsWith('notes:')) {
+                const targetKey = mapping.slice(6);
+                notes[targetKey]?.push(`${column.header}: ${SheetImportCore.cellText(raw)}`);
+                fromSheet[targetKey] = true;
+                return;
+            }
+            const [targetKey, fieldId, part] = mapping.split(':');
+            const field = this.fieldOf(targetKey, fieldId);
+            if (!field) return;
+            const { value, warning } = SheetImportCore.convertValue(raw, field, part, this.state.valueMaps[column.index]);
+            if (warning) warnings.push(`${column.header}: ${warning}, not sent`);
+            if (value === null) return;
+            payloads[targetKey][fieldId] = SheetImportCore.mergeValue(payloads[targetKey][fieldId], value, field.type);
+            fromSheet[targetKey] = true;
+        });
+
+        const pool = this.config.phonePool;
+        const phones = pool ? SheetImportCore.collectPhones(source.cells, this.phoneColumns()) : [];
+        let extraPhones = null;
+        if (phones.length && payloads[pool.target]) {
+            const { values, overflow } = SheetImportCore.assignPhones(phones, pool, payloads[pool.target]);
+            Object.assign(payloads[pool.target], values);
+            fromSheet[pool.target] = true;
+            if (overflow.length) {
+                const targetKey = this.phoneOverflowTarget().key;
+                const lines = SheetImportCore.phoneNoteLines(overflow);
+                notes[targetKey].push(...lines);
+                extraPhones = { target: targetKey, text: lines.join('; ') };
+            }
+        }
+
+        if (!Object.values(fromSheet).some(Boolean)) return null;
+
+        this.targets.forEach((target) => {
+            const payload = payloads[target.key];
+            Object.entries(batchByTarget[target.key]).forEach(([fieldId, value]) => {
+                // Each row gets its own copy, so a hook that edits a value in place changes one row only.
+                if (SheetImportCore.isBlank(payload[fieldId])) payload[fieldId] = structuredClone(value);
+            });
+            Object.assign(payload, fixedByTarget[target.key]);
+            if (target.notesFieldId && notes[target.key].length) {
+                payload[target.notesFieldId] = [payload[target.notesFieldId], ...notes[target.key]].filter(Boolean).join(this.notesJoiner(target));
+            }
+            Object.keys(payload).forEach((fieldId) => {
+                if (SheetImportCore.isBlank(payload[fieldId])) delete payload[fieldId];
+            });
+            if (target.adjust) Object.assign(payload, target.adjust(payload, this.ctx));
+            target.fields.filter((field) => field.required && !(field.id in payload)).forEach((field) => {
+                missing.push(`${target.label}: ${field.label}`);
+            });
+        });
+
+        return { number: source.number, cells: source.cells, payloads, fromSheet, warnings, missing, extraPhones, errors: [], info: [], finds: {}, include: true };
+    }
+
+    /**
+     * Line break used in a target's notes field (`<br>` for rich text, else a newline).
+     * @param {Object} target - Target.
+     * @returns {string} Joiner.
+     */
+    notesJoiner(target) {
+        return this.fieldOf(target.key, target.notesFieldId)?.type === 'rich_text' ? '<br>' : '\n';
+    }
+
+    /**
+     * Columns set to "Phone numbers", in sheet order.
+     * @returns {Array<{index: number, header: string}>} Phone columns.
+     */
+    phoneColumns() {
+        return this.state.columns.filter((column) => this.state.mapping[column.index] === 'phones');
+    }
+
+    /**
+     * Target whose notes get phone numbers that don't fit (`phonePool.overflowTarget`, else the pool's own target).
+     * @returns {Object} Target.
+     */
+    phoneOverflowTarget() {
+        const pool = this.config.phonePool;
+        const key = pool.overflowTarget || pool.target;
+        return this.targets.find((target) => target.key === key);
+    }
+
+    /**
+     * "Same for every row" values converted for Knack once, per target (date inputs give yyyy-mm-dd, yyyy-mm-dd HH:MM or HH:MM, which convertValue reads).
+     * @returns {Object<string, Object<string, *>>} Field id → value, per target key.
+     */
+    batchValues() {
+        return Object.fromEntries(this.targets.map((target) => {
+            const values = {};
+            Object.entries(this.state.batch[target.key] || {}).forEach(([fieldId, raw]) => {
+                const field = this.fieldOf(target.key, fieldId);
+                if (!field) return;
+                const { value } = SheetImportCore.convertValue(raw, field);
+                if (value !== null) values[fieldId] = value;
+            });
+            return [target.key, values];
+        }));
+    }
+
+    /**
+     * The field's own Knack default as a "same for every row" input value: yyyy-mm-dd for dates,
+     * yyyy-mm-dd HH:MM (or just the date when there is no default time) for date and time, HH:MM for times.
+     * Blank, "No" and "none" defaults give nothing, so the input stays empty.
+     * @param {Object} field - Field from resolveTarget.
+     * @param {Date} [now=new Date()] - Today, for "current date" and "current time" defaults.
+     * @returns {string|undefined} Input value.
+     */
+    static fieldDefault(field, now = new Date()) {
+        const format = field.format || {};
+        const iso = (year, month, day) => [year, month, day].map((part) => String(part).padStart(2, '0')).join('-');
+        if (field.type === 'date_time') {
+            const kind = SheetImportCore.dateKind(format);
+            let time;
+            if (format.time_type === 'current') time = { hours: now.getHours(), minutes: now.getMinutes() };
+            else if (format.time_type === 'time') time = SheetImportCore.timeParts(format.default_time);
+            const clock = time ? SheetImportCore.formatTime(time, 'military') : '';
+            if (kind === 'time') return clock || undefined;
+            let date;
+            if (format.default_type === 'current') {
+                date = iso(now.getFullYear(), now.getMonth() + 1, now.getDate());
+            } else if (format.default_type === 'date') {
+                // Knack stores default_date as mm/dd/yyyy.
+                const match = String(format.default_date || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                if (match) date = iso(match[3], match[1], match[2]);
+            }
+            if (!date) return undefined;
+            return kind === 'datetime' && clock ? `${date} ${clock}` : date;
+        }
+        if (field.type === 'boolean') return format.default === true ? 'Yes' : undefined;
+        if (typeof format.default !== 'string' || !format.default || format.default === 'kn-blank') return undefined;
+        if (field.type === 'multiple_choice' && !(format.options || []).includes(format.default)) return undefined;
+        return format.default;
+    }
+
+    /**
+     * Builds and checks every row, then draws the check step.
+     * @returns {Promise<void>}
+     */
+    async renderReview() {
+        const el = KnackSheetImport.el;
+        const back = el('button', { type: 'button', class: 'kn-button' }, 'Back');
+        back.addEventListener('click', () => this.renderMap());
+        this.frame(3, [el('div', { class: 'ksi-loading', role: 'status' }, [el('span', { class: 'ksi-spinner', 'aria-hidden': 'true' }), 'Checking rows against existing records…'])]);
+        try {
+            await this.loadLookups();
+        } catch (error) {
+            console.error('KnackSheetImport: loading existing records failed', error);
+            this.frame(3, [el('div', { class: 'ksi-alert is-bad', role: 'alert' }, [KnackSheetImport.icon('alert'), `Could not load existing records: ${error.message}`])], { back });
+            return;
+        }
+
+        const ctx = this.ctx;
+        const fixedByTarget = Object.fromEntries(this.targets.map((target) => [target.key, target.fixed?.(ctx) || {}]));
+        const batchByTarget = this.batchValues();
+        const rows = this.state.body.map((source) => this.buildRow(source, fixedByTarget, batchByTarget)).filter(Boolean);
+        const seenDuplicateKeys = new Map();
+        const pendingFinds = new Map();
+
+        rows.forEach((row) => {
+            this.targets.forEach((target) => {
+                const payload = row.payloads[target.key];
+                const lookup = this.state.lookups[target.key];
+                if (target.find) {
+                    if (this.findExisting(target, payload)) {
+                        row.finds[target.key] = 'existing';
+                        row.info.push(`Existing ${target.label}`);
+                    } else if (!row.fromSheet[target.key]) {
+                        row.errors.push(`No ${target.label} details`);
+                    } else {
+                        const key = this.findKeys(target, payload)[0];
+                        const firstRow = key && pendingFinds.get(`${target.key}:${key}`);
+                        if (firstRow) {
+                            row.finds[target.key] = 'same';
+                            row.info.push(`Same ${target.label} as row ${firstRow}`);
+                        } else {
+                            if (key) pendingFinds.set(`${target.key}:${key}`, row.number);
+                            row.finds[target.key] = 'new';
+                            row.info.push(`New ${target.label}`);
+                        }
+                    }
+                    if (row.extraPhones?.target === target.key && row.finds[target.key] !== 'new') {
+                        if (target.notesUpdateViewId) row.info.push(`Extra phone numbers go in the ${target.label} notes: ${row.extraPhones.text}`);
+                        else row.warnings.push(`Extra phone numbers not saved, the ${target.label} isn't changed: ${row.extraPhones.text}`);
+                    }
+                }
+                if (target.duplicates) {
+                    SheetImportCore.normalizeKeys(target.duplicates.keyOf(payload)).forEach((key) => {
+                        if (lookup.duplicates.has(key)) row.errors.push(target.duplicates.message || `${target.label} already exists`);
+                        const seenAt = seenDuplicateKeys.get(`${target.key}:${key}`);
+                        if (seenAt) row.errors.push(`Same as row ${seenAt}`);
+                        else seenDuplicateKeys.set(`${target.key}:${key}`, row.number);
+                    });
+                }
+            });
+            row.errors.push(...(this.config.validateRow?.(row, ctx) || []));
+            row.include = !row.errors.length;
+        });
+        this.state.review = rows;
+
+        const plural = KnackSheetImport.count;
+        const blockedCount = rows.filter((row) => row.errors.length).length;
+        const warnedCount = rows.filter((row) => row.warnings.length).length;
+        const importButton = el('button', { type: 'button', class: 'kn-button is-primary' });
+        const readyTile = KnackSheetImport.tile(0, 'Ready to import', 'lead');
+        readyTile.setAttribute('aria-live', 'polite');
+        readyTile.setAttribute('aria-atomic', 'true');
+        const allTick = el('input', { type: 'checkbox', 'aria-label': 'Tick every row' });
+        const ticks = [];
+        const showCount = () => {
+            const n = rows.filter((row) => row.include).length;
+            importButton.textContent = `Import ${plural(n, 'row')}`;
+            importButton.disabled = !n;
+            readyTile.querySelector('.ksi-tile-value').textContent = String(n);
+            const open = ticks.filter((tick) => !tick.disabled);
+            const ticked = open.filter((tick) => tick.checked).length;
+            allTick.checked = Boolean(open.length) && ticked === open.length;
+            allTick.indeterminate = ticked > 0 && ticked < open.length;
+            allTick.disabled = !open.length;
+        };
+
+        const tableRows = rows.map((row) => {
+            const tick = el('input', { type: 'checkbox', 'aria-label': `Import row ${row.number}` });
+            tick.checked = row.include;
+            tick.disabled = Boolean(row.errors.length);
+            tick.addEventListener('change', () => {
+                row.include = tick.checked;
+                showCount();
+            });
+            ticks.push(tick);
+            const badgeTone = (text) => (/^New /.test(text) ? ' is-new' : /^Existing /.test(text) ? ' is-ok' : '');
+            const status = [
+                ...row.errors.map((text) => el('div', { class: 'ksi-row-error' }, [KnackSheetImport.icon('alert'), text])),
+                el('div', { class: 'ksi-badges' }, [
+                    ...row.info.map((text) => el('span', { class: `ksi-badge${badgeTone(text)}` }, text)),
+                    ...row.warnings.map((text) => el('span', { class: 'ksi-badge is-warn', title: text }, `${text.slice(0, text.indexOf(': '))} not sent`))
+                ])
+            ];
+            const tr = el('tr', { class: row.errors.length ? 'is-blocked' : '' }, [
+                el('td', { class: 'ksi-tick' }, tick),
+                el('td', { class: 'ksi-num' }, String(row.number)),
+                el('td', {}, [el('div', {}, this.rowLabel(row)), this.renderRowValues(row)]),
+                el('td', {}, status)
+            ]);
+            tr.dataset.kinds = ['all', row.errors.length ? 'bad' : '', row.warnings.length ? 'warn' : ''].join(' ');
+            return tr;
+        });
+
+        allTick.addEventListener('change', () => {
+            rows.forEach((row, i) => {
+                if (ticks[i].disabled) return;
+                ticks[i].checked = allTick.checked;
+                row.include = allTick.checked;
+            });
+            showCount();
+        });
+        importButton.addEventListener('click', () => this.runImport());
+
+        const findTiles = this.targets.filter((target) => target.find).flatMap((target) => {
+            const count = (kind) => rows.filter((row) => row.finds[target.key] === kind).length;
+            const added = count('new');
+            const existing = count('existing');
+            return [KnackSheetImport.tile(added, `New ${this.targetWord(target, added)}`), KnackSheetImport.tile(existing, `Existing ${this.targetWord(target, existing)}`)];
+        });
+        const tiles = el('div', { class: 'ksi-tiles' }, [
+            KnackSheetImport.tile(rows.length, `${SheetImportCore.plural(rows.length, 'Row')} in sheet`),
+            readyTile,
+            ...findTiles,
+            KnackSheetImport.tile(blockedCount, SheetImportCore.plural(blockedCount, 'Problem'), blockedCount ? 'bad' : 'ok')
+        ]);
+
+        // Blank required fields are left out, not blocked: list them once rather than on every row.
+        const missingCounts = new Map();
+        rows.forEach((row) => row.missing.forEach((name) => missingCounts.set(name, (missingCounts.get(name) || 0) + 1)));
+        const missingNote = missingCounts.size ? el('details', { class: 'ksi-callout is-warn' }, [
+            el('summary', {}, [KnackSheetImport.icon('alert'), `${plural(missingCounts.size, 'required field')} ${missingCounts.size === 1 ? 'is' : 'are'} blank and won't be sent`]),
+            el('div', { class: 'ksi-callout-body' }, [
+                el('p', {}, 'The form marks these as required, but the import leaves them out rather than blocking the row.'),
+                el('div', { class: 'ksi-tags' }, [...missingCounts].map(([name, n]) => el('span', { class: 'ksi-tag' }, n === rows.length ? name : `${name} (${plural(n, 'row')})`)))
+            ])
+        ]) : '';
+
+        // The same conversion warning often repeats on every row: group it by text with the values pulled out.
+        const warningGroups = new Map();
+        rows.forEach((row) => row.warnings.forEach((text) => {
+            const key = text.replace(/"[^"]*"/g, '…');
+            const group = warningGroups.get(key) || { rows: 0, values: new Map() };
+            group.rows += 1;
+            (text.match(/"[^"]*"/g) || []).forEach((value) => group.values.set(value, (group.values.get(value) || 0) + 1));
+            warningGroups.set(key, group);
+        }));
+        const warningNote = warningGroups.size ? el('details', { class: 'ksi-callout is-warn' }, [
+            el('summary', {}, [KnackSheetImport.icon('alert'), `Some values won't be sent (${plural(warnedCount, 'row')})`]),
+            el('ul', { class: 'ksi-callout-body' }, [...warningGroups].map(([key, group]) => {
+                const values = [...group.values].sort((a, b) => b[1] - a[1]);
+                return el('li', {}, [
+                    el('div', {}, `${key} (${plural(group.rows, 'row')})`),
+                    values.length ? el('div', { class: 'ksi-tags' }, [
+                        ...values.slice(0, 8).map(([value, n]) => el('span', { class: 'ksi-tag' }, n > 1 ? `${value} × ${n}` : value)),
+                        values.length > 8 ? el('span', { class: 'ksi-sub' }, `and ${values.length - 8} more`) : ''
+                    ]) : ''
+                ]);
+            }))
+        ]) : '';
+
+        const blockedAlert = blockedCount ? el('div', { class: 'ksi-alert is-bad', role: 'alert' }, [
+            KnackSheetImport.icon('alert'),
+            `${plural(blockedCount, 'row')} ${blockedCount === 1 ? 'has a problem' : 'have problems'} and won't be imported. Pick "Problems" below to see them.`
+        ]) : '';
+
+        const chips = KnackSheetImport.chips([
+            { kind: 'all', text: `All ${rows.length}` },
+            { kind: 'bad', text: `Problems ${blockedCount}`, dot: true },
+            { kind: 'warn', text: `With notes ${warnedCount}`, dot: true }
+        ], (kind) => tableRows.forEach((tr) => tr.classList.toggle('is-hidden', !tr.dataset.kinds.split(' ').includes(kind))));
+
+        this.frame(3, [
+            tiles,
+            blockedAlert,
+            missingNote,
+            warningNote,
+            el('div', { class: 'ksi-toolbar' }, chips),
+            el('div', { class: 'ksi-scroll' }, el('table', { class: 'ksi-table' }, [
+                el('thead', {}, el('tr', {}, [el('th', { class: 'ksi-tick' }, allTick), el('th', { class: 'ksi-num' }, 'Row'), el('th', {}, 'Details'), el('th', {}, 'Status')])),
+                el('tbody', {}, tableRows)
+            ]))
+        ], { back, hint: el('span', { class: 'ksi-hint' }, 'Unticked rows are skipped'), primary: importButton });
+        showCount();
+    }
+
+    /**
+     * "What will be saved" disclosure for one row: every field value per target, filled in when first opened.
+     * @param {Object} row - Row.
+     * @returns {Element} Disclosure.
+     */
+    renderRowValues(row) {
+        const el = KnackSheetImport.el;
+        const panel = el('details', { class: 'ksi-row-values' }, el('summary', {}, 'What will be saved'));
+        const partOrder = ['title', 'first', 'last', 'street', 'street2', 'city', 'state', 'zip'];
+        const show = (value, field) => {
+            if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+            if (Array.isArray(value)) return value.join(', ');
+            if (value && typeof value === 'object') {
+                return partOrder.filter((key) => value[key]).map((key) => value[key]).join(field?.type === 'name' ? ' ' : ', ');
+            }
+            const text = String(value);
+            return field?.type === 'rich_text' ? text.replace(/<br\s*\/?>/gi, '\n') : text;
+        };
+        panel.addEventListener('toggle', () => {
+            if (!panel.open || panel.dataset.filled) return;
+            panel.dataset.filled = '1';
+            panel.append(el('div', { class: 'ksi-row-values-body' }, this.targets.map((target) => {
+                const note = { existing: ' (existing, not changed)', same: ' (made by an earlier row)' }[row.finds[target.key]] || '';
+                const entries = Object.entries(row.payloads[target.key] || {})
+                    .map(([fieldId, value]) => [this.fieldOf(target.key, fieldId), value])
+                    .filter(([field]) => field);
+                return el('section', { class: 'ksi-row-target' }, [
+                    el('h4', {}, `${target.label}${note}`),
+                    entries.length ? el('dl', {}, entries.flatMap(([field, value]) => [
+                        el('dt', {}, field.label),
+                        el('dd', {}, show(value, field))
+                    ])) : el('p', { class: 'ksi-sub' }, 'Nothing from the sheet')
+                ]);
+            })));
+        });
+        return panel;
+    }
+
+    /**
+     * Short description of a row for the check step.
+     * @param {Object} row - Row.
+     * @returns {string} Label.
+     */
+    rowLabel(row) {
+        if (this.config.rowLabel) return this.config.rowLabel(row);
+        return this.state.columns.filter((column) => this.state.mapping[column.index] !== 'ignore')
+            .map((column) => SheetImportCore.cellText(row.cells[column.index])).filter(Boolean).slice(0, 3).join(' · ');
+    }
+
+    /**
+     * Creates the ticked rows one at a time, target by target, then shows the result. A retry passes the
+     * failed rows: targets a row already created are skipped, so a Property made before its Job failed is reused.
+     * @param {Array<Object>} [retryRows] - Rows to run again; otherwise the ticked rows from the check step.
+     * @returns {Promise<void>}
+     */
+    async runImport(retryRows = null) {
+        const el = KnackSheetImport.el;
+        const rows = retryRows || this.state.review.filter((row) => row.include && !row.errors.length);
+        const api = getKnackApiClient();
+        const ctx = this.ctx;
+        const fill = el('div', {});
+        const bar = el('div', { class: 'ksi-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(rows.length), 'aria-valuenow': '0' }, fill);
+        const progressText = el('p', { class: 'ksi-progress-text' });
+        this.frame(3, [el('div', { class: 'ksi-progress' }, [progressText, bar, el('span', { class: 'ksi-sub' }, 'Keep this page open until the import finishes.')])]);
+
+        const created = Object.fromEntries(this.targets.map((target) => [target.key, 0]));
+        const updated = Object.fromEntries(this.targets.map((target) => [target.key, 0]));
+        const notesById = new Map();
+        const failures = [];
+        const noteFailures = [];
+        // Closing or reloading the tab mid-run would leave some rows half done: ask the browser to warn first.
+        const warnBeforeLeaving = (event) => {
+            event.preventDefault();
+            event.returnValue = '';
+        };
+        window.addEventListener('beforeunload', warnBeforeLeaving);
+        try {
+            for (const [index, row] of rows.entries()) {
+                progressText.textContent = `Importing row ${index + 1} of ${rows.length}…`;
+                await this.importRow(api, row, { created, updated, notesById, noteFailures });
+                if (!row.result.ok) failures.push(row);
+                fill.style.width = `${((index + 1) / rows.length) * 100}%`;
+                bar.setAttribute('aria-valuenow', String(index + 1));
+            }
+        } finally {
+            window.removeEventListener('beforeunload', warnBeforeLeaving);
+        }
+
+        const summary = { total: rows.length, failed: failures.length, created, updated, rows };
+        try {
+            await this.config.onComplete?.(summary, ctx);
+        } catch (error) {
+            console.error('KnackSheetImport: onComplete failed', error);
+        }
+        this.renderResult({ rows, failures, created, updated, noteFailures, retry: Boolean(retryRows) });
+    }
+
+    /**
+     * Writes one row, target by target, and sets `row.result`. Targets the row already has an id for are skipped.
+     * @param {Object} api - Knack API client.
+     * @param {Object} row - Review row.
+     * @param {Object} run - Counters and note tracking shared across the run.
+     * @returns {Promise<void>}
+     */
+    async importRow(api, row, { created, updated, notesById, noteFailures }) {
+        const ctx = this.ctx;
+        const ids = { ...(row.result?.ids || {}) };
+        let current = null;
+        try {
+            for (const target of this.targets) {
+                current = target;
+                if (ids[target.key]) continue;
+                let payload = { ...row.payloads[target.key] };
+                let id = this.findExisting(target, payload);
+                if (!id) {
+                    if (target.link) payload[target.link.fieldId] = [ids[target.link.target]];
+                    if (target.beforeCreate) payload = await target.beforeCreate(payload, { row, target, ctx }) || payload;
+                    const response = await api.createRecord(target.sceneKey, target.viewId, payload);
+                    id = response?.record?.id || response?.id;
+                    if (!id) throw new Error(`${target.label} was not created (no record id returned)`);
+                    created[target.key] += 1;
+                    this.findKeys(target, row.payloads[target.key]).forEach((key) => this.state.lookups[target.key].found.set(key, id));
+                    if (target.notesUpdateViewId && payload[target.notesFieldId]) notesById.set(id, String(payload[target.notesFieldId]).split(this.notesJoiner(target)));
+                } else if (target.notesUpdateViewId && row.extraPhones?.target === target.key) {
+                    await this.updateNotes(api, target, id, row, notesById, this.notesJoiner(target), updated, noteFailures);
+                }
+                ids[target.key] = id;
+            }
+            row.result = { ok: true, ids };
+        } catch (error) {
+            console.error(`KnackSheetImport: row ${row.number} failed`, error);
+            row.result = { ok: false, ids, target: current?.key, ...this.describeError(error, current) };
+        }
+    }
+
+    /**
+     * Turns a failed write into text for the result step, with Knack's field keys swapped for field labels.
+     * Knack validation errors come back as `{ errors: [{ field, message }] }` in the error's body.
+     * @param {Error} error - Thrown error.
+     * @param {Object|null} target - Target being written.
+     * @returns {{error: string, fieldErrors: Object<string, string>}} Message, and messages per field id.
+     */
+    describeError(error, target) {
+        const fieldErrors = {};
+        try {
+            const body = typeof error?.body === 'string' ? JSON.parse(error.body) : null;
+            [].concat(body?.errors || []).forEach((entry) => {
+                const fieldId = knackNavigator.normalizeFieldId(String(entry?.field || ''));
+                if (fieldId && target && this.fieldOf(target.key, fieldId)) fieldErrors[fieldId] = String(entry.message || entry.error || 'Not accepted');
+            });
+        } catch (parseError) {
+            // Not JSON: the message alone is shown.
+        }
+        const label = (fieldId) => this.fieldOf(target?.key, fieldId)?.label || fieldId;
+        const message = String(error?.message || error).replace(/^API error \d+:\s*/, '').replace(/\bfield_\d+\b/g, label);
+        return { error: target ? `${target.label}: ${message}` : message, fieldErrors };
+    }
+
+    /**
+     * Result step: counts, and for failed rows the problem, a form to change the values and a retry.
+     * @param {{rows: Array<Object>, failures: Array<Object>, created: Object, updated: Object, noteFailures: number[], retry: boolean}} run - Run outcome.
+     */
+    renderResult({ rows, failures, created, updated, noteFailures, retry }) {
+        const el = KnackSheetImport.el;
+        const again = el('button', { type: 'button', class: `kn-button${failures.length ? '' : ' is-primary'}` }, 'Import another sheet');
+        again.addEventListener('click', () => {
+            this.state = this.freshState();
+            this.renderChoose();
+        });
+        const imported = rows.length - failures.length;
+        const fixes = failures.map((row) => ({ row, tick: el('input', { type: 'checkbox', 'aria-label': `Retry row ${row.number}` }), ...this.renderFix(row) }));
+        const retryButton = el('button', { type: 'button', class: 'kn-button is-primary' });
+        const retryNote = el('div', { 'aria-live': 'polite' });
+        const showRetryCount = () => {
+            const n = fixes.filter((fix) => fix.tick.checked).length;
+            retryButton.textContent = `Retry ${KnackSheetImport.count(n, 'row')}`;
+            retryButton.disabled = !n;
+        };
+        fixes.forEach((fix) => {
+            fix.tick.checked = true;
+            fix.tick.addEventListener('change', showRetryCount);
+        });
+        retryButton.addEventListener('click', () => {
+            const chosen = fixes.filter((fix) => fix.tick.checked);
+            const unreadable = chosen.filter((fix) => !fix.apply()).map((fix) => fix.row.number);
+            if (unreadable.length) {
+                retryNote.replaceChildren(el('div', { class: 'ksi-alert is-bad', role: 'alert' }, [
+                    KnackSheetImport.icon('alert'),
+                    `Some changed values can't be used yet (row${unreadable.length === 1 ? '' : 's'} ${unreadable.join(', ')}). Correct the highlighted fields, or untick those rows.`
+                ]));
+                return;
+            }
+            this.runImport(chosen.map((fix) => fix.row));
+        });
+        showRetryCount();
+        const heading = failures.length ? `${imported} of ${KnackSheetImport.count(rows.length, 'row')} imported` : `${KnackSheetImport.count(imported, 'row')} imported`;
+        this.frame(4, [
+            el('div', { class: `ksi-result ${failures.length ? 'is-warn' : 'is-ok'}` }, [
+                el('div', { class: 'ksi-result-icon' }, KnackSheetImport.icon(failures.length ? 'alert' : 'check')),
+                el('div', {}, [
+                    el('h3', {}, retry ? `Retry: ${heading}` : heading),
+                    el('p', { class: 'ksi-sub' }, failures.length
+                        ? 'The rows below were not imported. Change any values that caused the problem under "Change details", then retry them. Anything already created for a row is kept and not made twice.'
+                        : retry ? 'Every retried row was imported.' : 'Every ticked row was imported.')
+                ])
+            ]),
+            el('div', { class: 'ksi-tiles' }, [
+                ...this.targets.map((target) => KnackSheetImport.tile(created[target.key], `${this.targetWord(target, created[target.key])} created`)),
+                ...this.targets.filter((target) => updated[target.key]).map((target) => KnackSheetImport.tile(updated[target.key], `${this.targetWord(target, updated[target.key])} with notes updated`))
+            ]),
+            noteFailures.length ? el('div', { class: 'ksi-alert is-warn', role: 'alert' }, [
+                KnackSheetImport.icon('alert'),
+                `Extra phone numbers could not be added to the notes for row${noteFailures.length === 1 ? '' : 's'} ${noteFailures.join(', ')}. The rows were still imported.`
+            ]) : '',
+            failures.length ? el('div', { class: 'ksi-scroll' }, el('table', { class: 'ksi-table' }, [
+                el('thead', {}, el('tr', {}, [el('th', { class: 'ksi-tick' }, el('span', { class: 'ksi-sr' }, 'Retry')), el('th', { class: 'ksi-num' }, 'Row'), el('th', {}, 'Details'), el('th', {}, 'Problem')])),
+                el('tbody', {}, fixes.map(({ row, tick, panel }) => el('tr', { class: 'is-blocked' }, [
+                    el('td', { class: 'ksi-tick' }, tick),
+                    el('td', { class: 'ksi-num' }, String(row.number)),
+                    el('td', {}, [el('div', {}, this.rowLabel(row)), panel]),
+                    el('td', {}, el('div', { class: 'ksi-row-error' }, [KnackSheetImport.icon('alert'), row.result.error]))
+                ])))
+            ])) : '',
+            retryNote
+        ], failures.length ? { back: again, primary: retryButton } : { primary: again });
+    }
+
+    /**
+     * "Change details" form for a failed row: the fields of the record that failed, those Knack named first.
+     * Connection fields aren't listed (they come from the choices on step 1 or the sheet's matched record).
+     * @param {Object} row - Failed row.
+     * @returns {{panel: Element|string, apply: Function}} Form, and `apply()` that writes changed values into
+     * the row's payload, returning false (and marking the fields) when a value can't be used.
+     */
+    renderFix(row) {
+        const el = KnackSheetImport.el;
+        const target = this.targets.find((candidate) => candidate.key === row.result.target);
+        if (!target) return { panel: '', apply: () => true };
+        const payload = row.payloads[target.key];
+        const fieldErrors = row.result.fieldErrors || {};
+        const editable = new Set(['short_text', 'paragraph_text', 'email', 'phone', 'number', 'currency', 'rating', 'date_time', 'boolean', 'multiple_choice', 'name', 'address', 'link']);
+        const fields = target.fields
+            .filter((field) => editable.has(field.type) && (field.id in payload || field.id in fieldErrors || field.required))
+            .sort((a, b) => Number(b.id in fieldErrors) - Number(a.id in fieldErrors));
+        if (!fields.length) return { panel: '', apply: () => true };
+        const inputs = fields.map((field) => this.renderFixInput(field, payload[field.id], fieldErrors[field.id]));
+        const panel = el('details', { class: 'ksi-fix', open: Object.keys(fieldErrors).length > 0 }, [
+            el('summary', {}, `Change ${target.label} details`),
+            el('div', { class: 'ksi-fix-body' }, inputs.map((input) => input.node))
+        ]);
+        const apply = () => {
+            const read = inputs.map((input) => ({ input, ...input.read() }));
+            if (read.some(({ problem }) => problem)) {
+                panel.open = true;
+                return false;
+            }
+            read.filter(({ changed }) => changed).forEach(({ input, value }) => {
+                if (SheetImportCore.isBlank(value)) delete payload[input.field.id];
+                else payload[input.field.id] = value;
+            });
+            return true;
+        };
+        return { panel, apply };
+    }
+
+    /**
+     * One field on the "Change details" form. Typed text goes through the same conversion as sheet cells.
+     * @param {Object} field - Field from resolveTarget.
+     * @param {*} value - Value in the payload now.
+     * @param {string} [message] - Knack's message for this field.
+     * @returns {{node: Element, field: Object, read: Function}} `read()` gives `{changed, value, problem}`.
+     */
+    renderFixInput(field, value, message = '') {
+        const el = KnackSheetImport.el;
+        let changed = false;
+        const markChanged = () => { changed = true; };
+        const note = el('span', { class: 'ksi-field-error', 'aria-live': 'polite' }, message);
+        const label = el('span', { class: 'ksi-label' }, KnackSheetImport.labelText(field.label, field.required));
+        const wrap = (control) => el('label', { class: `ksi-field${message ? ' is-bad' : ''}` }, [label, control, note]);
+        const showProblem = (problem) => {
+            note.textContent = problem || message;
+            node.classList.toggle('is-bad', Boolean(problem));
+        };
+        let node;
+        let read;
+
+        if (field.type === 'name' || field.type === 'address') {
+            const partLabels = field.type === 'name'
+                ? { title: 'Title', first: 'First', last: 'Last' }
+                : { street: 'Street', street2: 'Street 2', city: 'Town / city', zip: 'Postcode' };
+            if (field.type === 'name' && !/title/i.test(String(field.format?.format || ''))) delete partLabels.title;
+            const parts = Object.entries(partLabels).map(([part, text]) => {
+                const input = el('input', { type: 'text', value: value?.[part] || '' });
+                input.addEventListener('input', markChanged);
+                return { part, input, node: el('label', { class: 'ksi-field' }, [el('span', { class: 'ksi-sub' }, text), input]) };
+            });
+            node = el('fieldset', { class: `ksi-fix-parts${message ? ' is-bad' : ''}` }, [el('legend', {}, KnackSheetImport.labelText(field.label, field.required)), ...parts.map((part) => part.node), note]);
+            read = () => {
+                const merged = parts.reduce((all, { part, input }) => {
+                    const { value: piece } = SheetImportCore.convertValue(input.value, field, part);
+                    return piece ? { ...all, ...piece } : all;
+                }, {});
+                return { changed, value: SheetImportCore.compact(merged) };
+            };
+        } else if (field.type === 'boolean' || (field.type === 'multiple_choice' && !SheetImportCore.isMultiChoice(field))) {
+            const options = SheetImportCore.choiceOptions(field);
+            const select = el('select', {}, [el('option', { value: '' }, '—'), ...options.map((option) => el('option', { value: option }, option))]);
+            select.value = typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value ?? '');
+            select.addEventListener('change', markChanged);
+            node = wrap(select);
+            read = () => {
+                if (!select.value) return { changed, value: null };
+                return { changed, value: field.type === 'boolean' ? select.value === 'Yes' : select.value };
+            };
+        } else if (field.type === 'multiple_choice') {
+            const select = el('select', { multiple: true, size: String(Math.min(6, SheetImportCore.choiceOptions(field).length)) },
+                SheetImportCore.choiceOptions(field).map((option) => el('option', { value: option }, option)));
+            const current = [].concat(value || []).map(String);
+            [...select.options].forEach((option) => { option.selected = current.includes(option.value); });
+            select.addEventListener('change', markChanged);
+            node = wrap(select);
+            read = () => ({ changed, value: [...select.selectedOptions].map((option) => option.value) });
+        } else {
+            const multiline = field.type === 'paragraph_text';
+            const input = el(multiline ? 'textarea' : 'input', multiline ? { rows: '3' } : { type: 'text' });
+            input.value = value === undefined || value === null ? '' : String(value);
+            if (field.type === 'date_time' && input.value && SheetImportCore.dateKind(field.format) !== 'time') {
+                // Shown as yyyy-mm-dd (and 24-hour time) so reading it back can't swap day and month on a mm/dd field.
+                const parts = SheetImportCore.dateParts(input.value, { dayFirst: !/^mm/i.test(String(field.format?.date_format || '')) });
+                const time = SheetImportCore.dateKind(field.format) === 'datetime' && SheetImportCore.timeParts(input.value);
+                if (parts) {
+                    input.value = [parts.year, parts.month, parts.day].map((n, i) => String(n).padStart(i ? 2 : 4, '0')).join('-')
+                        + (time ? ` ${SheetImportCore.formatTime(time, 'military')}` : '');
+                }
+            }
+            input.addEventListener('input', markChanged);
+            node = wrap(input);
+            read = () => {
+                if (!input.value.trim()) return { changed, value: null };
+                const { value: converted, warning } = SheetImportCore.convertValue(input.value, field);
+                const problem = changed && warning ? warning.replace(/^"[^"]*"\s*/, 'This ') : '';
+                showProblem(problem);
+                return { changed, value: converted, problem };
+            };
+        }
+        return { node, field, read };
+    }
+
+    /**
+     * Writes a row's notes (with its extra phone numbers) onto a record that already exists, through
+     * `target.notesUpdateViewId`. The first write in a run replaces what the record held (the sheet is the
+     * up-to-date source); later rows for the same record add only lines it doesn't have yet. A failure is noted
+     * and doesn't stop the row.
+     * @param {Object} api - Knack API client.
+     * @param {Object} target - Resolved target.
+     * @param {string} id - Record id.
+     * @param {Object} row - Review row.
+     * @param {Map<string, string[]>} notesById - Lines written in this run, per record.
+     * @param {string} joiner - Line separator for the notes field.
+     * @param {Object} updated - Count per target, incremented on a write.
+     * @param {number[]} noteFailures - Row numbers whose write failed.
+     * @returns {Promise<void>}
+     */
+    async updateNotes(api, target, id, row, notesById, joiner, updated, noteFailures) {
+        const lines = String(row.payloads[target.key][target.notesFieldId] || '').split(joiner).filter(Boolean);
+        const before = notesById.get(id) || [];
+        const merged = [...before, ...lines.filter((line) => !before.includes(line))];
+        if (!lines.length || merged.length === before.length) return;
+        try {
+            await api.updateRecord(target.sceneKey, target.notesUpdateViewId, id, { [target.notesFieldId]: merged.join(joiner) });
+            if (!notesById.has(id)) updated[target.key] += 1;
+            notesById.set(id, merged);
+        } catch (error) {
+            console.error(`KnackSheetImport: notes update for row ${row.number} failed`, error);
+            noteFailures.push(row.number);
+        }
+    }
+
+    /* ---------- Drawing helpers ---------- */
+
+    /**
+     * Step indicator.
+     * @param {number} current - 1 choose, 2 match, 3 check, 4 done.
+     * @returns {Element} Steps bar.
+     */
+    renderSteps(current) {
+        const el = KnackSheetImport.el;
+        const steps = ['Choose sheet', 'Match columns', 'Check & import'];
+        return el('ol', { class: 'ksi-steps' }, steps.map((label, i) => {
+            const n = i + 1;
+            return el('li', { class: n === current ? 'is-current' : n < current ? 'is-done' : '', 'aria-current': n === current ? 'step' : null }, [
+                el('span', { class: 'ksi-step-num' }, n < current ? KnackSheetImport.icon('check') : String(n)),
+                el('span', { class: 'ksi-step-label' }, label)
+            ]);
+        }));
+    }
+
+    /**
+     * Card header: title, intro (first step only), the choices made so far and the step bar.
+     * @param {number} step - Current step.
+     * @returns {Element} Header.
+     */
+    renderHeader(step) {
+        const el = KnackSheetImport.el;
+        const crumbs = step > 1 ? [...Object.values(this.state.labels), this.state.fileName].filter(Boolean) : [];
+        return el('header', { class: 'ksi-header' }, [
+            el('div', { class: 'ksi-heading' }, [
+                this.config.title ? el('h2', { class: 'ksi-title' }, this.config.title) : '',
+                step === 1 && this.config.intro ? el('p', { class: 'ksi-intro' }, this.config.intro) : '',
+                crumbs.length ? el('p', { class: 'ksi-crumbs' }, crumbs.flatMap((text, i) => [
+                    i ? el('span', { class: 'ksi-crumb-sep', 'aria-hidden': 'true' }, '›') : '',
+                    el('span', {}, text)
+                ])) : ''
+            ]),
+            this.renderSteps(step)
+        ]);
+    }
+
+    /**
+     * Draws a step: header, body and a footer holding Back, a hint and the main button.
+     * @param {number} step - Current step.
+     * @param {Array<*>} body - Body children.
+     * @param {{back?: Element, hint?: Element, primary?: Element}} [footer] - Footer items.
+     */
+    frame(step, body, { back, hint, primary } = {}) {
+        const el = KnackSheetImport.el;
+        this.root.replaceChildren(
+            this.renderHeader(step),
+            el('div', { class: 'ksi-body' }, body),
+            back || hint || primary ? el('footer', { class: 'ksi-footer' }, [back, el('span', { class: 'ksi-footer-spacer' }), hint, primary].filter(Boolean)) : ''
+        );
+    }
+
+    /**
+     * Inline SVG icon from KSI_ICONS.
+     * @param {string} name - Icon name.
+     * @param {string} [className='ksi-icon'] - Class.
+     * @returns {SVGElement} Icon.
+     */
+    static icon(name, className = 'ksi-icon') {
+        const ns = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(ns, 'svg');
+        Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: className })
+            .forEach(([attr, value]) => svg.setAttribute(attr, value));
+        const path = document.createElementNS(ns, 'path');
+        path.setAttribute('d', KSI_ICONS[name]);
+        svg.append(path);
+        return svg;
+    }
+
+    /**
+     * A count with its word, e.g. "1 row" / "3 rows".
+     * @param {number} count - How many.
+     * @param {string} singular - Word for one.
+     * @param {string} [plural] - Word for any other count.
+     * @returns {string} Text.
+     */
+    static count(count, singular, plural) {
+        return `${count} ${SheetImportCore.plural(count, singular, plural)}`;
+    }
+
+    /**
+     * A target's label for a count, using its `pluralLabel` when set.
+     * @param {Object} target - Target config.
+     * @param {number} count - How many.
+     * @returns {string} Label.
+     */
+    targetWord(target, count) {
+        return SheetImportCore.plural(count, target.label, target.pluralLabel);
+    }
+
+    /**
+     * Number tile.
+     * @param {number} value - Number.
+     * @param {string} label - Label.
+     * @param {string} [tone] - primary, ok or bad.
+     * @returns {Element} Tile.
+     */
+    static tile(value, label, tone = '') {
+        const el = KnackSheetImport.el;
+        return el('div', { class: `ksi-tile${tone ? ` is-${tone}` : ''}` }, [
+            el('div', { class: 'ksi-tile-value' }, String(value)),
+            el('div', { class: 'ksi-tile-label' }, label)
+        ]);
+    }
+
+    /**
+     * Filter chips; the first is pressed.
+     * @param {Array<{kind: string, text: string, dot?: boolean}>} items - Chips.
+     * @param {Function} onPick - Called with the picked kind.
+     * @returns {Element} Chip group (update a chip's text through `.ksi-chip-text` under `[data-kind]`).
+     */
+    static chips(items, onPick) {
+        const el = KnackSheetImport.el;
+        const buttons = items.map((item, i) => {
+            const button = el('button', { type: 'button', class: `ksi-chip is-${item.kind}`, 'data-kind': item.kind, 'aria-pressed': String(i === 0) }, [
+                item.dot ? el('span', { class: 'ksi-dot', 'aria-hidden': 'true' }) : '',
+                el('span', { class: 'ksi-chip-text' }, item.text)
+            ]);
+            button.addEventListener('click', () => {
+                buttons.forEach((other) => other.setAttribute('aria-pressed', String(other === button)));
+                onPick(item.kind);
+            });
+            return button;
+        });
+        return el('div', { class: 'ksi-chips', role: 'group', 'aria-label': 'Filter' }, buttons);
+    }
+
+    /**
+     * Sets a chip's text.
+     * @param {Element} group - Chip group.
+     * @param {string} kind - Chip kind.
+     * @param {string} text - Text.
+     */
+    static setChip(group, kind, text) {
+        const target = group.querySelector(`[data-kind="${kind}"] .ksi-chip-text`);
+        if (target) target.textContent = text;
+    }
+
+    /**
+     * Makes an element. Text children are added as text, never as HTML.
+     * @param {string} tag - Tag name.
+     * @param {Object} [attrs={}] - Attributes.
+     * @param {*} [children=[]] - Child nodes or text.
+     * @returns {Element} Element.
+     */
+    static el(tag, attrs = {}, children = []) {
+        const node = document.createElement(tag);
+        Object.entries(attrs).forEach(([name, value]) => {
+            if (value !== null && value !== undefined && value !== false) node.setAttribute(name, value === true ? '' : value);
+        });
+        [].concat(children).forEach((child) => {
+            if (child === null || child === undefined || child === '') return;
+            node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+        });
+        return node;
+    }
+
+    /**
+     * A field label's children, with a red star when it is required.
+     * @param {string} text - Label.
+     * @param {boolean} [required=false] - Required field.
+     * @returns {Array<string|Element>} Children for `el`.
+     */
+    static labelText(text, required = false) {
+        return [text, required ? KnackSheetImport.el('span', { class: 'ksi-req' }, ' *') : ''];
+    }
+
+    /**
+     * Adds the wizard's styles once.
+     */
+    static injectStyles() {
+        if (document.getElementById('ksi-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'ksi-styles';
+        style.textContent = `
+.ksi {
+  --ksi-primary: var(--knack-color-primary, #2563eb); --ksi-ok: var(--knack-color-success-bold, #15803d);
+  --ksi-warn: var(--knack-color-warning-bold, #b45309); --ksi-bad: var(--knack-color-error-bold, #b42318);
+  /* Knack's soft theme colours for fills; its bold colours are too pale for text, so text uses them darkened to pass 4.5:1. */
+  --ksi-ok-soft: var(--knack-color-success, #ecfdf3); --ksi-warn-soft: var(--knack-color-warning, #fffaeb); --ksi-bad-soft: var(--knack-color-error, #fef3f2);
+  --ksi-primary-text: color-mix(in srgb, var(--ksi-primary) 50%, #000); --ksi-ok-text: color-mix(in srgb, var(--ksi-ok) 50%, #000);
+  --ksi-warn-text: color-mix(in srgb, var(--ksi-warn) 50%, #000); --ksi-bad-text: color-mix(in srgb, var(--ksi-bad) 50%, #000);
+  --ksi-text: #1f2933; --ksi-muted: #667085; --ksi-border: #e4e7ec; --ksi-soft: #f8f9fb;
+  max-width: 1100px; margin: 0 auto 1.5rem; background: #fff; color: var(--ksi-text); font-size: 14px; line-height: 1.45;
+  border: 1px solid var(--ksi-border); border-radius: 12px; box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 4px 16px rgba(16,24,40,.06);
+}
+.ksi *, .ksi *::before, .ksi *::after { box-sizing: border-box; }
+.ksi-icon { width: 1.1em; height: 1.1em; flex: none; }
+.ksi .ksi-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 1rem 2rem; padding: 1.25rem 1.5rem 1rem; border-bottom: 1px solid var(--ksi-border); }
+.ksi .ksi-title { margin: 0; font-size: 1.35rem; font-weight: 650; line-height: 1.25; color: var(--ksi-text); }
+.ksi .ksi-intro { margin: .35rem 0 0; color: var(--ksi-muted); max-width: 62ch; }
+.ksi .ksi-crumbs { display: flex; flex-wrap: wrap; gap: .2rem .45rem; margin: .4rem 0 0; color: var(--ksi-muted); font-size: .9em; }
+.ksi-crumb-sep { color: #98a2b3; }
+.ksi .ksi-steps { display: flex; align-items: center; list-style: none; margin: .2rem 0 0; padding: 0; }
+.ksi .ksi-steps li { display: flex; align-items: center; gap: .5rem; list-style: none; margin: 0; padding: 0; color: var(--ksi-muted); font-size: .9em; white-space: nowrap; }
+.ksi .ksi-steps li + li::before { content: ""; width: 2rem; height: 2px; margin: 0 .6rem; border-radius: 2px; background: var(--ksi-border); }
+.ksi .ksi-steps li.is-done + li::before { background: var(--ksi-ok); }
+.ksi-step-num { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--ksi-border); background: #fff; font-weight: 600; font-size: .85em; }
+.ksi-step-num .ksi-icon { width: 1rem; height: 1rem; }
+.ksi .ksi-steps li.is-current { color: var(--ksi-text); font-weight: 600; }
+.ksi-steps li.is-current .ksi-step-num { border-color: var(--ksi-primary-text); background: var(--ksi-primary-text); color: #fff; }
+.ksi-steps li.is-done .ksi-step-num { border-color: var(--ksi-ok-text); background: var(--ksi-ok-text); color: #fff; }
+.ksi .ksi-body { display: flex; flex-direction: column; gap: 1.25rem; padding: 1.25rem 1.5rem 1.5rem; }
+.ksi .ksi-section { display: flex; flex-direction: column; gap: .75rem; }
+.ksi .ksi-section-title { margin: 0; font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ksi-muted); }
+.ksi .ksi-lead { margin: 0; color: var(--ksi-muted); }
+.ksi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .9rem 1.25rem; }
+.ksi .ksi-field { display: flex; flex-direction: column; gap: .3rem; margin: 0; font-weight: normal; }
+.ksi .ksi-datetime { display: flex; gap: .4rem; }
+.ksi .ksi-datetime input { flex: 1; min-width: 0; }
+.ksi-label { font-weight: 600; font-size: .9em; color: var(--ksi-text); }
+.ksi-req { color: var(--ksi-bad-text); }
+.ksi-sub { color: var(--ksi-muted); font-size: .85em; }
+.ksi select, .ksi input[type=text], .ksi input[type=number], .ksi input[type=date] {
+  height: 2.25rem; max-width: 100%; margin: 0; padding: 0 .65rem; border: 1px solid #d0d5dd; border-radius: 8px;
+  background-color: #fff; color: var(--ksi-text); font: inherit; box-shadow: 0 1px 2px rgba(16,24,40,.04);
+}
+.ksi select:focus, .ksi input:focus { outline: none; border-color: var(--ksi-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ksi-primary) 20%, transparent); }
+.ksi select:disabled { background-color: var(--ksi-soft); color: #98a2b3; }
+.ksi input[type=checkbox] { width: 1rem; height: 1rem; margin: 0; accent-color: var(--ksi-primary); }
+.ksi .ksi-small { width: 5rem; }
+.ksi .ksi-drop { position: relative; display: flex; align-items: center; gap: 1rem; margin: 0; padding: 1.25rem 1.5rem; border: 2px dashed #d0d5dd; border-radius: 12px; background: var(--ksi-soft); font-weight: normal; cursor: pointer; transition: border-color .15s, background-color .15s; }
+.ksi .ksi-drop:hover, .ksi .ksi-drop.is-over { border-color: var(--ksi-primary); background: color-mix(in srgb, var(--ksi-primary) 6%, #fff); }
+.ksi .ksi-drop:focus-within { border-color: var(--ksi-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ksi-primary) 20%, transparent); }
+.ksi .ksi-drop.is-loaded { border-style: solid; border-color: var(--ksi-ok); background: color-mix(in srgb, var(--ksi-ok-soft) 40%, #fff); }
+.ksi-drop-icon { width: 2.6rem; height: 2.6rem; padding: .6rem; border-radius: 10px; background: #fff; color: var(--ksi-primary-text); box-shadow: 0 1px 3px rgba(16,24,40,.1); flex: none; }
+.ksi-drop.is-loaded .ksi-drop-icon { color: var(--ksi-ok-text); }
+.ksi-drop-text { display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
+.ksi-drop-text strong { font-weight: 600; overflow-wrap: anywhere; }
+.ksi .ksi-file-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: 0; opacity: 0; overflow: hidden; clip: rect(0 0 0 0); }
+.ksi-sheetpicker { display: flex; flex-wrap: wrap; gap: .75rem 1.5rem; }
+.ksi .ksi-inline { display: inline-flex; align-items: center; gap: .5rem; margin: 0; font-weight: normal; }
+.ksi .ksi-footer { position: sticky; bottom: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: .85rem 1.5rem; border-top: 1px solid var(--ksi-border); border-radius: 0 0 12px 12px; background: rgba(255,255,255,.96); }
+.ksi-footer-spacer { flex: 1; }
+.ksi-hint { color: var(--ksi-muted); font-size: .9em; }
+.ksi .ksi-footer .kn-button { margin: 0; }
+.ksi-alert { display: flex; align-items: flex-start; gap: .6rem; padding: .75rem 1rem; border: 1px solid; border-radius: 10px; }
+.ksi-alert .ksi-icon { margin-top: .15em; }
+.ksi-alert.is-bad { color: var(--ksi-bad-text); background: color-mix(in srgb, var(--ksi-bad-soft) 40%, #fff); border-color: var(--ksi-bad-soft); }
+.ksi-alert.ksi-phones { color: var(--ksi-text); background: var(--ksi-soft); border-color: var(--ksi-border); }
+.ksi-alert.ksi-phones > .ksi-icon { color: var(--ksi-ok-text); }
+.ksi-alert.ksi-phones.is-warn { background: color-mix(in srgb, var(--ksi-warn-soft) 40%, #fff); border-color: var(--ksi-warn-soft); }
+.ksi-alert.ksi-phones.is-warn > .ksi-icon { color: var(--ksi-warn-text); }
+.ksi-alert.ksi-phones strong { display: block; margin-bottom: .2rem; font-weight: 600; }
+.ksi-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; }
+.ksi-chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.ksi .ksi-chip { display: inline-flex; align-items: center; gap: .45rem; height: 2rem; margin: 0; padding: 0 .85rem; border: 1px solid #d0d5dd; border-radius: 999px; background: #fff; color: var(--ksi-text); font: inherit; font-size: .9em; cursor: pointer; }
+.ksi .ksi-chip:hover { background: var(--ksi-soft); }
+.ksi .ksi-chip[aria-pressed=true] { border-color: var(--ksi-text); background: var(--ksi-text); color: #fff; }
+.ksi button:focus-visible, .ksi summary:focus-visible, .ksi input[type=checkbox]:focus-visible, .ksi a:focus-visible { outline: 2px solid var(--ksi-primary-text); outline-offset: 2px; }
+.ksi-dot { width: .55rem; height: .55rem; border-radius: 50%; background: #98a2b3; }
+.ksi-chip.is-matched .ksi-dot { background: var(--ksi-ok); }
+.ksi-chip.is-notes .ksi-dot, .ksi-chip.is-warn .ksi-dot { background: var(--ksi-warn); }
+.ksi-chip.is-bad .ksi-dot { background: var(--ksi-bad); }
+.ksi-scroll { max-height: 60vh; overflow: auto; border: 1px solid var(--ksi-border); border-radius: 10px; }
+.ksi .ksi-table { width: 100%; margin: 0; border-collapse: separate; border-spacing: 0; }
+.ksi .ksi-table th { position: sticky; top: 0; z-index: 1; padding: .6rem .75rem; border-bottom: 1px solid var(--ksi-border); background: var(--ksi-soft); color: var(--ksi-muted); font-size: .75rem; font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
+.ksi .ksi-table td { padding: .6rem .75rem; border-bottom: 1px solid #f0f2f5; background: #fff; text-align: left; vertical-align: middle; }
+.ksi .ksi-table tr:last-child td { border-bottom: 0; }
+.ksi .ksi-table tr.is-hidden { display: none; }
+.ksi-row td:first-child { box-shadow: inset 3px 0 0 var(--ksi-edge, transparent); }
+.ksi-row.is-matched { --ksi-edge: var(--ksi-ok); }
+.ksi-row.is-notes { --ksi-edge: var(--ksi-warn); }
+.ksi-row.is-ignored { --ksi-edge: #d0d5dd; }
+.ksi .ksi-row.is-ignored td { background: var(--ksi-soft); }
+.ksi-row.is-ignored .ksi-colname, .ksi-row.is-ignored .ksi-sample { color: var(--ksi-muted); }
+.ksi-colname { font-weight: 600; }
+.ksi-samples { display: flex; flex-wrap: wrap; gap: .3rem; }
+.ksi-sample { display: inline-block; max-width: 14rem; padding: .1rem .5rem; border-radius: 6px; background: #f2f4f7; font-size: .85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ksi .ksi-table .ksi-arrow { width: 1.5rem; padding-left: 0; padding-right: 0; color: #98a2b3; }
+.ksi .ksi-map-select { width: 22rem; }
+.ksi-map-extra:empty { display: none; }
+.ksi-map-extra { margin-top: .5rem; max-width: 30rem; }
+.ksi-split { display: flex; flex-direction: column; gap: .3rem; }
+.ksi-split-title { color: var(--ksi-muted); font-size: .8em; font-weight: 600; }
+.ksi .ksi-parts { display: flex; flex-wrap: wrap; gap: .25rem; margin: 0; padding: 0; list-style: none; }
+.ksi .ksi-part { display: inline-flex; align-items: baseline; gap: .3rem; margin: 0; padding: .1rem .45rem; border: 1px solid var(--ksi-border); border-radius: 6px; background: #fff; font-size: .8em; list-style: none; }
+.ksi-part-name { color: var(--ksi-muted); font-size: .9em; font-weight: 600; }
+.ksi .ksi-part.is-empty { border-style: dashed; color: var(--ksi-muted); font-style: italic; }
+.ksi-values { border: 1px solid var(--ksi-border); border-radius: 8px; background: #fff; }
+.ksi-values.is-warn { border-color: var(--ksi-warn-soft); }
+.ksi-values > summary { padding: .35rem .6rem; color: var(--ksi-text); font-size: .85em; font-weight: 600; cursor: pointer; }
+.ksi-values.is-warn > summary { color: var(--ksi-warn-text); }
+.ksi-values-body { display: flex; flex-direction: column; gap: .5rem; padding: .25rem .6rem .6rem; }
+.ksi .ksi-values-body > p { margin: 0; }
+.ksi .ksi-value-list { display: flex; flex-direction: column; gap: .35rem; margin: 0; padding: 0; list-style: none; }
+.ksi .ksi-value { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: .5rem; margin: 0; list-style: none; }
+.ksi-value .ksi-icon { color: #98a2b3; }
+.ksi-value-text { min-width: 0; }
+.ksi .ksi-value select { width: 100%; height: 2rem; }
+.ksi .ksi-value.is-unmatched select { border-color: var(--ksi-warn); background-color: color-mix(in srgb, var(--ksi-warn-soft) 35%, #fff); }
+.ksi-row-values { margin-top: .3rem; }
+.ksi-row-values > summary { display: inline-block; color: var(--ksi-primary-text); font-size: .85em; text-decoration: underline; cursor: pointer; }
+.ksi-row-values-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: .75rem; margin-top: .5rem; }
+.ksi-fix { margin-top: .4rem; }
+.ksi .ksi-table tr:has(.ksi-fix) > td { vertical-align: top; }
+.ksi-fix > summary { display: inline-block; color: var(--ksi-primary-text); font-size: .85em; text-decoration: underline; cursor: pointer; }
+.ksi-fix-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .6rem .9rem; margin-top: .5rem; padding: .75rem; border: 1px solid var(--ksi-border); border-radius: 8px; background: #fff; }
+.ksi .ksi-fix-parts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: .4rem .75rem; margin: 0; padding: .5rem .75rem .75rem; border: 1px solid var(--ksi-border); border-radius: 8px; }
+.ksi .ksi-fix-parts legend { width: auto; margin: 0; padding: 0 .3rem; border: 0; font-size: 1em; font-weight: 600; }
+.ksi .ksi-fix-body input, .ksi .ksi-fix-body select, .ksi .ksi-fix-body textarea { width: 100%; }
+.ksi .ksi-field.is-bad input, .ksi .ksi-field.is-bad select, .ksi .ksi-field.is-bad textarea, .ksi .ksi-fix-parts.is-bad { border-color: var(--ksi-bad); }
+.ksi-field-error { color: var(--ksi-bad-text); font-size: .85em; font-weight: 500; }
+.ksi-field-error:empty { display: none; }
+.ksi-fix-parts > .ksi-field-error { grid-column: 1 / -1; }
+.ksi-alert.is-warn { color: var(--ksi-warn-text); background: color-mix(in srgb, var(--ksi-warn-soft) 40%, #fff); border-color: var(--ksi-warn-soft); }
+.ksi-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ksi-row-target { padding: .6rem .75rem; border: 1px solid var(--ksi-border); border-radius: 8px; background: var(--ksi-soft); }
+.ksi .ksi-row-target h4 { margin: 0 0 .4rem; font-size: .85em; font-weight: 650; }
+.ksi .ksi-row-target dl { display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: .2rem .75rem; margin: 0; font-size: .85em; }
+.ksi .ksi-row-target dt { margin: 0; color: var(--ksi-muted); font-weight: 500; overflow-wrap: break-word; }
+.ksi .ksi-row-target dd { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+.ksi-panel { border: 1px solid var(--ksi-border); border-radius: 10px; background: var(--ksi-soft); }
+.ksi-panel > summary { padding: .75rem 1rem; font-weight: 600; cursor: pointer; }
+.ksi-panel[open] > summary { border-bottom: 1px solid var(--ksi-border); }
+.ksi-panel-body { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; }
+.ksi .ksi-panel-body > p { margin: 0; }
+.ksi .ksi-batch-target { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .75rem 1rem; margin: 0; padding: .75rem 1rem 1rem; border: 1px solid var(--ksi-border); border-radius: 10px; background: #fff; }
+.ksi .ksi-batch-target legend { width: auto; margin: 0; padding: 0 .4rem; border: 0; font-size: .9em; font-weight: 600; }
+.ksi-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
+.ksi-tile { padding: .85rem 1rem; border: 1px solid var(--ksi-border); border-radius: 10px; background: #fff; }
+.ksi-tile-value { font-size: 1.6rem; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.ksi-tile-label { margin-top: .2rem; color: var(--ksi-muted); font-size: .85em; }
+.ksi-tile.is-lead { border-color: color-mix(in srgb, var(--ksi-primary) 35%, #fff); background: color-mix(in srgb, var(--ksi-primary) 6%, #fff); }
+.ksi-tile.is-lead .ksi-tile-value { color: var(--ksi-primary-text); }
+.ksi-tile.is-ok .ksi-tile-value { color: var(--ksi-ok-text); }
+.ksi-tile.is-bad { border-color: var(--ksi-bad-soft); background: color-mix(in srgb, var(--ksi-bad-soft) 40%, #fff); }
+.ksi-tile.is-bad .ksi-tile-value { color: var(--ksi-bad-text); }
+.ksi-callout { border: 1px solid; border-radius: 10px; }
+.ksi-callout.is-warn { border-color: var(--ksi-warn-soft); background: color-mix(in srgb, var(--ksi-warn-soft) 40%, #fff); }
+.ksi-callout > summary { display: flex; align-items: center; gap: .5rem; padding: .7rem 1rem; color: var(--ksi-warn-text); font-weight: 600; list-style: none; cursor: pointer; }
+.ksi-callout > summary::-webkit-details-marker { display: none; }
+.ksi-callout > summary::after { content: "Show"; margin-left: auto; font-size: .85em; font-weight: 500; text-decoration: underline; }
+.ksi-callout[open] > summary::after { content: "Hide"; }
+.ksi .ksi-callout-body { margin: 0; padding: 0 1rem .85rem 2.6rem; color: var(--ksi-text); list-style: none; }
+.ksi .ksi-callout-body > li { margin: 0 0 .6rem; padding: 0; list-style: none; }
+.ksi .ksi-callout-body > p { margin: 0 0 .4rem; }
+.ksi-tags { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .35rem; }
+.ksi-tag { padding: .1rem .55rem; border: 1px solid var(--ksi-border); border-radius: 999px; background: #fff; font-size: .85em; }
+.ksi-badges { display: flex; flex-wrap: wrap; gap: .3rem; }
+.ksi-badge { display: inline-flex; align-items: center; padding: .1rem .55rem; border-radius: 999px; background: #f2f4f7; color: #344054; font-size: .8em; font-weight: 500; white-space: nowrap; }
+.ksi-badge.is-new { background: color-mix(in srgb, var(--ksi-primary) 12%, #fff); color: var(--ksi-primary-text); }
+.ksi-badge.is-ok { background: var(--ksi-ok-soft); color: var(--ksi-ok-text); }
+.ksi-badge.is-warn { background: var(--ksi-warn-soft); color: var(--ksi-warn-text); cursor: help; }
+.ksi-row-error { display: flex; align-items: center; gap: .35rem; color: var(--ksi-bad-text); font-size: .9em; font-weight: 500; }
+.ksi .ksi-table tr.is-blocked td { background: color-mix(in srgb, var(--ksi-bad-soft) 40%, #fff); }
+.ksi .ksi-table .ksi-tick { width: 2.5rem; }
+.ksi .ksi-table .ksi-num { width: 3.5rem; color: var(--ksi-muted); font-variant-numeric: tabular-nums; }
+.ksi-loading { display: flex; align-items: center; justify-content: center; gap: .75rem; padding: 2.5rem 0; color: var(--ksi-muted); }
+.ksi-spinner { width: 1.25rem; height: 1.25rem; border: 2px solid var(--ksi-border); border-top-color: var(--ksi-primary); border-radius: 50%; animation: ksi-spin .8s linear infinite; }
+@keyframes ksi-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ksi-spinner { animation-duration: 2.4s; } .ksi-bar > div, .ksi .ksi-drop { transition: none; } }
+.ksi-progress { display: flex; flex-direction: column; gap: .6rem; padding: 1.5rem 0; }
+.ksi .ksi-progress-text { margin: 0; font-weight: 600; }
+.ksi-bar { height: .6rem; overflow: hidden; border-radius: 999px; background: #f2f4f7; }
+.ksi-bar > div { width: 0; height: 100%; border-radius: inherit; background: var(--ksi-primary); transition: width .2s; }
+.ksi-result { display: flex; align-items: center; gap: 1rem; padding: 1rem 1.25rem; border-radius: 12px; }
+.ksi-result.is-ok { background: color-mix(in srgb, var(--ksi-ok-soft) 40%, #fff); }
+.ksi-result.is-warn { background: color-mix(in srgb, var(--ksi-warn-soft) 40%, #fff); }
+.ksi-result-icon { display: flex; align-items: center; justify-content: center; width: 2.75rem; height: 2.75rem; border-radius: 50%; color: #fff; flex: none; }
+.ksi-result.is-ok .ksi-result-icon { background: var(--ksi-ok-text); }
+.ksi-result.is-warn .ksi-result-icon { background: var(--ksi-warn-text); }
+.ksi-result-icon .ksi-icon { width: 1.4rem; height: 1.4rem; }
+.ksi .ksi-result h3 { margin: 0; font-size: 1.15rem; }
+.ksi .ksi-result p { margin: .15rem 0 0; }
+@media (max-width: 700px) {
+  .ksi-header, .ksi-body, .ksi-footer { padding-left: 1rem; padding-right: 1rem; }
+  .ksi .ksi-steps li .ksi-step-label { display: none; }
+  .ksi .ksi-steps li.is-current .ksi-step-label { display: inline; }
+  .ksi .ksi-map-select { width: 100%; }
+  .ksi .ksi-table .ksi-arrow { display: none; }
+}
+`;
+        document.head.appendChild(style);
+    }
+}
