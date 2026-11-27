@@ -180,3 +180,20 @@ test('mergeValue joins parts and text', () => {
     assert.equal(SheetImportCore.mergeValue('a', 'b', 'paragraph_text'), 'a\nb');
     assert.equal(SheetImportCore.mergeValue(undefined, 'b'), 'b');
 });
+
+test('dateParts keeps the day for an afternoon time and snaps values just before midnight', () => {
+    assert.deepEqual(SheetImportCore.dateParts(46084.625), { year: 2026, month: 3, day: 3 });
+    assert.deepEqual(SheetImportCore.dateParts(46084.99999), { year: 2026, month: 3, day: 4 });
+    assert.deepEqual(SheetImportCore.dateParts(new Date(2026, 2, 3, 15, 0)), { year: 2026, month: 3, day: 3 });
+    assert.deepEqual(SheetImportCore.dateParts(new Date(2026, 2, 3, 23, 59, 58)), { year: 2026, month: 3, day: 4 });
+});
+
+test('splitPhones handles +44 (0), 0044 and extensions', () => {
+    assert.deepEqual(SheetImportCore.splitPhones('+44 (0)7700 900123'), [{ number: '07700900123', mobile: true }]);
+    assert.deepEqual(SheetImportCore.splitPhones('0044 7700 900123'), [{ number: '07700900123', mobile: true }]);
+    assert.deepEqual(SheetImportCore.splitPhones('0116 234 5678 ext 2'), [{ number: '01162345678', mobile: false }]);
+});
+
+test('suggestChoice works with no field', () => {
+    assert.equal(SheetImportCore.suggestChoice('Yes', null), '');
+});

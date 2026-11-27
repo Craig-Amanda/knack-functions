@@ -23456,6 +23456,15 @@ class SheetImportCore {
     }
 
     /**
+     * Normalises one key or a list of keys, dropping blanks.
+     * @param {*|Array<*>} value - Raw key or keys.
+     * @returns {string[]} Normalised keys.
+     */
+    static normalizeKeys(value) {
+        return [].concat(value ?? []).map(SheetImportCore.normalizeKey).filter(Boolean);
+    }
+
+    /**
      * Turns a sheet cell into one line of display text.
      * @param {*} value - Cell value (string, number, boolean or Date).
      * @returns {string} Display text.
@@ -23629,14 +23638,12 @@ class SheetImportCore {
         let day;
         if (value instanceof Date) {
             if (Number.isNaN(value.getTime())) return null;
-            // Sheet dates can sit a few seconds either side of midnight; round to the nearest day.
-            const rounded = new Date(value.getTime() + 12 * 3600e3);
-            rounded.setHours(0, 0, 0, 0);
-            const nearest = Math.abs(value - rounded) <= 12 * 3600e3 ? rounded : new Date(rounded.getTime() - 864e5);
-            [year, month, day] = [nearest.getFullYear(), nearest.getMonth() + 1, nearest.getDate()];
+            // Sheet dates can sit a few seconds before midnight; nudge those forward, then take the day (a 15:00 time keeps its day).
+            const day0 = new Date(value.getTime() + 60e3);
+            [year, month, day] = [day0.getFullYear(), day0.getMonth() + 1, day0.getDate()];
         } else if (typeof value === 'number') {
             if (value < 1 || value > 2958465) return null;
-            const date = new Date(Date.UTC(1899, 11, 30) + Math.round(value) * 864e5);
+            const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(value + 60 / 86400) * 864e5);
             [year, month, day] = [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate()];
         } else {
             const text = String(value ?? '').trim();
@@ -23836,7 +23843,9 @@ class SheetImportCore {
         const seen = new Set();
         const numbers = [];
         text.split(/\s*(?:[/,;&\n\r|]|\bor\b|\band\b)\s*/i).forEach((piece) => {
-            let digits = piece.replace(/[^\d+]/g, '');
+            // "+44 (0)7700…" carries the trunk 0 twice; "ext 2" digits aren't part of the number.
+            let digits = piece.replace(/\(0\)/g, '').replace(/\s*(?:ext\.?|extn\.?|x)\s*\d+\s*$/i, '').replace(/[^\d+]/g, '');
+            if (digits.startsWith('0044')) digits = `+44${digits.slice(4)}`;
             if (digits.startsWith('+44')) digits = `0${digits.slice(3)}`;
             else if (digits.startsWith('44') && digits.length === 12) digits = `0${digits.slice(2)}`;
             digits = digits.replace(/\+/g, '');
@@ -23908,7 +23917,7 @@ class SheetImportCore {
      * Converts a cell into the value a Knack field expects.
      * @param {*} raw - Cell value.
      * @param {{type: string, format?: Object}} field - Knack field type and format.
-     * @param {string} [part=''] - For name/address fields: which part this column holds ('' or 'full' for the whole value).
+     * @param {string} [part=''] - For name/address fields: which part this column holds ('' for the whole value).
      * @param {Object<string, string>} [valueMap] - For choice and yes/no fields: normalised sheet value → option ('' = don't send).
      * @returns {{value: *, warning?: string}} value is null when nothing should be sent.
      */
@@ -23925,14 +23934,14 @@ class SheetImportCore {
 
         switch (field?.type) {
             case 'name': {
-                if (part && part !== 'full') return { value: { [part]: SheetImportCore.titleCase(text) } };
+                if (part) return { value: { [part]: SheetImportCore.titleCase(text) } };
                 const name = SheetImportCore.parseName(SheetImportCore.titleCase(text));
                 if (!/title/i.test(String(format.format || ''))) delete name.title;
                 return { value: SheetImportCore.compact(name) };
             }
             case 'address': {
                 if (part === 'zip') return { value: { zip: SheetImportCore.formatPostcode(text) } };
-                if (part && part !== 'full') return { value: { [part]: SheetImportCore.titleCase(text) } };
+                if (part) return { value: { [part]: SheetImportCore.titleCase(text) } };
                 const address = SheetImportCore.parseAddress(multiline);
                 ['street', 'street2', 'city'].forEach((key) => { address[key] = SheetImportCore.titleCase(address[key]); });
                 return { value: SheetImportCore.compact(address) };
@@ -24024,12 +24033,22 @@ class SheetImportCore {
      * @returns {string} Option, or '' when there is no good guess.
      */
     static suggestChoice(text, field) {
+        // Remembered per field: the same few values come up on every row, and fuzzy matching is the slow part.
+        const caches = SheetImportCore.suggestCaches || (SheetImportCore.suggestCaches = new WeakMap());
+        let cache = field && typeof field === 'object' ? caches.get(field) : new Map();
+        if (!cache) caches.set(field, (cache = new Map()));
+        if (cache.has(text)) return cache.get(text);
         const flag = SheetImportCore.parseBoolean(text);
-        if (field?.type === 'boolean') return flag === null ? '' : flag ? 'Yes' : 'No';
-        const options = SheetImportCore.choiceOptions(field) || [];
-        const direct = SheetImportCore.matchChoice(text, options);
-        if (direct) return direct;
-        return flag === null ? '' : SheetImportCore.matchChoice(flag ? 'Yes' : 'No', options) || '';
+        let suggestion;
+        if (field?.type === 'boolean') {
+            suggestion = flag === null ? '' : flag ? 'Yes' : 'No';
+        } else {
+            const options = SheetImportCore.choiceOptions(field) || [];
+            suggestion = SheetImportCore.matchChoice(text, options)
+                || (flag === null ? '' : SheetImportCore.matchChoice(flag ? 'Yes' : 'No', options) || '');
+        }
+        cache.set(text, suggestion);
+        return suggestion;
     }
 
     /**
@@ -24223,7 +24242,7 @@ class KnackSheetImport {
      * @returns {Promise<void>}
      */
     async mount(container = this.config.container) {
-        const host = typeof container === 'string' ? document.querySelector(container) : container;
+        const host = resolveElement(container?.jquery ? container[0] : container);
         if (!host) throw new Error(`KnackSheetImport: container ${container} not found`);
         KnackSheetImport.injectStyles();
         this.root = KnackSheetImport.el('div', { class: 'ksi' });
@@ -24296,7 +24315,7 @@ class KnackSheetImport {
         const selects = this.config.cascade.map((item) => {
             const select = el('select', { 'data-key': item.key });
             cascadeBox.append(el('label', { class: 'ksi-field' }, [
-                el('span', { class: 'ksi-label' }, [item.label, item.required ? el('span', { class: 'ksi-req' }, ' *') : '']),
+                el('span', { class: 'ksi-label' }, KnackSheetImport.labelText(item.label, item.required)),
                 select
             ]));
             return select;
@@ -24320,7 +24339,10 @@ class KnackSheetImport {
                         : `${KnackSheetImport.count(this.state.body.length, 'row')} ready to match`;
         };
 
+        // A newer change starts a new run; an older run's slow response must not overwrite its lists.
+        let loadRun = 0;
         const loadFrom = async (start) => {
+            const run = ++loadRun;
             for (let i = start; i < this.config.cascade.length; i++) {
                 const item = this.config.cascade[i];
                 const select = selects[i];
@@ -24332,6 +24354,7 @@ class KnackSheetImport {
                 } catch (error) {
                     console.error(`KnackSheetImport: loading ${item.key} failed`, error);
                 }
+                if (run !== loadRun) return;
                 const current = this.state.selections[item.key];
                 const keep = options.some((option) => option.value === current) ? current : '';
                 const picked = keep || item.default?.(options, this.ctx) || (options.length === 1 ? options[0].value : '');
@@ -24655,7 +24678,7 @@ class KnackSheetImport {
         const field = /^field_/.test(fieldId || '') ? this.fieldOf(targetKey, fieldId) : null;
         box.replaceChildren();
         if (!field) return;
-        if (['name', 'address'].includes(field.type) && (!part || part === 'full')) {
+        if (['name', 'address'].includes(field.type) && !part) {
             box.append(this.renderSplitPreview(column, field));
         } else if (SheetImportCore.choiceOptions(field)) {
             if (!this.state.valueMaps[column.index]) {
@@ -24829,7 +24852,7 @@ class KnackSheetImport {
         input.addEventListener('change', () => {
             values[field.id] = input.value;
         });
-        return el('label', { class: 'ksi-field' }, [el('span', { class: 'ksi-label' }, [field.label, field.required ? el('span', { class: 'ksi-req' }, ' *') : '']), input]);
+        return el('label', { class: 'ksi-field' }, [el('span', { class: 'ksi-label' }, KnackSheetImport.labelText(field.label, field.required)), input]);
     }
 
     /**
@@ -24909,22 +24932,13 @@ class KnackSheetImport {
         const lookups = {};
         await Promise.all(this.targets.map(async (target) => {
             const entry = { found: new Map(), duplicates: new Set() };
-            if (target.find) {
-                const records = await target.find.load(ctx) || [];
-                records.forEach((record) => {
-                    [].concat(target.find.keyOf(record, 'record') || []).map(SheetImportCore.normalizeKey).filter(Boolean)
-                        .forEach((key) => {
-                            if (!entry.found.has(key)) entry.found.set(key, record.id);
-                        });
+            const [records, keys] = await Promise.all([target.find?.load(ctx), target.duplicates?.load(ctx)]);
+            (records || []).forEach((record) => {
+                SheetImportCore.normalizeKeys(target.find.keyOf(record, 'record')).forEach((key) => {
+                    if (!entry.found.has(key)) entry.found.set(key, record.id);
                 });
-            }
-            if (target.duplicates) {
-                const keys = await target.duplicates.load(ctx) || [];
-                for (const key of keys) {
-                    const normal = SheetImportCore.normalizeKey(key);
-                    if (normal) entry.duplicates.add(normal);
-                }
-            }
+            });
+            SheetImportCore.normalizeKeys(keys).forEach((key) => entry.duplicates.add(key));
             lookups[target.key] = entry;
         }));
         this.state.lookups = lookups;
@@ -24938,7 +24952,7 @@ class KnackSheetImport {
      */
     findKeys(target, payload) {
         if (!target.find) return [];
-        return [].concat(target.find.keyOf(payload, 'payload') || []).map(SheetImportCore.normalizeKey).filter(Boolean);
+        return SheetImportCore.normalizeKeys(target.find.keyOf(payload, 'payload'));
     }
 
     /**
@@ -24957,9 +24971,10 @@ class KnackSheetImport {
      * Builds one row's payloads, warnings and errors from the sheet cells.
      * @param {{number: number, cells: Array<*>}} source - Sheet row.
      * @param {Object} fixedByTarget - `fixed(ctx)` values per target.
+     * @param {Object} batchByTarget - "Same for every row" values per target, already converted (see batchValues).
      * @returns {Object|null} Row, or null when no mapped cell has a value.
      */
-    buildRow(source, fixedByTarget) {
+    buildRow(source, fixedByTarget, batchByTarget) {
         const payloads = {};
         const notes = {};
         const fromSheet = {};
@@ -25010,16 +25025,13 @@ class KnackSheetImport {
 
         this.targets.forEach((target) => {
             const payload = payloads[target.key];
-            Object.entries(this.state.batch[target.key] || {}).forEach(([fieldId, raw]) => {
-                const field = this.fieldOf(target.key, fieldId);
-                if (!field || !SheetImportCore.isBlank(payload[fieldId])) return;
-                const { value } = SheetImportCore.convertValue(field.type === 'date_time' ? KnackSheetImport.isoToParts(raw) : raw, field);
-                if (value !== null) payload[fieldId] = value;
+            Object.entries(batchByTarget[target.key]).forEach(([fieldId, value]) => {
+                // Each row gets its own copy, so a hook that edits a value in place changes one row only.
+                if (SheetImportCore.isBlank(payload[fieldId])) payload[fieldId] = structuredClone(value);
             });
             Object.assign(payload, fixedByTarget[target.key]);
             if (target.notesFieldId && notes[target.key].length) {
-                const joiner = this.fieldOf(target.key, target.notesFieldId)?.type === 'rich_text' ? '<br>' : '\n';
-                payload[target.notesFieldId] = [payload[target.notesFieldId], ...notes[target.key]].filter(Boolean).join(joiner);
+                payload[target.notesFieldId] = [payload[target.notesFieldId], ...notes[target.key]].filter(Boolean).join(this.notesJoiner(target));
             }
             Object.keys(payload).forEach((fieldId) => {
                 if (SheetImportCore.isBlank(payload[fieldId])) delete payload[fieldId];
@@ -25031,6 +25043,15 @@ class KnackSheetImport {
         });
 
         return { number: source.number, cells: source.cells, payloads, fromSheet, warnings, missing, extraPhones, errors: [], info: [], finds: {}, include: true };
+    }
+
+    /**
+     * Line break used in a target's notes field (`<br>` for rich text, else a newline).
+     * @param {Object} target - Target.
+     * @returns {string} Joiner.
+     */
+    notesJoiner(target) {
+        return this.fieldOf(target.key, target.notesFieldId)?.type === 'rich_text' ? '<br>' : '\n';
     }
 
     /**
@@ -25052,13 +25073,20 @@ class KnackSheetImport {
     }
 
     /**
-     * Converts a yyyy-mm-dd date input value into a Date-free value convertValue reads (dd/mm/yyyy text).
-     * @param {*} value - Date input value.
-     * @returns {*} dd/mm/yyyy text, or the value unchanged.
+     * "Same for every row" values converted for Knack once, per target (date inputs give yyyy-mm-dd, which convertValue reads).
+     * @returns {Object<string, Object<string, *>>} Field id → value, per target key.
      */
-    static isoToParts(value) {
-        const match = String(value ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-        return match ? `${match[3]}/${match[2]}/${match[1]}` : value;
+    batchValues() {
+        return Object.fromEntries(this.targets.map((target) => {
+            const values = {};
+            Object.entries(this.state.batch[target.key] || {}).forEach(([fieldId, raw]) => {
+                const field = this.fieldOf(target.key, fieldId);
+                if (!field) return;
+                const { value } = SheetImportCore.convertValue(raw, field);
+                if (value !== null) values[fieldId] = value;
+            });
+            return [target.key, values];
+        }));
     }
 
     /**
@@ -25101,7 +25129,8 @@ class KnackSheetImport {
 
         const ctx = this.ctx;
         const fixedByTarget = Object.fromEntries(this.targets.map((target) => [target.key, target.fixed?.(ctx) || {}]));
-        const rows = this.state.body.map((source) => this.buildRow(source, fixedByTarget)).filter(Boolean);
+        const batchByTarget = this.batchValues();
+        const rows = this.state.body.map((source) => this.buildRow(source, fixedByTarget, batchByTarget)).filter(Boolean);
         const seenDuplicateKeys = new Map();
         const pendingFinds = new Map();
 
@@ -25133,7 +25162,7 @@ class KnackSheetImport {
                     }
                 }
                 if (target.duplicates) {
-                    [].concat(target.duplicates.keyOf(payload) || []).map(SheetImportCore.normalizeKey).filter(Boolean).forEach((key) => {
+                    SheetImportCore.normalizeKeys(target.duplicates.keyOf(payload)).forEach((key) => {
                         if (lookup.duplicates.has(key)) row.errors.push(target.duplicates.message || `${target.label} already exists`);
                         const seenAt = seenDuplicateKeys.get(`${target.key}:${key}`);
                         if (seenAt) row.errors.push(`Same as row ${seenAt}`);
@@ -25344,7 +25373,6 @@ class KnackSheetImport {
         const created = Object.fromEntries(this.targets.map((target) => [target.key, 0]));
         const updated = Object.fromEntries(this.targets.map((target) => [target.key, 0]));
         const notesById = new Map();
-        const noteJoiner = (target) => (this.fieldOf(target.key, target.notesFieldId)?.type === 'rich_text' ? '<br>' : '\n');
         const failures = [];
         const noteFailures = [];
         // Closing or reloading the tab mid-run would leave some rows half done: ask the browser to warn first.
@@ -25356,7 +25384,7 @@ class KnackSheetImport {
         try {
             for (const [index, row] of rows.entries()) {
                 progressText.textContent = `Importing row ${index + 1} of ${rows.length}…`;
-                await this.importRow(api, row, { created, updated, notesById, noteJoiner, noteFailures });
+                await this.importRow(api, row, { created, updated, notesById, noteFailures });
                 if (!row.result.ok) failures.push(row);
                 fill.style.width = `${((index + 1) / rows.length) * 100}%`;
                 bar.setAttribute('aria-valuenow', String(index + 1));
@@ -25381,7 +25409,7 @@ class KnackSheetImport {
      * @param {Object} run - Counters and note tracking shared across the run.
      * @returns {Promise<void>}
      */
-    async importRow(api, row, { created, updated, notesById, noteJoiner, noteFailures }) {
+    async importRow(api, row, { created, updated, notesById, noteFailures }) {
         const ctx = this.ctx;
         const ids = { ...(row.result?.ids || {}) };
         let current = null;
@@ -25399,9 +25427,9 @@ class KnackSheetImport {
                     if (!id) throw new Error(`${target.label} was not created (no record id returned)`);
                     created[target.key] += 1;
                     this.findKeys(target, row.payloads[target.key]).forEach((key) => this.state.lookups[target.key].found.set(key, id));
-                    if (target.notesUpdateViewId && payload[target.notesFieldId]) notesById.set(id, String(payload[target.notesFieldId]).split(noteJoiner(target)));
+                    if (target.notesUpdateViewId && payload[target.notesFieldId]) notesById.set(id, String(payload[target.notesFieldId]).split(this.notesJoiner(target)));
                 } else if (target.notesUpdateViewId && row.extraPhones?.target === target.key) {
-                    await this.updateNotes(api, target, id, row, notesById, noteJoiner(target), updated, noteFailures);
+                    await this.updateNotes(api, target, id, row, notesById, this.notesJoiner(target), updated, noteFailures);
                 }
                 ids[target.key] = id;
             }
@@ -25554,7 +25582,7 @@ class KnackSheetImport {
         let changed = false;
         const markChanged = () => { changed = true; };
         const note = el('span', { class: 'ksi-field-error', 'aria-live': 'polite' }, message);
-        const label = el('span', { class: 'ksi-label' }, [field.label, field.required ? el('span', { class: 'ksi-req' }, ' *') : '']);
+        const label = el('span', { class: 'ksi-label' }, KnackSheetImport.labelText(field.label, field.required));
         const wrap = (control) => el('label', { class: `ksi-field${message ? ' is-bad' : ''}` }, [label, control, note]);
         const showProblem = (problem) => {
             note.textContent = problem || message;
@@ -25573,7 +25601,7 @@ class KnackSheetImport {
                 input.addEventListener('input', markChanged);
                 return { part, input, node: el('label', { class: 'ksi-field' }, [el('span', { class: 'ksi-sub' }, text), input]) };
             });
-            node = el('fieldset', { class: `ksi-fix-parts${message ? ' is-bad' : ''}` }, [el('legend', {}, [field.label, field.required ? el('span', { class: 'ksi-req' }, ' *') : '']), ...parts.map((part) => part.node), note]);
+            node = el('fieldset', { class: `ksi-fix-parts${message ? ' is-bad' : ''}` }, [el('legend', {}, KnackSheetImport.labelText(field.label, field.required)), ...parts.map((part) => part.node), note]);
             read = () => {
                 const merged = parts.reduce((all, { part, input }) => {
                     const { value: piece } = SheetImportCore.convertValue(input.value, field, part);
@@ -25603,6 +25631,11 @@ class KnackSheetImport {
             const multiline = field.type === 'paragraph_text';
             const input = el(multiline ? 'textarea' : 'input', multiline ? { rows: '3' } : { type: 'text' });
             input.value = value === undefined || value === null ? '' : String(value);
+            if (field.type === 'date_time' && input.value) {
+                // Shown as yyyy-mm-dd so reading it back can't swap day and month on a mm/dd field.
+                const parts = SheetImportCore.dateParts(input.value, { dayFirst: !/^mm/i.test(String(field.format?.date_format || '')) });
+                if (parts) input.value = [parts.year, parts.month, parts.day].map((n, i) => String(n).padStart(i ? 2 : 4, '0')).join('-');
+            }
             input.addEventListener('input', markChanged);
             node = wrap(input);
             read = () => {
@@ -25804,6 +25837,16 @@ class KnackSheetImport {
             node.append(child instanceof Node ? child : document.createTextNode(String(child)));
         });
         return node;
+    }
+
+    /**
+     * A field label's children, with a red star when it is required.
+     * @param {string} text - Label.
+     * @param {boolean} [required=false] - Required field.
+     * @returns {Array<string|Element>} Children for `el`.
+     */
+    static labelText(text, required = false) {
+        return [text, required ? KnackSheetImport.el('span', { class: 'ksi-req' }, ' *') : ''];
     }
 
     /**
