@@ -10,9 +10,12 @@ const escapeHelper = sliceFrom('function escapeHtml(value)', '\n\n');
 const visibleHelper = sliceFrom('function isElementVisible(target', '\n}\n') + '\n}';
 const copyHelpers = sliceFrom('function buildTableBodyClipboardData', 'if (typeof globalThis !== \'undefined\') {\n    globalThis.copyViewBodyToClipboard');
 
-// Two rows trimmed from a NABCEL table: multi-line Works Done cells, trailing <br>s and a hidden column.
+// Two rows trimmed from a NABCEL table: multi-line Works Done cells, trailing <br>s, a hidden column
+// and KTL's row-selection checkbox column (one cell with KTL's class, one without), plus a totals row
+// whose first cell is the blank spacer KTL adds to line it up with that column.
 const tableHtml = `<div id="view_1" class="kn-table"><div class="table-keyword-search"></div><div class="kn-table-wrapper"><table><tbody>
 <tr id="a">
+  <td class="ktlCheckboxCell"><input type="checkbox" class="bulkEditCb ktlCheckbox-row"></td>
   <td class="field_2040"><span class="col-0">
 0048
   </span></td>
@@ -26,6 +29,7 @@ const tableHtml = `<div id="view_1" class="kn-table"><div class="table-keyword-s
   <td class="field_3"><a href="https://example.com/cert.pdf">cert.pdf</a></td>
 </tr>
 <tr id="b">
+  <td><input type="checkbox" class="bulkEditCb ktlCheckbox-row"></td>
   <td class="field_2040"><span class="col-0">
 0277
   </span></td>
@@ -37,6 +41,14 @@ const tableHtml = `<div id="view_1" class="kn-table"><div class="table-keyword-s
 16/09/2026
   </span></td>
   <td class="field_3"><a href="#jobs/view/0277">View</a> <a href="#jobs/edit/0277">Edit</a></td>
+</tr>
+<tr class="kn-table-totals">
+  <td class="ktlCheckboxBlankCell"></td>
+  <td>Total</td>
+  <td></td>
+  <td style="display:none">hidden</td>
+  <td></td>
+  <td>2</td>
 </tr>
 </tbody></table></div></div>`;
 
@@ -92,10 +104,13 @@ test('_copybody keeps multi-line cells in one Excel cell', async () => {
         assert.ok(clipboard.html.includes(
             `<tr><td>0277</td><td>New outside light fitted${sameCell}Need to${sameCell}Return when parts in stock${sameCell}${sameCell}Morgan "M"</td><td>16/09/2026</td><td>View Edit</td></tr>`
         ), clipboard.html);
+        // KTL's blank spacer on the totals row is dropped, so Total lines up with the first column.
+        assert.ok(clipboard.html.includes('<tr><td>Total</td><td></td><td></td><td>2</td></tr>'), clipboard.html);
         assert.ok(!clipboard.html.includes('hidden'), clipboard.html);
         assert.equal(clipboard.text,
             '0048\t2 Man job install new Crabtree RCD\t18/09/2026\tcert.pdf\n' +
-            '0277\t"New outside light fitted\nNeed to\nReturn when parts in stock\n\nMorgan ""M"""\t16/09/2026\tView Edit'
+            '0277\t"New outside light fitted\nNeed to\nReturn when parts in stock\n\nMorgan ""M"""\t16/09/2026\tView Edit\n' +
+            'Total\t\t\t2'
         );
     } finally {
         await browser.close();
