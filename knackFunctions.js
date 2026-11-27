@@ -23473,7 +23473,12 @@ class SheetImportCore {
         if (value === null || value === undefined) return '';
         if (value instanceof Date) {
             const parts = SheetImportCore.dateParts(value);
-            return parts ? SheetImportCore.formatDate(parts, 'dd/mm/yyyy') : '';
+            if (!parts) return '';
+            const time = SheetImportCore.timeParts(value);
+            // A time-only cell comes through on Excel's day 0 (30/12/1899): show just the time, even 00:00.
+            if (parts.year < 1900) return SheetImportCore.formatTime(time, 'military');
+            const clock = time.hours || time.minutes ? SheetImportCore.formatTime(time, 'military') : '';
+            return [SheetImportCore.formatDate(parts, 'dd/mm/yyyy'), clock].filter(Boolean).join(' ');
         }
         return String(value).replace(/\s+/g, ' ').trim();
     }
@@ -23638,20 +23643,21 @@ class SheetImportCore {
         let day;
         if (value instanceof Date) {
             if (Number.isNaN(value.getTime())) return null;
-            // Sheet dates can sit a few seconds before midnight; nudge those forward, then take the day (a 15:00 time keeps its day).
-            const day0 = new Date(value.getTime() + 60e3);
+            // Round to the minute first, as timeParts does, so 23:59:50 moves to the next day but 23:59 keeps its day.
+            const day0 = new Date(Math.round(value.getTime() / 60e3) * 60e3);
             [year, month, day] = [day0.getFullYear(), day0.getMonth() + 1, day0.getDate()];
         } else if (typeof value === 'number') {
             if (value < 1 || value > 2958465) return null;
-            const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(value + 60 / 86400) * 864e5);
+            const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(Math.round(value * 1440) / 1440) * 864e5);
             [year, month, day] = [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate()];
         } else {
             const text = String(value ?? '').trim();
             const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-            let match = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
+            // The date ends the text or is followed by a space, comma or T, so "2026-03-03T14:05" and "03/03/2026, 14:05" still read.
+            let match = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?=$|[\sT,])/);
             if (match) {
                 [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-            } else if ((match = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})\b/))) {
+            } else if ((match = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2})(?=$|[\sT,])/))) {
                 const [a, b] = [Number(match[1]), Number(match[2])];
                 [day, month] = dayFirst ? [a, b] : [b, a];
                 year = Number(match[3]);
@@ -23680,6 +23686,68 @@ class SheetImportCore {
         const dd = pad(parts.day);
         const mm = pad(parts.month);
         return /^m/i.test(String(format || '')) ? `${mm}/${dd}/${parts.year}` : `${dd}/${mm}/${parts.year}`;
+    }
+
+    /**
+     * What a Knack date/time field holds, from its format.
+     * @param {{date_format?: string, time_format?: string}} [format] - Field format.
+     * @returns {'date'|'datetime'|'time'} 'time' for "Ignore Date", 'date' when there is no time or it is "Ignore Time".
+     */
+    static dateKind(format = {}) {
+        if (/ignore/i.test(String(format?.date_format || ''))) return 'time';
+        const time = String(format?.time_format || '');
+        return !time || /ignore/i.test(time) ? 'date' : 'datetime';
+    }
+
+    /**
+     * Reads a time of day from a Date, an Excel serial (the fraction is the time) or text
+     * ("14:05", "2:05pm", "2pm", "9.30 am", "noon", or a date followed by a time).
+     * @param {*} value - Cell value.
+     * @returns {{hours: number, minutes: number}|null} 24-hour time, or null when there is no time.
+     */
+    static timeParts(value) {
+        let total;
+        if (value instanceof Date) {
+            if (Number.isNaN(value.getTime())) return null;
+            // Round to the minute: sheet times can sit a few seconds out.
+            const rounded = new Date(Math.round(value.getTime() / 60e3) * 60e3);
+            return { hours: rounded.getHours(), minutes: rounded.getMinutes() };
+        }
+        if (typeof value === 'number') {
+            // A whole number (9, 14, a date serial) has no time in it, and 1–18263 (before 1950) is a number typed
+            // into the cell ("14.30" becomes 14.3), not a date with a time.
+            if (!(value >= 0) || value > 2958466 || (value >= 1 && (Number.isInteger(value) || value < 18264))) return null;
+            total = Math.round((value - Math.floor(value)) * 1440) % 1440;
+            return { hours: Math.floor(total / 60), minutes: total % 60 };
+        }
+        const text = String(value ?? '').trim().toLowerCase();
+        if (/(?:^|\s)(?:12\s*)?(?:noon|midday)$/.test(text)) return { hours: 12, minutes: 0 };
+        if (/(?:^|\s)midnight$/.test(text)) return { hours: 0, minutes: 0 };
+        const match = text.match(/(?:^|[\sT])(\d{1,2})(?:[:.](\d{2})(?::\d{2}(?:\.\d+)?)?)?\s*(?:([ap])\.?\s?m\.?)?$/i);
+        if (!match || (match[2] === undefined && !match[3])) return null;
+        let hours = Number(match[1]);
+        const minutes = Number(match[2] || 0);
+        if (minutes > 59) return null;
+        if (match[3]) {
+            if (hours < 1 || hours > 12) return null;
+            hours = (hours % 12) + (match[3] === 'p' ? 12 : 0);
+        } else if (hours > 23) {
+            return null;
+        }
+        return { hours, minutes };
+    }
+
+    /**
+     * Writes a time in a Knack time format: "14:05" for military formats, otherwise "2:05pm".
+     * @param {{hours: number, minutes: number}} time - 24-hour time.
+     * @param {string} [format] - Knack `time_format`.
+     * @returns {string} Formatted time.
+     */
+    static formatTime({ hours, minutes }, format = '') {
+        const mm = String(minutes).padStart(2, '0');
+        return /military/i.test(String(format))
+            ? `${String(hours).padStart(2, '0')}:${mm}`
+            : `${(hours % 12) || 12}:${mm}${hours >= 12 ? 'pm' : 'am'}`;
     }
 
     /**
@@ -23947,10 +24015,24 @@ class SheetImportCore {
                 return { value: SheetImportCore.compact(address) };
             }
             case 'date_time': {
+                const kind = SheetImportCore.dateKind(format);
+                const time = kind === 'date' ? null : SheetImportCore.timeParts(raw);
+                if (kind === 'time') {
+                    return time
+                        ? { value: SheetImportCore.formatTime(time, format.time_format) }
+                        : { value: null, warning: `${shown} is not a time` };
+                }
                 const parts = SheetImportCore.dateParts(raw);
-                return parts
-                    ? { value: SheetImportCore.formatDate(parts, format.date_format) }
-                    : { value: null, warning: `${shown} is not a date` };
+                // Year < 1900 is Excel's day 0: a time-only cell, with no date in it.
+                if (!parts || parts.year < 1900) return { value: null, warning: `${shown} is not a date` };
+                // Text that looks like it has a time we can't read (25:00, a Z or zone name) is flagged, not dropped.
+                if (kind === 'datetime' && !time && typeof raw === 'string' && /:\d{2}|\d\s*[ap]\.?m\b|\dT\d/i.test(raw)) {
+                    return { value: null, warning: `${shown} has a time that can't be read` };
+                }
+                const date = SheetImportCore.formatDate(parts, format.date_format);
+                // A date cell with no time reads as midnight; send it as a date alone rather than inventing 00:00.
+                const dateOnlyCell = (raw instanceof Date || typeof raw === 'number') && time && !time.hours && !time.minutes;
+                return { value: time && !dateOnlyCell ? `${date} ${SheetImportCore.formatTime(time, format.time_format)}` : date };
             }
             case 'boolean': {
                 const picked = chosen(text);
@@ -24840,8 +24922,22 @@ class KnackSheetImport {
             input = el('select', {}, [el('option', { value: '' }, '—'), el('option', { value: 'Yes' }, 'Yes'), el('option', { value: 'No' }, 'No')]);
         } else if (field.type === 'multiple_choice') {
             input = el('select', {}, [el('option', { value: '' }, '—'), ...(field.format.options || []).map((option) => el('option', { value: option }, option))]);
+        } else if (field.type === 'date_time' && SheetImportCore.dateKind(field.format) === 'datetime') {
+            // Separate date and time inputs, so a date with no time stays a date (a datetime-local input needs both).
+            const [date, time] = [el('input', { type: 'date' }), el('input', { type: 'time' })];
+            const [storedDate = '', storedTime = ''] = String(values[field.id] ?? '').split(/[T ]/);
+            [date.value, time.value] = [storedDate, storedTime];
+            // A time needs a date: the time input stays off until a date is picked, and a time alone is not kept.
+            const update = () => {
+                time.disabled = !date.value;
+                values[field.id] = date.value ? [date.value, time.value].filter(Boolean).join(' ') : '';
+            };
+            time.disabled = !date.value;
+            date.addEventListener('change', update);
+            time.addEventListener('change', update);
+            return el('label', { class: 'ksi-field' }, [el('span', { class: 'ksi-label' }, KnackSheetImport.labelText(field.label, field.required)), el('span', { class: 'ksi-datetime' }, [date, time])]);
         } else if (field.type === 'date_time') {
-            input = el('input', { type: 'date' });
+            input = el('input', { type: SheetImportCore.dateKind(field.format) });
         } else {
             input = el('input', { type: 'text' });
         }
@@ -25073,7 +25169,7 @@ class KnackSheetImport {
     }
 
     /**
-     * "Same for every row" values converted for Knack once, per target (date inputs give yyyy-mm-dd, which convertValue reads).
+     * "Same for every row" values converted for Knack once, per target (date inputs give yyyy-mm-dd, yyyy-mm-dd HH:MM or HH:MM, which convertValue reads).
      * @returns {Object<string, Object<string, *>>} Field id → value, per target key.
      */
     batchValues() {
@@ -25090,19 +25186,33 @@ class KnackSheetImport {
     }
 
     /**
-     * The field's own Knack default as a "same for every row" input value (yyyy-mm-dd for dates).
+     * The field's own Knack default as a "same for every row" input value: yyyy-mm-dd for dates,
+     * yyyy-mm-dd HH:MM (or just the date when there is no default time) for date and time, HH:MM for times.
      * Blank, "No" and "none" defaults give nothing, so the input stays empty.
      * @param {Object} field - Field from resolveTarget.
-     * @param {Date} [now=new Date()] - Today, for "current date" defaults.
+     * @param {Date} [now=new Date()] - Today, for "current date" and "current time" defaults.
      * @returns {string|undefined} Input value.
      */
     static fieldDefault(field, now = new Date()) {
         const format = field.format || {};
         const iso = (year, month, day) => [year, month, day].map((part) => String(part).padStart(2, '0')).join('-');
         if (field.type === 'date_time') {
-            if (format.default_type === 'current') return iso(now.getFullYear(), now.getMonth() + 1, now.getDate());
-            const match = format.default_type === 'date' && String(format.default_date || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-            return match ? iso(match[3], match[1], match[2]) : undefined;
+            const kind = SheetImportCore.dateKind(format);
+            let time;
+            if (format.time_type === 'current') time = { hours: now.getHours(), minutes: now.getMinutes() };
+            else if (format.time_type === 'time') time = SheetImportCore.timeParts(format.default_time);
+            const clock = time ? SheetImportCore.formatTime(time, 'military') : '';
+            if (kind === 'time') return clock || undefined;
+            let date;
+            if (format.default_type === 'current') {
+                date = iso(now.getFullYear(), now.getMonth() + 1, now.getDate());
+            } else if (format.default_type === 'date') {
+                // Knack stores default_date as mm/dd/yyyy.
+                const match = String(format.default_date || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                if (match) date = iso(match[3], match[1], match[2]);
+            }
+            if (!date) return undefined;
+            return kind === 'datetime' && clock ? `${date} ${clock}` : date;
         }
         if (field.type === 'boolean') return format.default === true ? 'Yes' : undefined;
         if (typeof format.default !== 'string' || !format.default || format.default === 'kn-blank') return undefined;
@@ -25631,10 +25741,14 @@ class KnackSheetImport {
             const multiline = field.type === 'paragraph_text';
             const input = el(multiline ? 'textarea' : 'input', multiline ? { rows: '3' } : { type: 'text' });
             input.value = value === undefined || value === null ? '' : String(value);
-            if (field.type === 'date_time' && input.value) {
-                // Shown as yyyy-mm-dd so reading it back can't swap day and month on a mm/dd field.
+            if (field.type === 'date_time' && input.value && SheetImportCore.dateKind(field.format) !== 'time') {
+                // Shown as yyyy-mm-dd (and 24-hour time) so reading it back can't swap day and month on a mm/dd field.
                 const parts = SheetImportCore.dateParts(input.value, { dayFirst: !/^mm/i.test(String(field.format?.date_format || '')) });
-                if (parts) input.value = [parts.year, parts.month, parts.day].map((n, i) => String(n).padStart(i ? 2 : 4, '0')).join('-');
+                const time = SheetImportCore.dateKind(field.format) === 'datetime' && SheetImportCore.timeParts(input.value);
+                if (parts) {
+                    input.value = [parts.year, parts.month, parts.day].map((n, i) => String(n).padStart(i ? 2 : 4, '0')).join('-')
+                        + (time ? ` ${SheetImportCore.formatTime(time, 'military')}` : '');
+                }
             }
             input.addEventListener('input', markChanged);
             node = wrap(input);
@@ -25890,6 +26004,8 @@ class KnackSheetImport {
 .ksi .ksi-lead { margin: 0; color: var(--ksi-muted); }
 .ksi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .9rem 1.25rem; }
 .ksi .ksi-field { display: flex; flex-direction: column; gap: .3rem; margin: 0; font-weight: normal; }
+.ksi .ksi-datetime { display: flex; gap: .4rem; }
+.ksi .ksi-datetime input { flex: 1; min-width: 0; }
 .ksi-label { font-weight: 600; font-size: .9em; color: var(--ksi-text); }
 .ksi-req { color: var(--ksi-bad-text); }
 .ksi-sub { color: var(--ksi-muted); font-size: .85em; }

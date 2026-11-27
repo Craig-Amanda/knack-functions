@@ -197,3 +197,91 @@ test('splitPhones handles +44 (0), 0044 and extensions', () => {
 test('suggestChoice works with no field', () => {
     assert.equal(SheetImportCore.suggestChoice('Yes', null), '');
 });
+
+test('dateKind reads date-only, time-only and date-and-time formats', () => {
+    assert.equal(SheetImportCore.dateKind({ date_format: 'dd/mm/yyyy', time_format: 'Ignore Time' }), 'date');
+    assert.equal(SheetImportCore.dateKind({ date_format: 'dd/mm/yyyy' }), 'date');
+    assert.equal(SheetImportCore.dateKind({ date_format: 'Ignore Date', time_format: 'HH:MM am' }), 'time');
+    assert.equal(SheetImportCore.dateKind({ date_format: 'dd/mm/yyyy', time_format: 'HH MM (military)' }), 'datetime');
+    assert.equal(SheetImportCore.dateKind(), 'date');
+});
+
+test('timeParts reads text, serials and Dates', () => {
+    const t = (hours, minutes) => ({ hours, minutes });
+    assert.deepEqual(SheetImportCore.timeParts('14:05'), t(14, 5));
+    assert.deepEqual(SheetImportCore.timeParts('2:05pm'), t(14, 5));
+    assert.deepEqual(SheetImportCore.timeParts('2pm'), t(14, 0));
+    assert.deepEqual(SheetImportCore.timeParts('9.30 am'), t(9, 30));
+    assert.deepEqual(SheetImportCore.timeParts('12am'), t(0, 0));
+    assert.deepEqual(SheetImportCore.timeParts('12:15 p.m.'), t(12, 15));
+    assert.deepEqual(SheetImportCore.timeParts('Noon'), t(12, 0));
+    assert.deepEqual(SheetImportCore.timeParts('midnight'), t(0, 0));
+    assert.deepEqual(SheetImportCore.timeParts('03/03/2026 14:05'), t(14, 5));
+    assert.deepEqual(SheetImportCore.timeParts('2026-03-03T14:05:30'), t(14, 5));
+    assert.deepEqual(SheetImportCore.timeParts(0.5), t(12, 0));
+    assert.deepEqual(SheetImportCore.timeParts(46084.75), t(18, 0));
+    assert.deepEqual(SheetImportCore.timeParts(new Date(2026, 2, 3, 9, 41, 50)), t(9, 42));
+    assert.equal(SheetImportCore.timeParts('25:00'), null);
+    assert.equal(SheetImportCore.timeParts('13pm'), null);
+    assert.equal(SheetImportCore.timeParts('14'), null);
+    assert.equal(SheetImportCore.timeParts('03/03/2026'), null);
+});
+
+test('formatTime writes 24-hour or am/pm', () => {
+    assert.equal(SheetImportCore.formatTime({ hours: 14, minutes: 5 }, 'HH MM (military)'), '14:05');
+    assert.equal(SheetImportCore.formatTime({ hours: 14, minutes: 5 }, 'HH:MM am'), '2:05pm');
+    assert.equal(SheetImportCore.formatTime({ hours: 0, minutes: 30 }, 'HH:MM am'), '12:30am');
+    assert.equal(SheetImportCore.formatTime({ hours: 12, minutes: 0 }), '12:00pm');
+});
+
+test('convertValue writes times for time-only and date-and-time fields', () => {
+    const military = { type: 'date_time', format: { date_format: 'dd/mm/yyyy', time_format: 'HH MM (military)' } };
+    const ampm = { type: 'date_time', format: { date_format: 'dd/mm/yyyy', time_format: 'HH:MM am' } };
+    const timeOnly = { type: 'date_time', format: { date_format: 'Ignore Date', time_format: 'HH:MM am' } };
+    const dateOnly = { type: 'date_time', format: { date_format: 'dd/mm/yyyy', time_format: 'Ignore Time' } };
+    assert.equal(SheetImportCore.convertValue('03/03/2026 14:05', military).value, '03/03/2026 14:05');
+    assert.equal(SheetImportCore.convertValue('2026-03-03T14:05', ampm).value, '03/03/2026 2:05pm');
+    assert.equal(SheetImportCore.convertValue(46084.75, military).value, '03/03/2026 18:00');
+    assert.equal(SheetImportCore.convertValue(new Date(2026, 2, 3), military).value, '03/03/2026');
+    assert.equal(SheetImportCore.convertValue('03/03/2026', military).value, '03/03/2026');
+    assert.equal(SheetImportCore.convertValue('03/03/2026 14:05', dateOnly).value, '03/03/2026');
+    assert.equal(SheetImportCore.convertValue('14:05', timeOnly).value, '2:05pm');
+    assert.equal(SheetImportCore.convertValue(0.25, timeOnly).value, '6:00am');
+    assert.match(SheetImportCore.convertValue('soon', timeOnly).warning, /not a time/);
+});
+
+test('dateParts reads a date with a time after it, but not letters', () => {
+    assert.deepEqual(SheetImportCore.dateParts('2026-03-03T14:05'), { year: 2026, month: 3, day: 3 });
+    assert.deepEqual(SheetImportCore.dateParts('03/03/2026 14:05'), { year: 2026, month: 3, day: 3 });
+    assert.equal(SheetImportCore.dateParts('03/03/2026abc'), null);
+    assert.deepEqual(SheetImportCore.dateParts('03/03/2026, 14:05'), { year: 2026, month: 3, day: 3 });
+    assert.deepEqual(SheetImportCore.timeParts('03/03/2026, 14:05'), { hours: 14, minutes: 5 });
+    assert.equal(SheetImportCore.timeParts(14.3), null);
+});
+
+test('date and time conversion edge cases from review', () => {
+    const military = { type: 'date_time', format: { date_format: 'dd/mm/yyyy', time_format: 'HH MM (military)' } };
+    const timeOnly = { type: 'date_time', format: { date_format: 'Ignore Date', time_format: 'HH MM (military)' } };
+    // 23:59 keeps its day.
+    assert.equal(SheetImportCore.convertValue(new Date(2026, 2, 3, 23, 59), military).value, '03/03/2026 23:59');
+    assert.equal(SheetImportCore.convertValue(46084 + 1439 / 1440, military).value, '03/03/2026 23:59');
+    // A time that can't be read is flagged, not dropped.
+    assert.match(SheetImportCore.convertValue('2026-03-03T14:05:30Z', military).warning, /time that can't be read/);
+    assert.match(SheetImportCore.convertValue('03/03/2026 25:00', military).warning, /time that can't be read/);
+    assert.match(SheetImportCore.convertValue('03/03/2026 2:05 PM GMT', military).warning, /time that can't be read/);
+    assert.equal(SheetImportCore.convertValue('12 Mar 2026', military).value, '12/03/2026');
+    // A time-only Date cell (Excel day 0) is not a date.
+    assert.match(SheetImportCore.convertValue(new Date(1899, 11, 30, 14, 5), military).warning, /not a date/);
+    // Whole numbers have no time.
+    assert.match(SheetImportCore.convertValue(14, timeOnly).warning, /not a time/);
+    assert.equal(SheetImportCore.convertValue(46084, military).value, '03/03/2026');
+    // The batch input's "yyyy-mm-dd HH:MM" reads.
+    assert.equal(SheetImportCore.convertValue('2026-03-15 09:30', military).value, '15/03/2026 09:30');
+});
+
+test('cellText shows date-and-time and time-only Date cells', () => {
+    assert.equal(SheetImportCore.cellText(new Date(2026, 2, 3)), '03/03/2026');
+    assert.equal(SheetImportCore.cellText(new Date(2026, 2, 3, 14, 5)), '03/03/2026 14:05');
+    assert.equal(SheetImportCore.cellText(new Date(1899, 11, 30, 14, 5)), '14:05');
+    assert.equal(SheetImportCore.cellText(new Date(1899, 11, 30)), '00:00');
+});
