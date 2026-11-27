@@ -1,0 +1,159 @@
+{
+  "chunkId": "C02",
+  "chunkSummary": "Lines 36-797 hold the KnackNavigator class (2026-era, already ES2020+, no jQuery, JSDoc on every method) and its singleton `const knackNavigator`. The class is a memoised metadata reader over Knack.views / Knack.scenes / Knack.objects plus a handful of DOM look-ups (field wrapper, rendered column index, rendered view for object). Nothing here needs a signature change or shim; the work is an as-is port with internal de-duplication (one `#memo` helper for 10 copy-pasted cache blocks, one `#columnFieldId` helper for 8 copies of `column?.field?.key || column?.id`, a halved getSceneInfoForView), removal of impossible-state guards (`typeof document`, `instanceof HTMLElement` on th nodes), and two latent bugs worth fixing (permanent null-caching in getViewObject; HTML-entity mismatch in normalizeViewColumnHeader when comparing innerHTML to metadata). Because normalizeViewId/normalizeFieldId are called from ~85 sites across every other chunk and the singleton is consumed at load time (lines 1787, 6841-6843, 6876-6878), the navigator must be the first thing in knackFunctionsV2.js despite the policy listing it as a wave-3 class.",
+  "functions": [
+    {
+      "name": "KnackNavigator",
+      "kind": "class",
+      "startLine": 40,
+      "endLine": 795,
+      "currentSignature": "class KnackNavigator { constructor(); normalizePrefixedId(value, prefix); normalizeViewId(viewId); normalizeFieldId(fieldId); normalizeFieldMap(fieldMap = {}); normalizeRawFieldMap(fieldMap = {}); normaliseViewMap(viewMap = {}); getFieldWrapper(viewRoot, fieldId); normalizeRawFieldId(fieldId); normalizeSceneId(sceneId); getViewObject(viewId); isViewForObject(viewId, objectKey, options = {}); findRenderedViewIdForObject(objectKey, options = {}); getViewFieldIds(viewId); getViewColumns(viewId); normalizeViewColumnHeader(headerText); getViewColumn(viewId, columnRef); getFieldIdFromHeader(viewId, headerText); getHeaderFromFieldId(viewId, fieldId, options = {}); getViewColumnIndex(viewId, columnRef); getRenderedViewColumnIndex(viewId, columnRef); getViewColumnSelectors(viewId, columnRef); getViewColumnWidth(viewId, columnRef); getSceneInfoForView(viewId); getCurrentSceneTrail(viewId, options = {}); getCurrentSceneInfo(viewId, options = {}); getFieldMeta(fieldKey); getFieldType(fieldKey); getFieldChoiceOptions(fieldKey); getFieldIdFromLabel(viewId, fieldLabel) }",
+      "currentReturns": "normalize*Id -> string ('' on failure); normalizeFieldMap/normalizeRawFieldMap/normaliseViewMap -> Object; getFieldWrapper -> Element|null; getViewObject -> Object|null (Knack view attributes); isViewForObject -> boolean; findRenderedViewIdForObject -> string; getViewFieldIds -> string[]; getViewColumns -> Object[] (live Knack array); normalizeViewColumnHeader -> string; getViewColumn -> Object|null; getFieldIdFromHeader -> string; getHeaderFromFieldId -> string; getViewColumnIndex/getRenderedViewColumnIndex -> number (1-based, 0 = not found); getViewColumnSelectors -> string[] (cached, same array instance returned to every caller); getViewColumnWidth -> {type, units, amount: number|null, amountText, isCustom, column}|null; getSceneInfoForView -> {key, slug}|null; getCurrentSceneTrail -> Array<{sceneSlug, recordId, isCurrent, index}>; getCurrentSceneInfo -> {recordId, sceneId, sceneSlug}|null; getFieldMeta -> Object|null; getFieldType -> string (lower-cased); getFieldChoiceOptions -> string[]; getFieldIdFromLabel -> string. All synchronous, nothing throws except an undeclared-`Knack` ReferenceError (lines 203, 220, 528, 563, 589, 640, 683: `Knack?.` does not guard an undeclared identifier).",
+      "verdict": "simplify",
+      "proposedSignature": "Identical public surface: class KnackNavigator with the same 29 method names, parameter lists and defaults. Additive only: `clearCaches()` (new, non-breaking) so apps can reset after a Knack schema reload; optional private `#memo`, `#columnFieldId`, `#columnCacheRef` helpers.",
+      "proposedReturns": "Identical to current for every method. getViewObject keeps returning Object|null but stops persisting the null result.",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [
+        "getSceneFromViewId (line 9132) is a weaker re-implementation of KnackNavigator.getSceneInfoForView (lines 522-575) and should become a shim over it",
+        "getFieldWrapper global (line 17197, signature (fieldId, root = document)) duplicates KnackNavigator.getFieldWrapper (lines 141-146, signature (viewRoot, fieldId)) with reversed parameter order",
+        "getCurrentSceneInfo global (line 18757) is already a try/catch wrapper over KnackNavigator.getCurrentSceneInfo (lines 621-657)",
+        "KnackValueResolver.normalizeFieldId fallback (lines 822-826) re-implements normalizePrefixedId (lines 61-70)"
+      ],
+      "modernisations": [
+        "L61-70 normalizePrefixedId: stop building `new RegExp` on every call (called ~85 times per render cycle via normalizeViewId/normalizeFieldId). Replace with: `const v = String(value ?? '').trim().toLowerCase(); const digits = v.startsWith(prefix) ? v.slice(prefix.length) : v; return /^\\d+$/.test(digits) ? `${prefix}${digits}` : '';` Same inputs/outputs (the current regex is case-insensitive on a lower-cased string, so the 'i' flag is redundant).",
+        "L50-59 constructor: collapse ten `_xxxCache` Maps into one private `#cache = new Map()` keyed by `'view::'+id`, `'sceneInfo::'+id` etc, plus `#memo(key, compute)` that replaces the ten identical `if (cache.has(k)) return cache.get(k); ... cache.set(k, v); return v;` blocks at L201, L336-343, L364-376, L395-411, L473-495, L529-574, L629-633, L648-653, L665-682, L715-732. Add public `clearCaches()`.",
+        "L100-116 normalizeFieldMap/normalizeRawFieldMap: identical bodies differing only in the mapper; implement via a private `#mapValues(map, fn)` helper: `normalizeFieldMap(m = {}) { return this.#mapValues(m, (v) => this.normalizeFieldId(v)); }`. Keep both public names unchanged (unused in-file but documented for consumers in CHANGELOG L167/L260).",
+        "L123-135 normaliseViewMap: move the inline comment at L128 into the JSDoc (`arrays collapse to the first valid id`); drop the redundant `|| ''` at L132 (normalizeViewId already returns ''); write as `const first = (v) => (Array.isArray(v) ? v : [v]).map((x) => this.normalizeViewId(x)).find(Boolean) ?? '';`.",
+        "L141-146 getFieldWrapper(viewRoot, fieldId): keep the method and parameter order but delegate to the global `getFieldWrapper(fieldId, viewRoot)` from line 17197 so there is one DOM implementation: `return viewRoot instanceof Element ? getFieldWrapper(fieldId, viewRoot) : null;` (inside a class method the bare identifier resolves to the global function, not the method).",
+        "L197-216 getViewObject: do NOT cache the `null` result (L212-213). Knack.views[viewId] is only populated once a view has rendered and connection-form views in modals are never in Knack.scenes, so a query made before first render currently poisons the cache for the whole page lifetime. Cache only truthy hits. Flatten the double loop with `Knack.scenes?.models?.flatMap((s) => s.views?.models ?? []).find((m) => m.attributes?.key === vid)?.attributes`.",
+        "L224-236 isViewForObject: fine; rename local `normalisedObjectKey` or `normalizedValue` so one spelling is used inside the class (prefer UK for new local identifiers, never touch method names).",
+        "L244-262 findRenderedViewIdForObject: remove the `typeof document === 'undefined'` guard (L245) - this is a browser-only classic script; same at L420-422 and L437. Tighten `[id^=\"view_\"]` to `.kn-view[id^=\"view_\"]` so form input ids like `view_12-field_3` (Knack's `#view_x-field_y` convention) are not visited; they currently normalise to '' and fall through to `isViewForObject('')` which always returns false, so the result is unchanged but every input element is tested.",
+        "L269-277 getViewFieldIds: `[...new Set(fields.map((f) => this.normalizeFieldId(f?.key)).filter(Boolean))]` - one line, same output; normalizeFieldId already tolerates undefined.",
+        "L294-324 getViewColumn: three near-identical `find` passes. Add private `#columnFieldId(column)` (= normalizeFieldId(column?.field?.key || column?.id)) and `#columnHeader(column)` (= normalizeViewColumnHeader(column?.header)); the same expression `column?.field?.key || column?.id || ''` is repeated at L302, L306, L316, L345, L371, L433, L480 and in two cacheRef builders (L390-392, L468-470). Resolve `columnRef` once into `{fieldId, header}` whether it is a string or an object, then do a single `columns.find((c) => (fieldId && this.#columnFieldId(c) === fieldId) || (header && this.#columnHeader(c) === header))`. Note: the object branch currently ORs field and header while the string branch prefers field then falls back to header - the single-pass version preserves both because a field match is always tried first via `fieldId &&`.",
+        "L385-412 getViewColumnIndex: `findIndex(...) + 1` is already >= 0, so both `columnIndex > 0 ? columnIndex : 0` expressions (L410-411) are dead; return `columnIndex` directly. Use `columns.indexOf(column) + 1` instead of `findIndex((candidate) => candidate === column) + 1`.",
+        "L419-452 getRenderedViewColumnIndex: drop `typeof document` (L420) and `instanceof HTMLElement` (L423, L435) guards - `querySelectorAll('th')` can only yield HTMLElements. Replace `headerCell.innerHTML || headerCell.textContent` (L448) - the textContent fallback is unreachable because innerHTML is non-empty whenever textContent is. Either compare `textContent` or make normalizeViewColumnHeader decode entities (see behaviourRisks) so 'R&D' in metadata matches 'R&amp;D' in innerHTML.",
+        "L462-499 getViewColumnSelectors: `selectors.filter(Boolean)` (L497) is dead - every pushed string is a non-empty template literal. Use the shared `#columnCacheRef`. Consider returning a copy (`[...uniqueSelectors]`) only if a caller is found mutating it; current callers (L20105, L20112) only `.find` on it.",
+        "L507-519 getViewColumnWidth: already modern; `column?.width && typeof column.width === 'object' ? column.width : {}` -> `typeof column.width === 'object' && column.width ? column.width : {}` is the same; keep as is.",
+        "L522-575 getSceneInfoForView: 54 lines -> ~20. Three identical `{key, slug}` + cache + return blocks (L535-541, L553-559, L570-575) become one local `const remember = (key, slug) => this.#memo(...)`. The Knack.scenes scan is a single `find` on `flatMap`ped views. Keep the documented preference order (direct scene with slug -> view object scene with slug -> scene scan -> fallback key with slug from scenes) because bulk actions (L6151, L6312, L6695) and version-refresh (L2060) depend on `.key` and `.slug` being populated.",
+        "L586-617 getCurrentSceneTrail: already modern. Only change: `String(getIdBeforeSceneSlug(sceneSlug) || '').trim()` -> `getIdBeforeSceneSlug(sceneSlug)` returns a string already (L18849-18857), so the String/||/trim wrapping is redundant.",
+        "L630-657 getCurrentSceneInfo: keep. `Number(options?.historyIndex || 0)` -> `Number(options?.historyIndex ?? 0)` is equivalent for the documented inputs; leave the `typeof options === 'number'` convenience branch because the global wrapper at L18757 forwards it.",
+        "L664-688 getFieldMeta: prefer Knack's own lookup `Knack.objects?.getField?.(key)?.attributes` (used at L21120 of this file) and fall back to the manual scan; mark unverified against live docs. The `attributes && typeof attributes === 'object'` check (L680) is defensive for an impossible state - `match?.attributes || null` is already object-or-null.",
+        "L695-704 getFieldType: drop `_fieldTypeCache`; getFieldMeta is already memoised so the second cache buys nothing. Body becomes `return String(this.getFieldMeta(fieldKey)?.type ?? '').trim().toLowerCase();` - note normalizeFieldId is applied inside getFieldMeta so the '' short-circuit is preserved.",
+        "L711-734 getFieldChoiceOptions: replace the `e`/`v`/`seen` loop and the two explanatory comments with `const out = [...new Set(optionEntries.filter((e) => e != null).map((e) => String(e).trim()).filter(Boolean))];` and memoise only when `out.length` (preserve the documented 'retry when empty' behaviour at L716-720).",
+        "L742-764 getFieldIdFromLabel: fine; the two `.trim().toLowerCase()` of name/label can share a tiny `const norm = (s) => String(s ?? '').trim().toLowerCase();` local or the class-level `#normText`.",
+        "Whole class: use `#private` fields for caches. If the team wants zero risk for consumers that may have reached into `knackNavigator._viewCache`, keep the underscore properties as aliases pointing at the same Map; otherwise `#private` is preferred (no in-file or test code touches them - grep of `_viewCache|_sceneInfoCache|...` outside L36-797 returns nothing)."
+      ],
+      "behaviourRisks": [
+        "getViewObject null-caching (L212-213): changing this is a deliberate behaviour fix, but any consumer that relied on the second call being cheap for an unknown view now pays a Knack.scenes scan each time; cost is small (scenes * views in-memory).",
+        "normalizeViewColumnHeader (L283-290) does not decode HTML entities, while getRenderedViewColumnIndex (L448) feeds it `innerHTML`. A header containing `&`, `<` or non-breaking spaces (`&nbsp;` is common when Knack pads headers) matches today only by field-key/class and silently falls back to 0 for header-only action columns such as 'Edit &amp; Delete'. Fixing it changes which columns resolve - a visible improvement but still a change. CAQuickToggle.matchesViewTarget (L21505-21510) uses the same normaliser on both sides so it is unaffected.",
+        "getViewColumns (L269-277) and getViewColumnSelectors (L462-499) return the live Knack metadata array / a cached array instance; a rewrite that returns copies would break any caller that intentionally mutates (none found in-file). Keep returning the same references.",
+        "getSceneInfoForView preference order (direct scene -> view object -> scenes scan -> fallback key) must be preserved exactly: bulk-action form flows (L6151) navigate using `.slug`, and the version-refresh controller (L2060) and replicate payloads (L6312) use `.key`; returning `null` where the fallback branch used to return `{key, slug}` would silently disable those features.",
+        "`Knack?.views` style optional chaining on an undeclared global still throws ReferenceError. The tests (tests/truncateColumnsInGrid.test.cjs L16, L87, L119) replace `knackNavigator` with a stub precisely because `Knack` is absent in Playwright; V2 must keep `knackNavigator` as a plain `const` so that stubbing pattern (declaring the const before the helper) keeps working.",
+        "Caches are never invalidated. Knack metadata is static per page load, so this is safe, but if V2 adds `clearCaches()` it must not be called automatically on `knack-view-render` (that would defeat memoisation on every render).",
+        "Private `#fields` would make `JSON.stringify(knackNavigator)` and `structuredClone` behave differently (currently they expose the Maps as empty objects); negligible but note it.",
+        "`findRenderedViewIdForObject` returns the first DOM-order match; tightening the selector to `.kn-view` keeps order but would exclude a view root that Knack renders without `.kn-view` (connection-form views use `#connection-form-view` with no `view_` id, so they were never matched anyway).",
+        "`getCurrentSceneTrail` treats `sceneEntry.key || sceneEntry.scene_id` as the record id (L600) - the shape of `Knack.views[x].model.view.scene.scenes[]` is unverified against live docs; port the logic verbatim."
+      ],
+      "knackPractice": "Follows the documented Knack model closely: reads `Knack.views[viewKey].model.view` (Backbone view attributes), `Knack.scenes.models[].views.models[].attributes`, and `Knack.objects.models[].fields.models[].attributes`, and resolves rendered DOM via `#view_x`, `thead th[data-field-key]`, `th.field_x`, `#kn-input-field_x` and `#kn-scene_x`, all of which match Knack's DOM conventions. It correctly treats metadata as cacheable and DOM as transient (getRenderedViewColumnIndex is uncached). Two points are unverified against live docs: `Knack.objects.getField(key)` as the sanctioned field lookup (used elsewhere in this file at L21120) and the `scene.scenes[]` route-trail shape. The class does not bind to any render event itself, which is correct for a pure metadata helper.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 560,
+      "rationale": "This is 2026 code that already meets the modern-JS targets, so the policy's wave-3 'port as-is' rule applies to its shape, but its two id normalisers are the most-called primitives in the library (~85 call sites outside the chunk) and the singleton is consumed during script evaluation at L1787, L6841-6843 and L6876-6878, so it must physically lead knackFunctionsV2.js from wave 1. The port removes roughly 200 lines of duplicated cache boilerplate, repeated column-key expressions and impossible-state guards without touching any method name, parameter or return type, and fixes two latent correctness issues (permanent null caching, entity mismatch) that currently bite bulk actions on views rendered late or in modals."
+    },
+    {
+      "name": "knackNavigator",
+      "kind": "const NewExpression",
+      "startLine": 797,
+      "endLine": 797,
+      "currentSignature": "const knackNavigator = new KnackNavigator()",
+      "currentReturns": "KnackNavigator instance (page global, readonly in eslint/knack-functions-globals.json L236)",
+      "verdict": "keep",
+      "proposedSignature": "const knackNavigator = new KnackNavigator()",
+      "proposedReturns": "KnackNavigator instance",
+      "signatureChanges": false,
+      "shimRequired": false,
+      "shimShape": "n/a",
+      "duplicatesOf": [],
+      "modernisations": [
+        "Keep as a top-level `const` immediately after the class (class declarations are not hoisted, so the order class -> const must be preserved).",
+        "Add a one-line JSDoc (`/** Shared KnackNavigator singleton used by every view/field helper. @type {KnackNavigator} */`) - it is the only global in this chunk without one.",
+        "Must appear in V2 before the first load-time consumer: `const knackValueResolver = new KnackValueResolver(knackNavigator)` (L1787) and the `.bind(knackNavigator)` object literals at L6841-6843 / L6876-6878 execute during script evaluation and would throw a TDZ ReferenceError if the navigator were declared later."
+      ],
+      "behaviourRisks": [
+        "Any V2 build step that wraps the file in an IIFE or module would remove this global; consuming apps (GAP-Track, Spot) and the in-repo tests reference `knackNavigator` by bare name.",
+        "If V2 ever lazily constructs the singleton (getter on window), the tests' pattern of pre-declaring `const knackNavigator = {...}` before injecting a helper (tests/truncateColumnsInGrid.test.cjs L16/L87/L119) would collide; keep it a plain const."
+      ],
+      "knackPractice": "A single shared metadata reader per page is the right shape for Knack's single-page app: Knack schema objects (`Knack.scenes`, `Knack.objects`) are loaded once per page and stable across scene/view re-renders, so a page-lifetime singleton with memoisation is appropriate. Unverified against live docs only in that Knack's docs do not prescribe a pattern here.",
+      "risk": "low",
+      "wave": 1,
+      "estimatedV2Lines": 2,
+      "rationale": "A one-line singleton with 96 `knackNavigator.` references across the file and 40+ distinct callers listed in the brief; it is pure public API. Nothing to change except placing it first in V2 and documenting it."
+    }
+  ],
+  "sharedPrimitivesProposed": [
+    {
+      "name": "KnackNavigator.#memo",
+      "purpose": "Single memoisation helper replacing ten hand-written `if (cache.has(key)) return cache.get(key); ... cache.set(key, value); return value;` blocks; takes an optional predicate so getFieldChoiceOptions can skip caching empty results and getViewObject can skip caching null.",
+      "replaces": [
+        "getViewObject L201-214",
+        "getFieldIdFromHeader L336-343",
+        "getHeaderFromFieldId L364-376",
+        "getViewColumnIndex L395-411",
+        "getViewColumnSelectors L473-498",
+        "getSceneInfoForView L529-574",
+        "getFieldMeta L665-686",
+        "getFieldType L697-703",
+        "getFieldChoiceOptions L715-732",
+        "getFieldIdFromLabel L746-762"
+      ],
+      "signature": "#memo(key: string, compute: () => T, shouldCache: (value: T) => boolean = () => true): T"
+    },
+    {
+      "name": "KnackNavigator.#columnFieldId / #columnHeader",
+      "purpose": "Normalise a Knack column object's field id (`column.field.key || column.id`) and header text once, instead of repeating the expression at eight sites.",
+      "replaces": [
+        "getViewColumn L302, L306, L316, L322",
+        "getFieldIdFromHeader L345",
+        "getViewColumnIndex L390, L404",
+        "getRenderedViewColumnIndex L433-434",
+        "getViewColumnSelectors L469, L480"
+      ],
+      "signature": "#columnFieldId(column: object|null): string; #columnHeader(column: object|null): string"
+    },
+    {
+      "name": "KnackNavigator.#resolveColumnRef",
+      "purpose": "Turn a `columnRef` (string field id, header text, or column-like object) into `{fieldId, header, cacheKey}` once so getViewColumn, getViewColumnIndex and getViewColumnSelectors stop re-deriving it with two different code paths (L296-324 vs L390-392 vs L468-470).",
+      "replaces": [
+        "getViewColumn L298-324",
+        "getViewColumnIndex L390-393",
+        "getViewColumnSelectors L468-471"
+      ],
+      "signature": "#resolveColumnRef(columnRef: string|number|object): { fieldId: string, header: string, cacheKey: string }"
+    },
+    {
+      "name": "normalisePrefixedId (file-level helper)",
+      "purpose": "Expose the prefix normaliser as a standalone function so wave-1 helpers and KnackValueResolver's fallback (L822-826) and the tests' stub (tests/truncateColumnsInGrid.test.cjs L16) share one regex instead of three. The class method `normalizePrefixedId` stays and delegates to it.",
+      "replaces": [
+        "KnackNavigator.normalizePrefixedId L61-70",
+        "KnackValueResolver.normalizeFieldId fallback L822-826"
+      ],
+      "signature": "normalisePrefixedId(value: string|number|null|undefined, prefix: 'view_'|'field_'|'scene_'|'object_'): string"
+    }
+  ],
+  "crossCuttingFindings": [
+    "Load order: `knackNavigator` is used at script-evaluation time at L1787 (`new KnackValueResolver(knackNavigator)`), L6841-6843 and L6876-6878 (`.bind(knackNavigator)` in object literals). In knackFunctionsV2.js the KnackNavigator class and the singleton must precede every other class/const that references it, otherwise a TDZ ReferenceError fires on page load. Function declarations (e.g. getIdBeforeSceneSlug at L18849, called from L600) are hoisted and can stay wherever they land.",
+  "Wave conflict: the policy lists KnackNavigator as wave 3, but normalizeViewId/normalizeFieldId are called ~85 times across every other chunk (L2058-21531) and are the de-facto foundation primitive. The navigator must therefore land in wave 1 as an as-is port with wave-3-style constraints (no signature changes).",
+    "Duplicate: `getSceneFromViewId(viewId)` (L9132-9158) re-implements `knackNavigator.getSceneInfoForView` with slightly different output (`slug: null` instead of `''`, and returns `{key, slug:null}` when the direct scene has a key but no slug, whereas the navigator keeps searching for a slug). Recommend deprecating it to `const info = knackNavigator.getSceneInfoForView(viewId); return info ? { key: info.key, slug: info.slug || null } : null;` and noting the single edge case where it previously returned a key-only result.",
+    "Duplicate with reversed parameters: global `getFieldWrapper(fieldId, root = document)` (L17197-17206) versus `knackNavigator.getFieldWrapper(viewRoot, fieldId)` (L141-146). Only one caller uses the navigator form (L17584). Keep both names, make the navigator method delegate to the global, and document the argument order difference in both JSDoc blocks.",
+    "Already a shim: global `getCurrentSceneInfo(viewId, options)` (L18757-18764) wraps the navigator in try/catch but reports via `console.error` instead of `errorHandler.handle(error, {viewId}, 'getCurrentSceneInfo')`; align with the policy's error-reporting rule when porting that chunk.",
+    "Duplicate normaliser logic: `KnackValueResolver.normalizeFieldId` (L818-827) carries a fallback regex copy of `normalizePrefixedId` for when no navigator is injected; with a file-level `normalisePrefixedId` that fallback collapses to one line.",
+    "Spelling drift inside the public surface: the class mixes `normalizeViewId`/`normalizeFieldId`/`normalizeFieldMap`/`normalizeRawFieldMap` (US) with `normaliseViewMap` (UK, CHANGELOG L167), and callers mix locals `normalizedViewId` (L2058) with `normalisedHeader` (L21505). Per policy, do not rename any method; new locals and any new methods should use UK spelling. Consider whether V2 should add UK aliases (`normaliseViewId` etc.) - that widens the global surface, so only if the team wants it.",
+    "HTML-entity mismatch in `normalizeViewColumnHeader` (L283-290) affects `getRenderedViewColumnIndex` (L448, innerHTML side) and any other chunk that compares DOM header text with metadata header text (truncateColumnsInGrid at L13242 depends on getRenderedViewColumnIndex; CAQuickToggle.matchesViewTarget L21505-21510 compares keyword text to DOM text). Fix once in the navigator (decode `&amp; &lt; &gt; &quot; &#39; &nbsp;` after tag stripping) rather than per caller.",
+    "`Knack.objects.getField(key)` is used directly at L21120 (CAQuickToggle) while the navigator does a manual scan of `Knack.objects.models[].fields.models` (L670-686); pick one (navigator) and route the L21120 usage through `knackNavigator.getFieldMeta` so field metadata has a single cached entry point.",
+    "No chunk in the file invalidates navigator caches; the only global render hook that could affect metadata is `knack-view-render.any knack-scene-render` at L3664 (bulk actions). If V2 adds `clearCaches()`, document that it is for consumer apps that mutate `Knack.scenes`/`Knack.objects`, not for routine renders.",
+    "Test coupling: tests/truncateColumnsInGrid.test.cjs L16, L87 and L119 stub `knackNavigator` as a plain object exposing only `normalizeFieldId`. V2 tests for other chunks should import the real class (slice `class KnackNavigator ... const knackNavigator = new KnackNavigator();` by string marker as that test does for its helper) rather than re-implementing the regex a fourth time.",
+    "`Knack?.views` style guards (L203, L220, L528, L563, L589, L640, L683) do not protect against an undeclared `Knack` global; they only matter if `Knack` is declared but undefined, which never happens in a Knack page. Treat as policy-grade 'defensive check for impossible state' across all chunks; the consistent alternative is `globalThis.Knack?.`, which does work outside Knack (useful for the Playwright tests)."
+  ]
+}
